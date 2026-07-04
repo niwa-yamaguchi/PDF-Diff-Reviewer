@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>図面差分ビューア — PDF Overlay Diff</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  :root{
+    --ink:#0e151d;          /* 作業面（製図インク地） */
+    --panel:#151f2a;
+    --panel-2:#1b2836;
+    --line:#2a3947;
+    --line-bright:#3a4c5e;
+    --fg:#e8eef4;
+    --muted:#7f8f9e;
+    --removed:#ff5b57;      /* 旧版のみ = 削除 */
+    --added:#4d8dff;        /* 新版のみ = 追加 */
+    --signal:#f4b942;       /* 操作系 = 見当色（計器の琥珀） */
+    --signal-dim:#c8952a;
+    --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans: system-ui,-apple-system,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--ink);color:var(--fg);font-family:var(--sans);
+    display:flex;flex-direction:column;min-height:100%;
+  }
+  /* ── ヘッダ（タイトルブロック風） ── */
+  header{
+    border-bottom:1px solid var(--line);
+    display:flex;align-items:stretch;flex-wrap:wrap;
+  }
+  .brand{
+    padding:14px 20px;border-right:1px solid var(--line);
+    display:flex;flex-direction:column;gap:2px;
+  }
+  .brand h1{
+    margin:0;font-family:var(--mono);font-size:15px;letter-spacing:.14em;
+    font-weight:600;text-transform:uppercase;
+  }
+  .brand .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em}
+  .legend{
+    display:flex;align-items:center;gap:20px;padding:0 20px;margin-left:auto;
+    font-family:var(--mono);font-size:11px;color:var(--muted);
+  }
+  .legend .k{display:flex;align-items:center;gap:7px}
+  .swatch{width:12px;height:12px;border-radius:2px;display:inline-block}
+  .privacy{
+    padding:0 20px;display:flex;align-items:center;gap:8px;
+    font-family:var(--mono);font-size:10.5px;color:var(--muted);
+    border-left:1px solid var(--line);
+  }
+  .dot{width:6px;height:6px;border-radius:50%;background:#38c172;box-shadow:0 0 8px #38c172}
+
+  main{flex:1;display:grid;grid-template-columns:288px 1fr;min-height:0}
+  @media(max-width:820px){main{grid-template-columns:1fr}}
+
+  /* ── サイドパネル ── */
+  aside{
+    border-right:1px solid var(--line);padding:18px;overflow:auto;
+    display:flex;flex-direction:column;gap:20px;background:var(--panel);
+  }
+  .field{display:flex;flex-direction:column;gap:8px}
+  .field > .label{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--muted);
+    display:flex;justify-content:space-between;align-items:baseline;
+  }
+  .drop{
+    border:1px dashed var(--line-bright);border-radius:6px;
+    padding:16px 12px;text-align:center;cursor:pointer;
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    transition:border-color .15s,color .15s,background .15s;
+    background:var(--panel-2);
+  }
+  .drop:hover{border-color:var(--signal);color:var(--fg)}
+  .drop.set{border-style:solid;color:var(--fg)}
+  .drop.old.set{border-color:var(--removed)}
+  .drop.new.set{border-color:var(--added)}
+  .drop .fname{display:block;margin-top:4px;color:var(--fg);word-break:break-all}
+  .drop .tag{font-size:9.5px;letter-spacing:.14em}
+  .drop.old .tag{color:var(--removed)}
+  .drop.new .tag{color:var(--added)}
+
+  .ctrl{display:flex;flex-direction:column;gap:6px}
+  .ctrl .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px}
+  .ctrl .row .val{color:var(--signal)}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:2px;
+    background:var(--line-bright);border-radius:2px;outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+    background:var(--signal);cursor:pointer;border:2px solid var(--ink);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border-radius:50%;background:var(--signal);
+    cursor:pointer;border:2px solid var(--ink);
+  }
+  .nudge{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .nudge button, .btn{
+    font-family:var(--mono);font-size:11px;padding:8px;border-radius:5px;
+    border:1px solid var(--line-bright);background:var(--panel-2);
+    color:var(--fg);cursor:pointer;transition:border-color .12s,background .12s;
+  }
+  .nudge button:hover,.btn:hover{border-color:var(--signal)}
+  .nudge .c{color:var(--muted)}
+  .btn.primary{
+    background:var(--signal);color:#1a1206;border-color:var(--signal);font-weight:600;
+    letter-spacing:.04em;
+  }
+  .btn.primary:hover{background:var(--signal-dim)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btns{display:flex;flex-direction:column;gap:8px}
+
+  /* ── ビューア ── */
+  section.view{position:relative;overflow:auto;background:var(--ink);
+    display:flex;flex-direction:column;min-width:0}
+  .viewbar{
+    display:flex;align-items:center;gap:14px;padding:10px 16px;
+    border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;
+    color:var(--muted);
+  }
+  .viewbar .pager{display:flex;align-items:center;gap:8px}
+  .viewbar .pager button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    width:26px;height:24px;border-radius:4px;cursor:pointer;font-family:var(--mono);
+  }
+  .viewbar .pager button:hover{border-color:var(--signal)}
+  .viewbar .zoomctl{display:flex;align-items:center;gap:6px;
+    padding-left:14px;border-left:1px solid var(--line)}
+  .viewbar .zoomctl button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    height:24px;min-width:26px;padding:0 8px;border-radius:4px;cursor:pointer;
+    font-family:var(--mono);font-size:11px;
+  }
+  .viewbar .zoomctl button:hover{border-color:var(--signal)}
+  .viewbar .zoomctl #zoomLabel{min-width:44px;text-align:center;color:var(--fg)}
+  .viewbar .stat{margin-left:auto;display:flex;gap:16px}
+  .viewbar .stat .rm{color:var(--removed)}
+  .viewbar .stat .ad{color:var(--added)}
+  .canvas-wrap{
+    flex:1;overflow:hidden;position:relative;
+    background-image:
+      linear-gradient(var(--panel) 1px,transparent 1px),
+      linear-gradient(90deg,var(--panel) 1px,transparent 1px);
+    background-size:22px 22px;background-position:center;
+    cursor:grab;touch-action:none;
+  }
+  .canvas-wrap.panning{cursor:grabbing}
+  #out{
+    position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;
+    background:#fff;box-shadow:0 8px 40px rgba(0,0,0,.55);
+    image-rendering:crisp-edges;
+  }
+  .placeholder{
+    position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;
+    text-align:center;font-family:var(--mono);color:var(--muted);
+    font-size:12px;line-height:1.9;letter-spacing:.04em;
+  }
+  .placeholder .mark{
+    font-size:30px;color:var(--line-bright);margin-bottom:10px;letter-spacing:.3em;
+  }
+  .busy{color:var(--signal)}
+  footer{
+    border-top:1px solid var(--line);padding:8px 20px;
+    font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.06em;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>図面差分ビューア</h1>
+    <span class="sub">PDF OVERLAY DIFF · REV-A</span>
+  </div>
+  <div class="legend">
+    <span class="k"><span class="swatch" style="background:#3c3c3c"></span>共通</span>
+    <span class="k"><span class="swatch" style="background:var(--removed)"></span>削除（旧版のみ）</span>
+    <span class="k"><span class="swatch" style="background:var(--added)"></span>追加（新版のみ）</span>
+  </div>
+  <div class="privacy"><span class="dot"></span>ブラウザ内で処理・外部送信なし</div>
+</header>
+
+<main>
+  <aside>
+    <div class="field">
+      <span class="label">旧版 <span style="color:var(--removed)">OLD</span></span>
+      <label class="drop old" id="dropOld">
+        <span class="tag">▲ DROP / CLICK</span>
+        <span class="fname">PDFを選択</span>
+        <input type="file" accept="application/pdf" hidden id="fileOld">
+      </label>
+    </div>
+    <div class="field">
+      <span class="label">新版 <span style="color:var(--added)">NEW</span></span>
+      <label class="drop new" id="dropNew">
+        <span class="tag">▲ DROP / CLICK</span>
+        <span class="fname">PDFを選択</span>
+        <input type="file" accept="application/pdf" hidden id="fileNew">
+      </label>
+    </div>
+
+    <div class="field ctrl">
+      <div class="row"><span>解像度 DPI</span><span class="val" id="dpiVal">150</span></div>
+      <input type="range" id="dpi" min="72" max="300" step="6" value="150">
+    </div>
+    <div class="field ctrl">
+      <div class="row"><span>インク判定 しきい値</span><span class="val" id="thVal">128</span></div>
+      <input type="range" id="th" min="40" max="220" step="1" value="128">
+    </div>
+
+    <div class="field">
+      <span class="label">位置合わせ（新版を移動）</span>
+      <div class="nudge">
+        <span></span><button data-dx="0" data-dy="-1">▲</button><span></span>
+        <button data-dx="-1" data-dy="0">◀</button>
+        <button class="c" id="nudgeReset">0,0</button>
+        <button data-dx="1" data-dy="0">▶</button>
+        <span></span><button data-dx="0" data-dy="1">▼</button><span></span>
+      </div>
+    </div>
+
+    <div class="btns">
+      <button class="btn primary" id="run" disabled>差分を表示</button>
+      <button class="btn" id="dlPng" disabled>現在ページをPNG保存</button>
+      <button class="btn" id="dlPdf" disabled>全ページをPDF保存</button>
+    </div>
+  </aside>
+
+  <section class="view">
+    <div class="viewbar">
+      <div class="pager">
+        <button id="prev">‹</button>
+        <span id="pageLabel">– / –</span>
+        <button id="next">›</button>
+      </div>
+      <div class="zoomctl">
+        <button id="zoomOut" title="縮小">−</button>
+        <span id="zoomLabel">—</span>
+        <button id="zoomIn" title="拡大">＋</button>
+        <button id="zoomFit" title="全体表示">全体</button>
+      </div>
+      <span id="status">PDFを2つ読み込んでください</span>
+      <div class="stat">
+        <span class="rm" id="statRm">削除 —</span>
+        <span class="ad" id="statAd">追加 —</span>
+      </div>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="out" width="10" height="10" style="display:none"></canvas>
+      <div class="placeholder" id="ph">
+        <div class="mark">＋　＋<br>＋　＋</div>
+        旧版と新版のPDFを読み込むと<br>変更箇所が赤（削除）と青（追加）で重なって表示されます
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>100% CLIENT-SIDE · pdf.js + canvas · deploy to any static host (Cloudflare Pages / GitHub Pages)</footer>
+
+<script>
+// pdf.js worker を blob 経由で同一オリジン化（CDNワーカーのCORS回避）
+(function(){
+  const url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const blob = new Blob(["importScripts('"+url+"');"], {type:"application/javascript"});
+  pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+})();
+
+const state = {
+  oldDoc:null, newDoc:null, pages:0, cur:0,
+  dpi:150, th:128, dx:0, dy:0,
+  cache:{}, // pageIndex -> {rm, ad}
+};
+
+const $ = id => document.getElementById(id);
+const out = $("out"), octx = out.getContext("2d");
+
+function setDrop(el, name){
+  el.classList.add("set");
+  el.querySelector(".fname").textContent = name;
+}
+
+async function loadPdf(file, which){
+  const buf = await file.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;
+  if(which==="old"){ state.oldDoc = doc; setDrop($("dropOld"), file.name); }
+  else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
+  if(state.oldDoc && state.newDoc){
+    state.pages = Math.max(state.oldDoc.numPages, state.newDoc.numPages);
+    state.cur = 0; state.cache = {};
+    $("run").disabled = false;
+    $("status").textContent = "準備完了 — 「差分を表示」を押してください";
+  }
+}
+
+// PDFページ → グレースケール ImageData（無い場合は白紙）
+async function renderGray(doc, idx, scale){
+  if(!doc || idx >= doc.numPages) return null;
+  const page = await doc.getPage(idx+1);
+  const vp = page.getViewport({scale});
+  const c = document.createElement("canvas");
+  c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
+  await page.render({canvasContext:ctx, viewport:vp}).promise;
+  return ctx.getImageData(0,0,c.width,c.height);
+}
+
+function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
+
+async function buildDiff(idx){
+  const scale = state.dpi/72;
+  $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
+  const [oimg, nimg] = await Promise.all([
+    renderGray(state.oldDoc, idx, scale),
+    renderGray(state.newDoc, idx, scale)
+  ]);
+  const ow = oimg?oimg.width:0, oh = oimg?oimg.height:0;
+  const nw = nimg?nimg.width:0, nh = nimg?nimg.height:0;
+  const W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
+  const H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
+  const width  = Math.max(ow, nw, W, 1);
+  const height = Math.max(oh, nh, H, 1);
+
+  out.width = width; out.height = height;
+  const res = octx.createImageData(width, height);
+  const R = res.data; R.fill(255); // 白背景
+
+  const th = state.th;
+  let rm=0, ad=0;
+  for(let y=0;y<height;y++){
+    for(let x=0;x<width;x++){
+      // 旧版インク（そのまま）
+      let oInk=false;
+      if(oimg && x<ow && y<oh){ oInk = lum(oimg.data,(y*ow+x)*4) < th; }
+      // 新版インク（dx,dy オフセット適用）
+      let nInk=false;
+      const nx = x - state.dx, ny = y - state.dy;
+      if(nimg && nx>=0 && ny>=0 && nx<nw && ny<nh){ nInk = lum(nimg.data,(ny*nw+nx)*4) < th; }
+
+      if(oInk||nInk){
+        const p=(y*width+x)*4;
+        if(oInk&&nInk){ R[p]=60;R[p+1]=60;R[p+2]=60; }          // 共通=グレー
+        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; }    // 削除=赤
+        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; }           // 追加=青
+      }
+    }
+  }
+  octx.putImageData(res,0,0);
+  out.style.display="block"; $("ph").style.display="none";
+  state.cache[idx] = {rm, ad};
+  $("statRm").textContent = "削除 "+rm.toLocaleString();
+  $("statAd").textContent = "追加 "+ad.toLocaleString();
+  $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
+  $("pageLabel").textContent = (idx+1)+" / "+state.pages;
+  $("dlPng").disabled=false; $("dlPdf").disabled=false;
+}
+
+async function show(idx){
+  if(idx<0||idx>=state.pages) return;
+  state.cur=idx; await buildDiff(idx);
+}
+
+// ── ズーム & パン ──
+const wrap = document.querySelector(".canvas-wrap");
+const view = {scale:1, tx:0, ty:0};
+const clampScale = s => Math.min(Math.max(s, 0.05), 40);
+const hasImage = () => out.style.display !== "none";
+
+function applyTransform(){
+  out.style.transform = `translate(${view.tx}px,${view.ty}px) scale(${view.scale})`;
+  $("zoomLabel").textContent = Math.round(view.scale*100)+"%";
+}
+// キャンバス全体が枠に収まる倍率で中央表示
+function fitView(){
+  const W=wrap.clientWidth, H=wrap.clientHeight, cw=out.width, ch=out.height;
+  if(!cw||!ch) return;
+  const s = Math.min(W/cw, H/ch) * 0.92;
+  view.scale=s; view.tx=(W-cw*s)/2; view.ty=(H-ch*s)/2;
+  applyTransform();
+}
+// (cx,cy)=枠内座標 を固定点にしてズーム
+function zoomAt(factor, cx, cy){
+  const ns = clampScale(view.scale*factor), k = ns/view.scale;
+  view.tx = cx-(cx-view.tx)*k;
+  view.ty = cy-(cy-view.ty)*k;
+  view.scale = ns; applyTransform();
+}
+const zoomCenter = f => zoomAt(f, wrap.clientWidth/2, wrap.clientHeight/2);
+
+// ホイールで拡大縮小（ポインタ位置中心）
+wrap.addEventListener("wheel", e=>{
+  if(!hasImage()) return;
+  e.preventDefault();
+  const r = wrap.getBoundingClientRect();
+  zoomAt(e.deltaY<0 ? 1.12 : 1/1.12, e.clientX-r.left, e.clientY-r.top);
+}, {passive:false});
+
+// ドラッグでパン
+let panning=false, psx=0, psy=0, ptx=0, pty=0;
+wrap.addEventListener("pointerdown", e=>{
+  if(!hasImage()) return;
+  panning=true; wrap.classList.add("panning"); wrap.setPointerCapture(e.pointerId);
+  psx=e.clientX; psy=e.clientY; ptx=view.tx; pty=view.ty;
+});
+wrap.addEventListener("pointermove", e=>{
+  if(!panning) return;
+  view.tx = ptx+(e.clientX-psx); view.ty = pty+(e.clientY-psy); applyTransform();
+});
+function endPan(e){
+  if(!panning) return;
+  panning=false; wrap.classList.remove("panning");
+  try{ wrap.releasePointerCapture(e.pointerId); }catch(_){}
+}
+wrap.addEventListener("pointerup", endPan);
+wrap.addEventListener("pointercancel", endPan);
+wrap.addEventListener("dblclick", fitView); // ダブルクリックで全体表示に戻す
+
+$("zoomIn").addEventListener("click", ()=>zoomCenter(1.25));
+$("zoomOut").addEventListener("click", ()=>zoomCenter(1/1.25));
+$("zoomFit").addEventListener("click", fitView);
+
+// ── イベント ──
+$("fileOld").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.files[0],"old"));
+$("fileNew").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.files[0],"new"));
+["dropOld","dropNew"].forEach(id=>{
+  const el=$(id), which=id==="dropOld"?"old":"new";
+  el.addEventListener("dragover",e=>{e.preventDefault();el.style.borderColor="var(--signal)";});
+  el.addEventListener("dragleave",()=>el.style.borderColor="");
+  el.addEventListener("drop",e=>{e.preventDefault();el.style.borderColor="";
+    const f=e.dataTransfer.files[0]; if(f&&f.type==="application/pdf") loadPdf(f,which);});
+});
+
+$("dpi").addEventListener("input",e=>{state.dpi=+e.target.value;$("dpiVal").textContent=e.target.value;});
+$("dpi").addEventListener("change",async()=>{state.cache={};if(state.pages){await show(state.cur); fitView();}});
+$("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
+$("th").addEventListener("change",()=>{if(state.pages)show(state.cur);});
+
+document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    state.dx+=(+b.dataset.dx); state.dy+=(+b.dataset.dy);
+    $("nudgeReset").textContent=state.dx+","+state.dy;
+    if(state.pages)show(state.cur);
+  });
+});
+$("nudgeReset").addEventListener("click",()=>{
+  state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";if(state.pages)show(state.cur);
+});
+
+$("run").addEventListener("click",async()=>{await show(0); fitView();});
+$("prev").addEventListener("click",()=>show(state.cur-1));
+$("next").addEventListener("click",()=>show(state.cur+1));
+
+$("dlPng").addEventListener("click",()=>{
+  out.toBlob(b=>{
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(b);
+    a.download="diff_p"+(state.cur+1)+".png"; a.click();
+  });
+});
+
+$("dlPdf").addEventListener("click",async()=>{
+  const {jsPDF}=window.jspdf;
+  $("status").innerHTML='<span class="busy">PDF生成中…</span>';
+  let pdf=null;
+  for(let i=0;i<state.pages;i++){
+    await buildDiff(i);
+    const img=out.toDataURL("image/png");
+    const w=out.width, h=out.height;
+    const orient = w>h ? "l":"p";
+    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[w,h]}); }
+    else { pdf.addPage([w,h],orient); }
+    pdf.addImage(img,"PNG",0,0,w,h);
+  }
+  pdf.save("diff.pdf");
+  $("status").textContent="PDFを保存しました";
+});
+</script>
+</body>
+</html>
