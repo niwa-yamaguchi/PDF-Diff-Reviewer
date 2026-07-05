@@ -100,6 +100,7 @@
     width:14px;height:14px;border-radius:50%;background:var(--signal);
     cursor:pointer;border:2px solid var(--ink);
   }
+  input[type=range]:disabled{opacity:.4;cursor:not-allowed}
   .nudge{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
   .nudge button, .btn{
     font-family:var(--mono);font-size:11px;padding:8px;border-radius:5px;
@@ -139,6 +140,30 @@
   }
   .viewbar .zoomctl button:hover{border-color:var(--signal)}
   .viewbar .zoomctl #zoomLabel{min-width:44px;text-align:center;color:var(--fg)}
+  .viewbar .modectl{display:flex;align-items:center;gap:6px;
+    padding-left:14px;border-left:1px solid var(--line)}
+  .viewbar .modectl button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    height:24px;padding:0 10px;border-radius:4px;cursor:pointer;
+    font-family:var(--mono);font-size:11px;
+  }
+  .viewbar .modectl button:hover{border-color:var(--signal)}
+  .viewbar .modectl button.active{
+    background:var(--signal);color:#1a1206;border-color:var(--signal);font-weight:600;
+  }
+  .viewbar .toggleind{display:flex;align-items:center;gap:6px;
+    padding-left:14px;border-left:1px solid var(--line)}
+  .viewbar .toggleind .side{
+    font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;
+    border:1px solid var(--line-bright);color:var(--muted);
+  }
+  .viewbar .toggleind .side.old.active{border-color:var(--removed);color:var(--removed)}
+  .viewbar .toggleind .side.new.active{border-color:var(--added);color:var(--added)}
+  .viewbar .toggleind button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    width:26px;height:24px;border-radius:4px;cursor:pointer;font-family:var(--mono);
+  }
+  .viewbar .toggleind button:hover{border-color:var(--signal)}
   .viewbar .stat{margin-left:auto;display:flex;gap:16px}
   .viewbar .stat .rm{color:var(--removed)}
   .viewbar .stat .ad{color:var(--added)}
@@ -243,6 +268,16 @@
         <span id="zoomLabel">—</span>
         <button id="zoomIn" title="拡大">＋</button>
         <button id="zoomFit" title="全体表示">全体</button>
+        <button id="zoom1" title="等倍(1:1)">1:1</button>
+      </div>
+      <div class="modectl">
+        <button id="modeDiff" class="active" disabled title="差分表示">差分</button>
+        <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
+      </div>
+      <div class="toggleind" id="toggleInd" style="display:none">
+        <span class="side old active" id="sideOld">OLD</span>
+        <span class="side new" id="sideNew">NEW</span>
+        <button id="toggleFlip" title="新旧を切替 (Space)">⇄</button>
       </div>
       <span id="status">PDFを2つ読み込んでください</span>
       <div class="stat">
@@ -274,6 +309,8 @@ const state = {
   oldDoc:null, newDoc:null, pages:0, cur:0,
   dpi:150, th:128, dx:0, dy:0,
   cache:{}, // pageIndex -> {rm, ad}
+  mode:"diff", toggleSide:"old", toggleCache:null, // 新旧切替モード用（現在ページ分のみ保持）
+  renderToken:0, // buildToggle の再入ガード（世代カウンタ）
 };
 
 const $ = id => document.getElementById(id);
@@ -297,8 +334,8 @@ async function loadPdf(file, which){
   }
 }
 
-// PDFページ → グレースケール ImageData（無い場合は白紙）
-async function renderGray(doc, idx, scale){
+// PDFページ → 白背景のカラーCanvas（無い場合は null）
+async function renderPageCanvas(doc, idx, scale){
   if(!doc || idx >= doc.numPages) return null;
   const page = await doc.getPage(idx+1);
   const vp = page.getViewport({scale});
@@ -307,7 +344,13 @@ async function renderGray(doc, idx, scale){
   const ctx = c.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
   await page.render({canvasContext:ctx, viewport:vp}).promise;
-  return ctx.getImageData(0,0,c.width,c.height);
+  return c;
+}
+
+// PDFページ → グレースケール ImageData（無い場合は白紙）
+async function renderGray(doc, idx, scale){
+  const c = await renderPageCanvas(doc, idx, scale);
+  return c ? c.getContext("2d").getImageData(0,0,c.width,c.height) : null;
 }
 
 function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
@@ -360,9 +403,80 @@ async function buildDiff(idx){
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
 }
 
+// 新旧切替モード：旧・新それぞれのページCanvasをキャッシュし、選択中の版だけを描画する
+async function buildToggle(idx){
+  const token = ++state.renderToken;
+  const scale = state.dpi/72;
+  if(!state.toggleCache || state.toggleCache.idx !== idx){
+    $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
+    const [oldC, newC] = await Promise.all([
+      renderPageCanvas(state.oldDoc, idx, scale),
+      renderPageCanvas(state.newDoc, idx, scale)
+    ]);
+    if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
+    const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
+    const nw = newC?newC.width:0, nh = newC?newC.height:0;
+    state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh};
+  }
+  const {ow, oh, nw, nh} = state.toggleCache;
+  const W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
+  const H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
+  const width  = Math.max(ow, nw, W, 1);
+  const height = Math.max(oh, nh, H, 1);
+  out.width = width; out.height = height;
+
+  drawToggleSide();
+
+  $("pageLabel").textContent = (idx+1)+" / "+state.pages;
+  $("statRm").textContent = "削除 —";
+  $("statAd").textContent = "追加 —";
+  $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
+  $("dlPng").disabled=false; $("dlPdf").disabled=false;
+}
+
+// 選択中の版だけを out に描画（PDF再レンダ無し・瞬時）
+function drawToggleSide(){
+  const c = state.toggleCache;
+  if(!c) return;
+  octx.clearRect(0,0,out.width,out.height);
+  octx.fillStyle = "#fff"; octx.fillRect(0,0,out.width,out.height);
+  const side = state.toggleSide;
+  const img = side==="old" ? c.oldC : c.newC;
+  if(img){
+    if(side==="old") octx.drawImage(img,0,0);
+    else octx.drawImage(img,state.dx,state.dy);
+  } else {
+    octx.fillStyle = "#7f8f9e";
+    octx.font = "20px sans-serif";
+    octx.textAlign = "center"; octx.textBaseline = "middle";
+    octx.fillText("この版にこのページはありません", out.width/2, out.height/2);
+  }
+  out.style.display="block"; $("ph").style.display="none";
+  updateToggleIndicator();
+}
+
+function updateToggleIndicator(){
+  $("sideOld").classList.toggle("active", state.toggleSide==="old");
+  $("sideNew").classList.toggle("active", state.toggleSide==="new");
+}
+
+function flipSide(){
+  state.toggleSide = state.toggleSide==="old" ? "new" : "old";
+  drawToggleSide();
+  $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
+}
+
+function setModeUI(){
+  $("modeDiff").classList.toggle("active", state.mode==="diff");
+  $("modeToggle").classList.toggle("active", state.mode==="toggle");
+  $("toggleInd").style.display = state.mode==="toggle" ? "flex" : "none";
+  $("th").disabled = state.mode==="toggle";
+}
+
 async function show(idx){
   if(idx<0||idx>=state.pages) return;
-  state.cur=idx; await buildDiff(idx);
+  state.cur=idx;
+  if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
 }
 
 // ── ズーム & パン ──
@@ -423,6 +537,33 @@ wrap.addEventListener("dblclick", fitView); // ダブルクリックで全体表
 $("zoomIn").addEventListener("click", ()=>zoomCenter(1.25));
 $("zoomOut").addEventListener("click", ()=>zoomCenter(1/1.25));
 $("zoomFit").addEventListener("click", fitView);
+$("zoom1").addEventListener("click", ()=>{ if(hasImage()) zoomCenter(1/view.scale); });
+
+// ── モード切替（差分 / 新旧切替） ──
+$("modeDiff").addEventListener("click", async ()=>{
+  if(state.mode==="diff" || !hasImage()) return;
+  state.mode="diff"; setModeUI();
+  $("status").innerHTML='<span class="busy">差分を再計算中…</span>';
+  if(state.pages) await show(state.cur);
+});
+$("modeToggle").addEventListener("click", async ()=>{
+  if(state.mode==="toggle" || !hasImage()) return;
+  state.mode="toggle"; state.toggleCache=null; setModeUI();
+  if(state.pages) await show(state.cur);
+});
+$("toggleFlip").addEventListener("click", flipSide);
+
+// Space キーで新旧切替（トグルモード時のみ）
+document.addEventListener("keydown", e=>{
+  if(e.code!=="Space" || e.repeat) return;
+  const tag = (e.target && e.target.tagName) || "";
+  if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return;
+  if(e.target && e.target.isContentEditable) return;
+  if(state.mode==="toggle" && hasImage()){
+    e.preventDefault();
+    flipSide();
+  }
+});
 
 // ── イベント ──
 $("fileOld").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.files[0],"old"));
@@ -436,22 +577,31 @@ $("fileNew").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.fi
 });
 
 $("dpi").addEventListener("input",e=>{state.dpi=+e.target.value;$("dpiVal").textContent=e.target.value;});
-$("dpi").addEventListener("change",async()=>{state.cache={};if(state.pages){await show(state.cur); fitView();}});
+$("dpi").addEventListener("change",async()=>{
+  state.cache={}; state.toggleCache=null;
+  if(state.pages){await show(state.cur); fitView();}
+});
 $("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
-$("th").addEventListener("change",()=>{if(state.pages)show(state.cur);});
+$("th").addEventListener("change",()=>{if(state.mode==="diff" && state.pages)show(state.cur);});
 
 document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
   b.addEventListener("click",()=>{
     state.dx+=(+b.dataset.dx); state.dy+=(+b.dataset.dy);
     $("nudgeReset").textContent=state.dx+","+state.dy;
-    if(state.pages)show(state.cur);
+    if(!state.pages) return;
+    if(state.mode==="toggle") drawToggleSide(); else show(state.cur);
   });
 });
 $("nudgeReset").addEventListener("click",()=>{
-  state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";if(state.pages)show(state.cur);
+  state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
+  if(!state.pages) return;
+  if(state.mode==="toggle") drawToggleSide(); else show(state.cur);
 });
 
-$("run").addEventListener("click",async()=>{await show(0); fitView();});
+$("run").addEventListener("click",async()=>{
+  $("modeDiff").disabled=false; $("modeToggle").disabled=false;
+  await show(0); fitView();
+});
 $("prev").addEventListener("click",()=>show(state.cur-1));
 $("next").addEventListener("click",()=>show(state.cur+1));
 
@@ -459,7 +609,10 @@ $("dlPng").addEventListener("click",()=>{
   out.toBlob(b=>{
     const a=document.createElement("a");
     a.href=URL.createObjectURL(b);
-    a.download="diff_p"+(state.cur+1)+".png"; a.click();
+    const name = state.mode==="toggle"
+      ? (state.toggleSide==="new" ? "new_p"+(state.cur+1)+".png" : "old_p"+(state.cur+1)+".png")
+      : "diff_p"+(state.cur+1)+".png";
+    a.download=name; a.click();
   });
 });
 
@@ -477,6 +630,7 @@ $("dlPdf").addEventListener("click",async()=>{
     pdf.addImage(img,"PNG",0,0,w,h);
   }
   pdf.save("diff.pdf");
+  await show(state.cur);
   $("status").textContent="PDFを保存しました";
 });
 </script>
