@@ -6,6 +6,7 @@
 <title>PDF差分レビューア — PDF Diff Reviewer</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
 <style>
   :root{
     --ink:#0e151d;          /* 作業面（製図インク地） */
@@ -17,6 +18,8 @@
     --muted:#7f8f9e;
     --removed:#ff5b57;      /* 旧版のみ = 削除 */
     --added:#4d8dff;        /* 新版のみ = 追加 */
+    --added-text:#2fa84f;   /* テキスト差分モードの追加（緑） */
+    --changed:#e8b500;      /* テキスト差分モードの変更（黄） */
     --signal:#f4b942;       /* 操作系 = 見当色（計器の琥珀） */
     --signal-dim:#c8952a;
     --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
@@ -63,6 +66,18 @@
     border-right:1px solid var(--line);padding:18px;overflow:auto;
     display:flex;flex-direction:column;gap:20px;background:var(--panel);
   }
+  .topmode{display:flex;gap:6px}
+  .topmode button{
+    flex:1;font-family:var(--mono);font-size:11px;padding:8px;border-radius:5px;
+    border:1px solid var(--line-bright);background:var(--panel-2);color:var(--fg);
+    cursor:pointer;transition:border-color .12s,background .12s;
+  }
+  .topmode button:hover{border-color:var(--signal)}
+  .topmode button.active{
+    background:var(--signal);color:#1a1206;border-color:var(--signal);font-weight:600;
+  }
+  #visualCtrl,#textCtrl{display:flex;flex-direction:column;gap:20px}
+
   .field{display:flex;flex-direction:column;gap:8px}
   .field > .label{
     font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
@@ -189,6 +204,38 @@
   .placeholder .mark{
     font-size:30px;color:var(--line-bright);margin-bottom:10px;letter-spacing:.3em;
   }
+  /* ── テキスト比較パネル（ページ上ハイライト方式） ── */
+  .text-panel{
+    flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;
+  }
+  #textStatus{margin-left:auto}
+  #textStatus.busy{color:var(--signal)}
+  .viewbar .text-legend{
+    display:flex;align-items:center;gap:14px;padding-left:14px;
+    border-left:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);
+  }
+  .viewbar .text-legend .k{display:flex;align-items:center;gap:6px}
+  #textView{flex:1;display:flex;overflow:hidden;min-height:0}
+  .text-pane{flex:1 1 50%;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
+  .text-pane:last-child{border-right:none}
+  .text-pane-label{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);
+  }
+  .text-canvas-wrap{
+    flex:1;overflow:hidden;position:relative;
+    background-image:
+      linear-gradient(var(--panel) 1px,transparent 1px),
+      linear-gradient(90deg,var(--panel) 1px,transparent 1px);
+    background-size:22px 22px;background-position:center;
+    cursor:grab;touch-action:none;
+  }
+  .text-canvas-wrap.panning{cursor:grabbing}
+  .text-canvas-wrap canvas{
+    position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;
+    background:#fff;box-shadow:0 8px 40px rgba(0,0,0,.55);image-rendering:crisp-edges;
+  }
+
   .busy{color:var(--signal)}
   footer{
     border-top:1px solid var(--line);padding:8px 20px;
@@ -212,6 +259,11 @@
 
 <main>
   <aside>
+    <div class="topmode">
+      <button id="topVisual" class="active">図面比較</button>
+      <button id="topText">テキスト比較</button>
+    </div>
+
     <div class="field">
       <span class="label">旧版 <span style="color:var(--removed)">OLD</span></span>
       <label class="drop old" id="dropOld">
@@ -229,35 +281,43 @@
       </label>
     </div>
 
-    <div class="field ctrl">
-      <div class="row"><span>解像度 DPI</span><span class="val" id="dpiVal">150</span></div>
-      <input type="range" id="dpi" min="72" max="300" step="6" value="150">
-    </div>
-    <div class="field ctrl">
-      <div class="row"><span>インク判定 しきい値</span><span class="val" id="thVal">128</span></div>
-      <input type="range" id="th" min="40" max="220" step="1" value="128">
-    </div>
+    <div id="visualCtrl">
+      <div class="field ctrl">
+        <div class="row"><span>解像度 DPI</span><span class="val" id="dpiVal">150</span></div>
+        <input type="range" id="dpi" min="72" max="300" step="6" value="150">
+      </div>
+      <div class="field ctrl">
+        <div class="row"><span>インク判定 しきい値</span><span class="val" id="thVal">128</span></div>
+        <input type="range" id="th" min="40" max="220" step="1" value="128">
+      </div>
 
-    <div class="field">
-      <span class="label">位置合わせ（新版を移動）</span>
-      <div class="nudge">
-        <span></span><button data-dx="0" data-dy="-1">▲</button><span></span>
-        <button data-dx="-1" data-dy="0">◀</button>
-        <button class="c" id="nudgeReset">0,0</button>
-        <button data-dx="1" data-dy="0">▶</button>
-        <span></span><button data-dx="0" data-dy="1">▼</button><span></span>
+      <div class="field">
+        <span class="label">位置合わせ（新版を移動）</span>
+        <div class="nudge">
+          <span></span><button data-dx="0" data-dy="-1">▲</button><span></span>
+          <button data-dx="-1" data-dy="0">◀</button>
+          <button class="c" id="nudgeReset">0,0</button>
+          <button data-dx="1" data-dy="0">▶</button>
+          <span></span><button data-dx="0" data-dy="1">▼</button><span></span>
+        </div>
+      </div>
+
+      <div class="btns">
+        <button class="btn primary" id="run" disabled>差分を表示</button>
+        <button class="btn" id="dlPng" disabled>現在ページをPNG保存</button>
+        <button class="btn" id="dlPdf" disabled>全ページをPDF保存</button>
       </div>
     </div>
 
-    <div class="btns">
-      <button class="btn primary" id="run" disabled>差分を表示</button>
-      <button class="btn" id="dlPng" disabled>現在ページをPNG保存</button>
-      <button class="btn" id="dlPdf" disabled>全ページをPDF保存</button>
+    <div id="textCtrl" style="display:none">
+      <div class="btns">
+        <button class="btn primary" id="runText" disabled>テキスト差分を表示</button>
+      </div>
     </div>
   </aside>
 
   <section class="view">
-    <div class="viewbar">
+    <div class="viewbar" id="viewbar">
       <div class="pager">
         <button id="prev">‹</button>
         <span id="pageLabel">– / –</span>
@@ -292,6 +352,41 @@
         旧版と新版のPDFを読み込むと<br>変更箇所が赤（削除）と青（追加）で重なって表示されます
       </div>
     </div>
+    <div class="text-panel" id="textPanel" style="display:none">
+      <div class="viewbar" id="textBar">
+        <div class="pager">
+          <button id="textPrev">‹</button>
+          <span id="textPageInd">– / –</span>
+          <button id="textNext">›</button>
+        </div>
+        <div class="zoomctl">
+          <button id="textZoomOut" title="縮小">−</button>
+          <button id="textZoomIn" title="拡大">＋</button>
+          <button id="textZoomFit" title="全体表示">全体</button>
+          <button id="textZoom1" title="等倍(1:1)">1:1</button>
+        </div>
+        <div class="text-legend">
+          <span class="k"><span class="swatch" style="background:var(--removed)"></span>削除</span>
+          <span class="k"><span class="swatch" style="background:var(--added-text)"></span>追加</span>
+          <span class="k"><span class="swatch" style="background:var(--changed)"></span>変更</span>
+        </div>
+        <span id="textStatus">テキスト比較モード — PDFを2つ読み込み「テキスト差分を表示」を押してください</span>
+      </div>
+      <div id="textView">
+        <div class="text-pane old">
+          <div class="text-pane-label" style="color:var(--removed)">OLD</div>
+          <div class="text-canvas-wrap">
+            <canvas id="oldTextCanvas" width="10" height="10"></canvas>
+          </div>
+        </div>
+        <div class="text-pane new">
+          <div class="text-pane-label" style="color:var(--added)">NEW</div>
+          <div class="text-canvas-wrap">
+            <canvas id="newTextCanvas" width="10" height="10"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -311,6 +406,15 @@ const state = {
   cache:{}, // pageIndex -> {rm, ad}
   mode:"diff", toggleSide:"old", toggleCache:null, // 新旧切替モード用（現在ページ分のみ保持）
   renderToken:0, // buildToggle の再入ガード（世代カウンタ）
+  rendered:false, // out に描画済みか（visual再切替時の表示復元用）
+  topMode:"visual", // "visual"(図面比較) | "text"(テキスト比較)
+  textScale:null, // ページ描画scale(=dpi/72)。抽出には使わない（描画直前に設定）
+  textCache:null, // {old:[pageLines...], new:[pageLines...]}（位置つき抽出結果。scale非依存）
+  textHi:null, // {old:Map<pageIdx,[{token,color}...]>, new:Map<...>}（ハイライト集約）
+  textPage:0, // テキストモードの現在ページ(0基点)
+  textView:{scale:1, tx:0, ty:0}, // 旧新共有ビュー状態
+  textToken:0, // 抽出処理の再入ガード（renderToken と同型）
+  textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
 };
 
 const $ = id => document.getElementById(id);
@@ -326,11 +430,15 @@ async function loadPdf(file, which){
   const doc = await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;
   if(which==="old"){ state.oldDoc = doc; setDrop($("dropOld"), file.name); }
   else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
+  state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
+  state.textHi = null; state.textPage = 0;
   if(state.oldDoc && state.newDoc){
     state.pages = Math.max(state.oldDoc.numPages, state.newDoc.numPages);
     state.cur = 0; state.cache = {};
     $("run").disabled = false;
+    $("runText").disabled = false;
     $("status").textContent = "準備完了 — 「差分を表示」を押してください";
+    $("textStatus").textContent = "準備完了 — 「テキスト差分を表示」を押してください";
   }
 }
 
@@ -394,7 +502,7 @@ async function buildDiff(idx){
     }
   }
   octx.putImageData(res,0,0);
-  out.style.display="block"; $("ph").style.display="none";
+  out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
   state.cache[idx] = {rm, ad};
   $("statRm").textContent = "削除 "+rm.toLocaleString();
   $("statAd").textContent = "追加 "+ad.toLocaleString();
@@ -451,7 +559,7 @@ function drawToggleSide(){
     octx.textAlign = "center"; octx.textBaseline = "middle";
     octx.fillText("この版にこのページはありません", out.width/2, out.height/2);
   }
-  out.style.display="block"; $("ph").style.display="none";
+  out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
   updateToggleIndicator();
 }
 
@@ -508,6 +616,7 @@ const zoomCenter = f => zoomAt(f, wrap.clientWidth/2, wrap.clientHeight/2);
 
 // ホイールで拡大縮小（ポインタ位置中心）
 wrap.addEventListener("wheel", e=>{
+  if(state.topMode!=="visual") return;
   if(!hasImage()) return;
   e.preventDefault();
   const r = wrap.getBoundingClientRect();
@@ -517,6 +626,7 @@ wrap.addEventListener("wheel", e=>{
 // ドラッグでパン
 let panning=false, psx=0, psy=0, ptx=0, pty=0;
 wrap.addEventListener("pointerdown", e=>{
+  if(state.topMode!=="visual") return;
   if(!hasImage()) return;
   panning=true; wrap.classList.add("panning"); wrap.setPointerCapture(e.pointerId);
   psx=e.clientX; psy=e.clientY; ptx=view.tx; pty=view.ty;
@@ -555,6 +665,7 @@ $("toggleFlip").addEventListener("click", flipSide);
 
 // Space キーで新旧切替（トグルモード時のみ）
 document.addEventListener("keydown", e=>{
+  if(state.topMode!=="visual") return;
   if(e.code!=="Space" || e.repeat) return;
   const tag = (e.target && e.target.tagName) || "";
   if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return;
@@ -633,6 +744,485 @@ $("dlPdf").addEventListener("click",async()=>{
   await show(state.cur);
   $("status").textContent="PDFを保存しました";
 });
+
+// ── トップモード切替（図面比較 / テキスト比較） ──
+function applyTopMode(){
+  const visual = state.topMode==="visual";
+  $("topVisual").classList.toggle("active", visual);
+  $("topText").classList.toggle("active", !visual);
+  $("visualCtrl").style.display = visual ? "flex" : "none";
+  $("textCtrl").style.display = visual ? "none" : "flex";
+  $("viewbar").style.display = visual ? "flex" : "none";
+  document.querySelector(".canvas-wrap").style.display = visual ? "" : "none";
+  $("textPanel").style.display = visual ? "none" : "flex";
+  if(visual){ if(state.rendered) out.style.display = "block"; } // 描画済みならCanvas表示を復元
+  else { out.style.display = "none"; } // hasImage() 誤判定・パン/ズームの誤発火を防ぐ
+  if(!visual && state.textHi){
+    // テキスト側は描画済みハイライトがあれば現在ページを再描画（往復時の表示復元）
+    const gen = ++state.textRenderToken; // 旧新2ペインへ同一世代を渡す
+    Promise.all([renderTextPage("old", state.textPage, gen), renderTextPage("new", state.textPage, gen)])
+      .then(applyTextTransform);
+  }
+}
+$("topVisual").addEventListener("click", ()=>{
+  if(state.topMode==="visual") return;
+  state.topMode="visual"; applyTopMode();
+});
+$("topText").addEventListener("click", ()=>{
+  if(state.topMode==="text") return;
+  state.topMode="text"; applyTopMode();
+});
+
+// ── テキスト差分モード（ページ上ハイライト方式） ──
+
+// ハイライト色（CSS変数から取得。--removed は図面モードと共用、他はテキスト専用変数）
+const TEXT_HI_COLORS = (() => {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    removed: cs.getPropertyValue("--removed").trim(),
+    added:   cs.getPropertyValue("--added-text").trim(),
+    changed: cs.getPropertyValue("--changed").trim(),
+  };
+})();
+
+// 1ページ分のテキストを行単位に再構成（Y座標でグルーピング→X座標順に連結）。
+// トークンは box化せず item.transform（6要素）と item.width を保持（scale/viewport非依存）。
+async function extractPageTokenLines(doc, idx){
+  const page = await doc.getPage(idx+1);
+  const content = await page.getTextContent();
+  const lines = [];
+  const TOL = 2.5; // 同一行とみなすY座標の許容差
+  let cur = null; // {y, parts:[{x,str,transform,w}]}
+  const flush = () => {
+    if(cur && cur.parts.length){
+      const sorted = cur.parts.slice().sort((a,b)=>a.x-b.x);
+      let text = "";
+      const tokens = [];
+      for(const p of sorted){
+        tokens.push({str:p.str, off:text.length, transform:p.transform.slice(), w:p.w});
+        text += p.str;
+      }
+      lines.push({text:text.replace(/\s+$/,""), tokens}); // 末尾空白のみトリム→先頭offは不変
+    }
+    cur = null;
+  };
+  for(const it of content.items){
+    const y = it.transform[5];
+    if(cur===null || Math.abs(cur.y-y) > TOL){
+      flush();
+      cur = {y, parts:[]};
+    }
+    if(it.str) cur.parts.push({x:it.transform[4], str:it.str, transform:it.transform, w:it.width});
+    if(it.hasEOL){ flush(); cur = null; } // 明示的な行末なら以降の近接判定を持ち越さない
+  }
+  flush();
+  return lines;
+}
+
+// 文書全体を位置つきでページ配列として取得（[pageLines, ...]）
+async function extractDocTokens(doc, label){
+  if(!doc) return [];
+  const pages = [];
+  for(let i=0;i<doc.numPages;i++){
+    pages.push(await extractPageTokenLines(doc, i));
+    $("textStatus").textContent = label+"抽出中…（"+(i+1)+"/"+doc.numPages+"）";
+  }
+  return pages;
+}
+
+// [pageLines...] を {text, pageIndex, tokens} のグローバル行配列へ平坦化
+function flattenLines(pages){
+  const flat = [];
+  pages.forEach((pageLines, pageIndex) => {
+    pageLines.forEach(line => flat.push({text:line.text, pageIndex, tokens:line.tokens}));
+  });
+  return flat;
+}
+
+function pushHiEntry(map, pageIndex, token, color){
+  if(!map.has(pageIndex)) map.set(pageIndex, []);
+  map.get(pageIndex).push({token, color});
+}
+
+// diff-match-patch の行差分エントリ（複数行が1つに連結された文字列）の行数
+function diffChunkLineCount(text){
+  const n = text.split("\n").length;
+  return text.endsWith("\n") ? n-1 : n;
+}
+
+// 文字範囲[start,end)とトークン[off,off+len)が重なるか（半開区間・境界一致は除外）
+function rangeOverlapsToken(tok, start, end){
+  return tok.off < end && (tok.off + tok.str.length) > start;
+}
+
+// 行diff＋行内文字diffからページ×side別のハイライトを集約
+function buildTextHighlights(){
+  const oldFlat = flattenLines(state.textCache.old);
+  const newFlat = flattenLines(state.textCache.new);
+  const oldText = oldFlat.map(l=>l.text).join("\n");
+  const newText = newFlat.map(l=>l.text).join("\n");
+
+  const hi = { old:new Map(), new:new Map() };
+  const dmp = new diff_match_patch();
+  const a = dmp.diff_linesToChars_(oldText, newText);
+  const diffs = dmp.diff_main(a.chars1, a.chars2, false);
+  dmp.diff_charsToLines_(diffs, a.lineArray);
+
+  const highlightLine = (flat, side, idx, color, rangeStart, rangeEnd) => {
+    const line = flat[idx];
+    for(const tok of line.tokens){
+      if(rangeStart==null || rangeOverlapsToken(tok, rangeStart, rangeEnd)){
+        pushHiEntry(hi[side], line.pageIndex, tok, color);
+      }
+    }
+  };
+
+  let oldIdx = 0, newIdx = 0;
+  for(let i=0;i<diffs.length;i++){
+    const op = diffs[i][0], text = diffs[i][1];
+    const cnt = diffChunkLineCount(text);
+    if(op===0){ oldIdx += cnt; newIdx += cnt; continue; }
+    if(op===-1){
+      const next = diffs[i+1];
+      if(next && next[0]===1){
+        const addCnt = diffChunkLineCount(next[1]);
+        const n = Math.min(cnt, addCnt);
+        for(let k=0;k<n;k++){
+          const oldLine = oldFlat[oldIdx+k], newLine = newFlat[newIdx+k];
+          const cdiffs = dmp.diff_main(oldLine.text, newLine.text);
+          dmp.diff_cleanupSemantic(cdiffs);
+          let oldPos=0, newPos=0;
+          for(const part of cdiffs){
+            const pop = part[0], ptext = part[1];
+            if(pop===0){ oldPos+=ptext.length; newPos+=ptext.length; }
+            else if(pop===-1){
+              highlightLine(oldFlat, "old", oldIdx+k, "changed", oldPos, oldPos+ptext.length);
+              oldPos += ptext.length;
+            } else {
+              highlightLine(newFlat, "new", newIdx+k, "changed", newPos, newPos+ptext.length);
+              newPos += ptext.length;
+            }
+          }
+        }
+        for(let k=n;k<cnt;k++)    highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
+        for(let k=n;k<addCnt;k++) highlightLine(newFlat, "new", newIdx+k, "added",   null);
+        oldIdx += cnt; newIdx += addCnt;
+        i++; // 対にした追加ブロックを消費済みとしてスキップ
+        continue;
+      }
+      for(let k=0;k<cnt;k++) highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
+      oldIdx += cnt;
+      continue;
+    }
+    if(op===1){
+      for(let k=0;k<cnt;k++) highlightLine(newFlat, "new", newIdx+k, "added", null);
+      newIdx += cnt;
+    }
+  }
+  return hi;
+}
+
+// ── 表領域のセル格子diff（フェーズ2） ──
+const TABLE_ROWS_MIN = 3;   // 表と判定する最小行数
+const TABLE_COLS_MIN = 2;   // 表と判定する最小列数
+const TABLE_XQ = 8;         // 列クラスタリングのX許容差（PDFユーザ空間単位）
+
+// X座標配列を近接クラスタへグルーピングし、各クラスタの代表X値を返す
+function clusterColumns(xs, tol){
+  const sorted = xs.slice().sort((a,b)=>a-b);
+  const clusters = [];
+  for(const x of sorted){
+    const last = clusters[clusters.length-1];
+    if(last && x - last.max <= tol){ last.max=x; last.sum+=x; last.n++; }
+    else clusters.push({max:x, sum:x, n:1});
+  }
+  return clusters.map(c=>c.sum/c.n);
+}
+
+// ページ内トークンのX/Y位置から表候補領域を検出（罫線は使わずテキスト位置のみ）
+function detectTables(pageLines){
+  if(!pageLines || pageLines.length < TABLE_ROWS_MIN) return [];
+  const allX = [];
+  for(const line of pageLines) for(const tok of line.tokens) allX.push(tok.transform[4]);
+  if(!allX.length) return [];
+  const cols = clusterColumns(allX, TABLE_XQ);
+  if(cols.length < TABLE_COLS_MIN) return [];
+
+  const nearestCol = x => {
+    let best=0, bd=Infinity;
+    for(let i=0;i<cols.length;i++){ const d=Math.abs(cols[i]-x); if(d<bd){ bd=d; best=i; } }
+    return best;
+  };
+  const lineColSets = pageLines.map(line => {
+    const set = new Set();
+    for(const tok of line.tokens) set.add(nearestCol(tok.transform[4]));
+    return set;
+  });
+
+  const tables = [];
+  let runStart = -1, unionCols = new Set();
+  const flushRun = end => {
+    if(runStart>=0 && (end-runStart)>=TABLE_ROWS_MIN && unionCols.size>=TABLE_COLS_MIN){
+      tables.push(buildTableFromRun(pageLines, runStart, end, [...unionCols].sort((x,y)=>x-y), nearestCol));
+    }
+    runStart = -1; unionCols = new Set();
+  };
+  for(let i=0;i<pageLines.length;i++){
+    if(lineColSets[i].size >= TABLE_COLS_MIN){
+      if(runStart<0) runStart = i;
+      for(const c of lineColSets[i]) unionCols.add(c);
+    } else flushRun(i);
+  }
+  flushRun(pageLines.length);
+  return tables;
+}
+
+function buildTableFromRun(pageLines, rowStart, rowEnd, colIdxs, nearestCol){
+  const colIndexMap = new Map(colIdxs.map((c,i)=>[c,i]));
+  const rows = [];
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+  for(let r=rowStart;r<rowEnd;r++){
+    const cells = colIdxs.map(()=>[]);
+    for(const tok of pageLines[r].tokens){
+      const ci = nearestCol(tok.transform[4]);
+      if(colIndexMap.has(ci)) cells[colIndexMap.get(ci)].push(tok);
+      const x = tok.transform[4], y = tok.transform[5];
+      if(x<minX) minX=x; if(x>maxX) maxX=x;
+      if(y<minY) minY=y; if(y>maxY) maxY=y;
+    }
+    rows.push(cells);
+  }
+  return { rows, rowCount:rows.length, colCount:colIdxs.length, box:{x0:minX,y0:minY,x1:maxX,y1:maxY} };
+}
+
+function tableCellText(cell){
+  return cell.slice().sort((a,b)=>a.transform[4]-b.transform[4]).map(t=>t.str).join("").trim();
+}
+
+// トークンのベースライン原点が矩形内にあるものを textHi[side] から除去（行diff由来との二重着色回避）
+function removeHighlightsInBox(map, pageIndex, box){
+  const arr = map.get(pageIndex);
+  if(!arr) return;
+  map.set(pageIndex, arr.filter(({token}) => {
+    const x = token.transform[4], y = token.transform[5];
+    const inside = x>=box.x0-1e-6 && x<=box.x1+1e-6 && y>=box.y0-1e-6 && y<=box.y1+1e-6;
+    return !inside;
+  }));
+}
+
+// 旧新の行数・列数が一致する場合のみ格子diffを適用（不一致時は行diff着色へフォールバック）
+function applyTableDiff(oldTable, newTable, pageIndex, hi){
+  if(oldTable.rowCount !== newTable.rowCount || oldTable.colCount !== newTable.colCount) return;
+  removeHighlightsInBox(hi.old, pageIndex, oldTable.box);
+  removeHighlightsInBox(hi.new, pageIndex, newTable.box);
+  for(let r=0;r<oldTable.rowCount;r++){
+    for(let c=0;c<oldTable.colCount;c++){
+      const oldCell = oldTable.rows[r][c], newCell = newTable.rows[r][c];
+      const oldStr = tableCellText(oldCell), newStr = tableCellText(newCell);
+      if(oldStr === newStr) continue; // 共通セルは無着色
+      if(oldStr && !newStr){
+        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "removed");
+      } else if(!oldStr && newStr){
+        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "added");
+      } else {
+        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "changed");
+        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "changed");
+      }
+    }
+  }
+}
+
+// ページ単位で旧新の表を出現順に対応づけ、格子diffで上書き
+function applyTableHighlights(hi){
+  const oldPages = state.textCache.old, newPages = state.textCache.new;
+  const maxPages = Math.max(oldPages.length, newPages.length);
+  for(let p=0;p<maxPages;p++){
+    const oldTables = detectTables(oldPages[p] || []);
+    const newTables = detectTables(newPages[p] || []);
+    const n = Math.min(oldTables.length, newTables.length);
+    for(let i=0;i<n;i++) applyTableDiff(oldTables[i], newTables[i], p, hi);
+  }
+}
+
+// ── 描画 ──
+
+// pdf.js textlayer と同じ単位分離でトークンのAABBを求め、色枠を焼き込む
+function drawTokenHighlight(ctx, vp, token, colorKey){
+  const tx = pdfjsLib.Util.transform(vp.transform, token.transform);
+  const advLen = Math.hypot(tx[0], tx[1]) || 1;
+  const ux = tx[0]/advLen, uy = tx[1]/advLen; // 送り方向単位ベクトル
+  const wid = token.w * vp.scale;             // 幅は item.width×scale（token.transformには掛けない）
+  const descFrac = 0.2;                       // ディセント分の余白
+  const p0x = tx[4] - tx[2]*descFrac, p0y = tx[5] - tx[3]*descFrac;
+  const vx = tx[2]*(1+descFrac), vy = tx[3]*(1+descFrac); // 縦方向ベクトル（アセント方向、高さ=hypot(tx[2],tx[3])基準）
+  const p1x = p0x + ux*wid, p1y = p0y + uy*wid;
+  const p2x = p0x + vx, p2y = p0y + vy;
+  const p3x = p1x + vx, p3y = p1y + vy;
+  const xs=[p0x,p1x,p2x,p3x], ys=[p0y,p1y,p2y,p3y];
+  const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+  const color = TEXT_HI_COLORS[colorKey] || "#fff";
+  ctx.save();
+  ctx.globalAlpha = 0.28;
+  ctx.fillStyle = color;
+  ctx.fillRect(minX, minY, maxX-minX, maxY-minY);
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(minX+0.5, minY+0.5, Math.max(maxX-minX-1,0), Math.max(maxY-minY-1,0));
+  ctx.restore();
+}
+
+// 指定側・ページを描画し、ハイライトを焼き込む（再入ガードでstale-draw防止）
+// gen は呼び出し側が採番する世代トークン（旧新2ペインへ同一世代を渡し、互いを無効化しないようにする）
+async function renderTextPage(side, pageIndex, gen){
+  const doc = side==="old" ? state.oldDoc : state.newDoc;
+  const canvas = side==="old" ? $("oldTextCanvas") : $("newTextCanvas");
+  const ctx = canvas.getContext("2d");
+  if(!doc || pageIndex>=doc.numPages){
+    canvas.width = 10; canvas.height = 10;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    return;
+  }
+  const page = await doc.getPage(pageIndex+1);
+  const vp = page.getViewport({scale: state.textScale});
+  if(gen !== state.textRenderToken) return;
+  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  await page.render({canvasContext:ctx, viewport:vp}).promise;
+  if(gen !== state.textRenderToken) return; // 別世代の描画が割り込んだので着色せず終了
+
+  const entries = state.textHi && state.textHi[side] ? state.textHi[side].get(pageIndex) : null;
+  if(entries) for(const {token:tok, color} of entries) drawTokenHighlight(ctx, vp, tok, color);
+}
+
+// ── ズーム/パン/ページング（旧新共有ビュー・topMode==="text"限定） ──
+
+function textTotalPages(){
+  return Math.max(state.oldDoc?state.oldDoc.numPages:0, state.newDoc?state.newDoc.numPages:0);
+}
+
+// 両ペイン共通のワールド寸法（旧新のCanvas実寸の最大値。寸法差は中央寄せで吸収）
+function textWorldSize(){
+  const oldC = $("oldTextCanvas"), newC = $("newTextCanvas");
+  return { W: Math.max(oldC.width||0, newC.width||0, 1), H: Math.max(oldC.height||0, newC.height||0, 1) };
+}
+
+function applyTextTransform(){
+  const {W,H} = textWorldSize();
+  const v = state.textView;
+  [$("oldTextCanvas"), $("newTextCanvas")].forEach(c=>{
+    const offX = (W-c.width)/2, offY = (H-c.height)/2;
+    c.style.transform = `translate(${v.tx+offX*v.scale}px, ${v.ty+offY*v.scale}px) scale(${v.scale})`;
+  });
+}
+
+function fitTextView(){
+  const {W,H} = textWorldSize();
+  const wrapEl = document.querySelector(".text-pane.old .text-canvas-wrap");
+  const Ww = wrapEl.clientWidth, Wh = wrapEl.clientHeight;
+  if(!W || !H || !Ww || !Wh) return;
+  const s = Math.min(Ww/W, Wh/H) * 0.92;
+  state.textView.scale = s;
+  state.textView.tx = (Ww-W*s)/2;
+  state.textView.ty = (Wh-H*s)/2;
+  applyTextTransform();
+}
+
+const clampTextScale = s => Math.min(Math.max(s, 0.05), 40);
+function textZoomAt(factor, cx, cy){
+  const v = state.textView;
+  const ns = clampTextScale(v.scale*factor), k = ns/v.scale;
+  v.tx = cx-(cx-v.tx)*k; v.ty = cy-(cy-v.ty)*k; v.scale = ns;
+  applyTextTransform();
+}
+function textZoomCenter(factor){
+  const wrapEl = document.querySelector(".text-pane.old .text-canvas-wrap");
+  textZoomAt(factor, wrapEl.clientWidth/2, wrapEl.clientHeight/2);
+}
+
+async function showTextPage(idx){
+  const total = textTotalPages();
+  if(!total || idx<0 || idx>=total) return;
+  state.textPage = idx;
+  $("textPageInd").textContent = (idx+1)+" / "+total;
+  const gen = ++state.textRenderToken; // 旧新2ペインへ同一世代を渡し、互いのstale-drawガードで潰し合わないようにする
+  await Promise.all([renderTextPage("old", idx, gen), renderTextPage("new", idx, gen)]);
+  applyTextTransform();
+}
+
+document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
+  wrapEl.addEventListener("wheel", e=>{
+    if(state.topMode!=="text") return;
+    if(!state.textHi) return;
+    e.preventDefault();
+    const r = wrapEl.getBoundingClientRect();
+    textZoomAt(e.deltaY<0 ? 1.12 : 1/1.12, e.clientX-r.left, e.clientY-r.top);
+  }, {passive:false});
+});
+
+let textPanning=false, tpsx=0, tpsy=0, tptx=0, tpty=0;
+document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
+  wrapEl.addEventListener("pointerdown", e=>{
+    if(state.topMode!=="text") return;
+    if(!state.textHi) return;
+    textPanning=true; wrapEl.classList.add("panning"); wrapEl.setPointerCapture(e.pointerId);
+    tpsx=e.clientX; tpsy=e.clientY; tptx=state.textView.tx; tpty=state.textView.ty;
+  });
+  wrapEl.addEventListener("pointermove", e=>{
+    if(state.topMode!=="text") return;
+    if(!textPanning) return;
+    state.textView.tx = tptx+(e.clientX-tpsx); state.textView.ty = tpty+(e.clientY-tpsy);
+    applyTextTransform();
+  });
+  const endTextPan = e=>{
+    if(!textPanning) return;
+    textPanning=false; wrapEl.classList.remove("panning");
+    try{ wrapEl.releasePointerCapture(e.pointerId); }catch(_){}
+  };
+  wrapEl.addEventListener("pointerup", endTextPan);
+  wrapEl.addEventListener("pointercancel", endTextPan);
+});
+
+$("textPrev").addEventListener("click", ()=>{ if(state.topMode!=="text") return; showTextPage(state.textPage-1); });
+$("textNext").addEventListener("click", ()=>{ if(state.topMode!=="text") return; showTextPage(state.textPage+1); });
+$("textZoomIn").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1.25); });
+$("textZoomOut").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1/1.25); });
+$("textZoomFit").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) fitTextView(); });
+$("textZoom1").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1/state.textView.scale); });
+
+async function runTextDiff(){
+  const token = ++state.textToken;
+  $("textStatus").classList.add("busy");
+  $("textStatus").textContent = "抽出中…";
+
+  if(!state.textCache){
+    const oldPages = await extractDocTokens(state.oldDoc, "旧版: ");
+    if(token !== state.textToken) return; // 別の抽出が割り込んだので破棄
+    const newPages = await extractDocTokens(state.newDoc, "新版: ");
+    if(token !== state.textToken) return;
+    state.textCache = {old:oldPages, new:newPages};
+  }
+  $("textStatus").classList.remove("busy");
+
+  const hasText = state.textCache.old.some(p=>p.some(l=>l.text.trim())) ||
+                  state.textCache.new.some(p=>p.some(l=>l.text.trim()));
+  if(!hasText){
+    $("textStatus").textContent = "テキストレイヤがありません。図面比較で確認してください";
+    return;
+  }
+
+  const hi = buildTextHighlights();
+  applyTableHighlights(hi);
+  state.textHi = hi;
+  state.textScale = state.dpi/72;
+  state.textPage = 0;
+
+  await showTextPage(0);
+  fitTextView();
+  $("textStatus").textContent = "テキスト差分を表示中";
+}
+
+$("runText").addEventListener("click", runTextDiff);
 </script>
 </body>
 </html>
