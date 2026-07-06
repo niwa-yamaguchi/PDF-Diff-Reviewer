@@ -21,6 +21,7 @@
     --added-text:#2fa84f;   /* テキスト差分モードの追加（緑） */
     --changed:#e8b500;      /* テキスト差分モードの変更（黄） */
     --box:#ff9500;          /* 変更箇所の囲み枠 */
+    --box-fill:rgba(255,149,0,0.18); /* 変更枠の面塗り（枠色の薄塗り） */
     --signal:#f4b942;       /* 操作系 = 見当色（計器の琥珀） */
     --signal-dim:#c8952a;
     --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
@@ -254,7 +255,7 @@
     <span class="k"><span class="swatch" style="background:#3c3c3c"></span>共通</span>
     <span class="k"><span class="swatch" style="background:var(--removed)"></span>削除（旧版のみ）</span>
     <span class="k"><span class="swatch" style="background:var(--added)"></span>追加（新版のみ）</span>
-    <span class="k"><span class="swatch" style="border:2px solid var(--box);background:rgba(255,149,0,0.18)"></span>変更枠</span>
+    <span class="k"><span class="swatch" style="border:2px solid var(--box);background:var(--box-fill)"></span>変更枠</span>
   </div>
   <div class="privacy"><span class="dot"></span>ブラウザ内で処理・外部送信なし</div>
 </header>
@@ -483,6 +484,7 @@ function blockSize(){ return Math.max(4, Math.round(BOX_BASE * state.dpi / BOX_B
 // 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
 // 1ブロック膨張してからBFSで連結成分をラベリングする。
 function computeBoxes(flags, cols, rows, block, minBlocks){
+  const DIRS4 = [[-1,0],[1,0],[0,-1],[0,1]]; // 4近傍（BFS連結・膨張兼用）
   // 1ブロック膨張したフラグ格子 dil を作る（4近傍＋自身を立てる。斜めは含めない）
   const dil = new Uint8Array(cols*rows);
   const offs = [[0,0],[-1,0],[1,0],[0,-1],[0,1]];
@@ -512,8 +514,8 @@ function computeBoxes(flags, cols, rows, block, minBlocks){
         if(flags[cy*cols+cx]) origCount++;
         if(cx<minC)minC=cx; if(cx>maxC)maxC=cx;
         if(cy<minR)minR=cy; if(cy>maxR)maxR=cy;
-        const neigh=[[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]];
-        for(const [nx,ny] of neigh){
+        for(const [dx,dy] of DIRS4){
+          const nx=cx+dx, ny=cy+dy;
           if(nx<0||ny<0||nx>=cols||ny>=rows) continue;
           const ni=ny*cols+nx;
           if(dil[ni]&&!seen[ni]){ seen[ni]=1; qx[tail]=nx; qy[tail]=ny; tail++; }
