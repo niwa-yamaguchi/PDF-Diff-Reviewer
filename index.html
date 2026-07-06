@@ -20,6 +20,8 @@
     --added:#4d8dff;        /* 新版のみ = 追加 */
     --added-text:#2fa84f;   /* テキスト差分モードの追加（緑） */
     --changed:#e8b500;      /* テキスト差分モードの変更（黄） */
+    --box:#ff9500;          /* 変更箇所の囲み枠 */
+    --box-fill:rgba(255,149,0,0.18); /* 変更枠の面塗り（枠色の薄塗り） */
     --signal:#f4b942;       /* 操作系 = 見当色（計器の琥珀） */
     --signal-dim:#c8952a;
     --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
@@ -182,6 +184,7 @@
   .viewbar .stat{margin-left:auto;display:flex;gap:16px}
   .viewbar .stat .rm{color:var(--removed)}
   .viewbar .stat .ad{color:var(--added)}
+  .viewbar .stat .bx{color:var(--box)}
   .canvas-wrap{
     flex:1;overflow:hidden;position:relative;
     background-image:
@@ -253,6 +256,7 @@
     <span class="k"><span class="swatch" style="background:#3c3c3c"></span>共通</span>
     <span class="k"><span class="swatch" style="background:var(--removed)"></span>削除（旧版のみ）</span>
     <span class="k"><span class="swatch" style="background:var(--added)"></span>追加（新版のみ）</span>
+    <span class="k"><span class="swatch" style="border:2px solid var(--box);background:var(--box-fill)"></span>変更枠</span>
   </div>
   <div class="privacy"><span class="dot"></span>ブラウザ内で処理・外部送信なし</div>
 </header>
@@ -335,6 +339,7 @@
       <div class="modectl">
         <button id="modeDiff" class="active" disabled title="差分表示">差分</button>
         <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
+        <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
       </div>
       <div class="toggleind" id="toggleInd" style="display:none">
         <span class="side old active" id="sideOld">OLD</span>
@@ -345,6 +350,7 @@
       <div class="stat">
         <span class="rm" id="statRm">削除 —</span>
         <span class="ad" id="statAd">追加 —</span>
+        <span class="bx" id="statBox">変更箇所 —</span>
       </div>
     </div>
     <div class="canvas-wrap">
@@ -417,6 +423,9 @@ const state = {
   textView:{scale:1, tx:0, ty:0}, // 旧新共有ビュー状態
   textToken:0, // 抽出処理の再入ガード（renderToken と同型）
   textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
+  showBoxes:true, // 変更箇所を四角枠で囲うか
+  cleanImage:null, // 枠なしの差分ImageData（枠のON/OFF切替用キャッシュ）
+  boxes:null, // computeBoxes の結果（現在ページ分）
 };
 
 const $ = id => document.getElementById(id);
@@ -466,6 +475,93 @@ async function renderGray(doc, idx, scale){
 
 function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
 
+// 変更箇所の囲み枠（色・サイズ）に関する定数とヘルパ
+const BOX_COLOR = "#ff9500";
+const BOX_FILL  = "rgba(255,149,0,0.18)";
+const BOX_BASE_DPI = 150;
+const BOX_BASE = 16;
+const BOX_MIN_BLOCKS = 2;
+function blockSize(){ return Math.max(4, Math.round(BOX_BASE * state.dpi / BOX_BASE_DPI)); }
+
+// 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
+// 1ブロック膨張してからBFSで連結成分をラベリングする。
+function computeBoxes(flags, cols, rows, block, minBlocks){
+  const DIRS4 = [[-1,0],[1,0],[0,-1],[0,1]]; // 4近傍（BFS連結・膨張兼用）
+  // 1ブロック膨張したフラグ格子 dil を作る（4近傍＋自身を立てる。斜めは含めない）
+  const dil = new Uint8Array(cols*rows);
+  const offs = [[0,0],[-1,0],[1,0],[0,-1],[0,1]];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(!flags[r*cols+c]) continue;
+      for(const [dr,dc] of offs){
+        const nr=r+dr, nc=c+dc;
+        if(nr<0||nc<0||nr>=rows||nc>=cols) continue;
+        dil[nr*cols+nc]=1;
+      }
+    }
+  }
+  const seen = new Uint8Array(cols*rows);
+  const boxes = [];
+  const qx = new Int32Array(cols*rows), qy = new Int32Array(cols*rows);
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const i=r*cols+c;
+      if(!dil[i]||seen[i]) continue;
+      // BFS
+      let head=0, tail=0;
+      qx[tail]=c; qy[tail]=r; tail++; seen[i]=1;
+      let minC=c,maxC=c,minR=r,maxR=r, origCount=0;
+      while(head<tail){
+        const cx=qx[head], cy=qy[head]; head++;
+        if(flags[cy*cols+cx]) origCount++;
+        if(cx<minC)minC=cx; if(cx>maxC)maxC=cx;
+        if(cy<minR)minR=cy; if(cy>maxR)maxR=cy;
+        for(const [dx,dy] of DIRS4){
+          const nx=cx+dx, ny=cy+dy;
+          if(nx<0||ny<0||nx>=cols||ny>=rows) continue;
+          const ni=ny*cols+nx;
+          if(dil[ni]&&!seen[ni]){ seen[ni]=1; qx[tail]=nx; qy[tail]=ny; tail++; }
+        }
+      }
+      // ノイズ判定は膨張前の元ブロック数(origCount)で行う。
+      if(origCount < minBlocks) continue;
+      boxes.push({
+        x: minC*block,
+        y: minR*block,
+        w: (maxC-minC+1)*block,
+        h: (maxR-minR+1)*block,
+      });
+    }
+  }
+  return boxes;
+}
+
+function drawBoxes(){
+  if(!state.boxes || !state.boxes.length) return;
+  const lw = Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
+  octx.save();
+  octx.fillStyle = BOX_FILL;
+  octx.strokeStyle = BOX_COLOR;
+  octx.lineWidth = lw;
+  for(const b of state.boxes){
+    octx.fillRect(b.x, b.y, b.w, b.h);
+    // 枠線が範囲外に出ないよう半線幅内側に寄せる
+    const h = lw/2;
+    octx.strokeRect(b.x+h, b.y+h, Math.max(0,b.w-lw), Math.max(0,b.h-lw));
+  }
+  octx.restore();
+}
+
+// 枠のON/OFF切替（PDF再レンダ・差分再計算なし。cleanImageから即座に復元）
+function toggleBoxes(){
+  if(state.mode!=="diff") return;   // トグルモード等では枠トグルを無効化
+  state.showBoxes = !state.showBoxes;
+  $("boxToggle").classList.toggle("active", state.showBoxes);
+  if(!state.cleanImage) return;            // まだ差分未描画なら何もしない
+  octx.putImageData(state.cleanImage,0,0); // 枠なし差分に復元
+  if(state.showBoxes) drawBoxes();         // ONなら枠を重ねる
+}
+
 async function buildDiff(idx){
   const scale = state.dpi/72;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
@@ -486,6 +582,9 @@ async function buildDiff(idx){
 
   const th = state.th;
   let rm=0, ad=0;
+  const block = blockSize();
+  const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
+  const bflags = new Uint8Array(cols*rows);
   for(let y=0;y<height;y++){
     for(let x=0;x<width;x++){
       // 旧版インク（そのまま）
@@ -499,19 +598,31 @@ async function buildDiff(idx){
       if(oInk||nInk){
         const p=(y*width+x)*4;
         if(oInk&&nInk){ R[p]=60;R[p+1]=60;R[p+2]=60; }          // 共通=グレー
-        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; }    // 削除=赤
-        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; }           // 追加=青
+        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }    // 削除=赤
+        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }           // 追加=青
       }
     }
   }
   octx.putImageData(res,0,0);
+  state.cleanImage = res;
+  const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
+  // キャンバス範囲にクランプ（端の枠切れ対策）
+  state.boxes = raw.map(b=>{
+    const x0 = Math.max(0, b.x), y0 = Math.max(0, b.y);
+    const x1 = Math.min(width,  b.x+b.w), y1 = Math.min(height, b.y+b.h);
+    return {x:x0, y:y0, w:x1-x0, h:y1-y0};
+  }).filter(b=>b.w>0 && b.h>0);
+  if(state.showBoxes) drawBoxes();
   out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
-  state.cache[idx] = {rm, ad};
+  const boxCount = state.boxes.length;
+  state.cache[idx] = {rm, ad, bx: boxCount};
   $("statRm").textContent = "削除 "+rm.toLocaleString();
   $("statAd").textContent = "追加 "+ad.toLocaleString();
+  $("statBox").textContent = "変更箇所 "+boxCount.toLocaleString();
   $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
   $("pageLabel").textContent = (idx+1)+" / "+state.pages;
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
+  $("boxToggle").disabled=false;
 }
 
 // 新旧切替モード：旧・新それぞれのページCanvasをキャッシュし、選択中の版だけを描画する
@@ -541,6 +652,7 @@ async function buildToggle(idx){
   $("pageLabel").textContent = (idx+1)+" / "+state.pages;
   $("statRm").textContent = "削除 —";
   $("statAd").textContent = "追加 —";
+  $("statBox").textContent = "変更箇所 —";
   $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
 }
@@ -582,6 +694,7 @@ function setModeUI(){
   $("modeToggle").classList.toggle("active", state.mode==="toggle");
   $("toggleInd").style.display = state.mode==="toggle" ? "flex" : "none";
   $("th").disabled = state.mode==="toggle";
+  $("boxToggle").disabled = state.mode!=="diff" || !state.rendered;
 }
 
 async function show(idx){
@@ -665,6 +778,7 @@ $("modeToggle").addEventListener("click", async ()=>{
   if(state.pages) await show(state.cur);
 });
 $("toggleFlip").addEventListener("click", flipSide);
+$("boxToggle").addEventListener("click", toggleBoxes);
 
 // Space キーで新旧切替（トグルモード時のみ）
 document.addEventListener("keydown", e=>{
