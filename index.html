@@ -20,6 +20,7 @@
     --added:#4d8dff;        /* 新版のみ = 追加 */
     --added-text:#2fa84f;   /* テキスト差分モードの追加（緑） */
     --changed:#e8b500;      /* テキスト差分モードの変更（黄） */
+    --box:#ff9500;          /* 変更箇所の囲み枠 */
     --signal:#f4b942;       /* 操作系 = 見当色（計器の琥珀） */
     --signal-dim:#c8952a;
     --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
@@ -253,6 +254,7 @@
     <span class="k"><span class="swatch" style="background:#3c3c3c"></span>共通</span>
     <span class="k"><span class="swatch" style="background:var(--removed)"></span>削除（旧版のみ）</span>
     <span class="k"><span class="swatch" style="background:var(--added)"></span>追加（新版のみ）</span>
+    <span class="k"><span class="swatch" style="border:2px solid var(--box);background:rgba(255,149,0,0.18)"></span>変更枠</span>
   </div>
   <div class="privacy"><span class="dot"></span>ブラウザ内で処理・外部送信なし</div>
 </header>
@@ -417,6 +419,9 @@ const state = {
   textView:{scale:1, tx:0, ty:0}, // 旧新共有ビュー状態
   textToken:0, // 抽出処理の再入ガード（renderToken と同型）
   textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
+  showBoxes:true, // 変更箇所を四角枠で囲うか
+  cleanImage:null, // 枠なしの差分ImageData（枠のON/OFF切替用キャッシュ）
+  boxes:null, // computeBoxes の結果（現在ページ分）
 };
 
 const $ = id => document.getElementById(id);
@@ -465,6 +470,14 @@ async function renderGray(doc, idx, scale){
 }
 
 function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
+
+// 変更箇所の囲み枠（色・サイズ）に関する定数とヘルパ
+const BOX_COLOR = "#ff9500";
+const BOX_FILL  = "rgba(255,149,0,0.18)";
+const BOX_BASE_DPI = 150;
+const BOX_BASE = 16;
+const BOX_MIN_BLOCKS = 2;
+function blockSize(){ return Math.max(4, Math.round(BOX_BASE * state.dpi / BOX_BASE_DPI)); }
 
 // 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
 // 1ブロック膨張してからBFSで連結成分をラベリングする。
