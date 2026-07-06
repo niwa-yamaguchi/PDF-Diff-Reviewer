@@ -337,6 +337,7 @@
       <div class="modectl">
         <button id="modeDiff" class="active" disabled title="差分表示">差分</button>
         <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
+        <button id="boxToggle" class="active" disabled title="変更箇所を枠で強調">枠</button>
       </div>
       <div class="toggleind" id="toggleInd" style="display:none">
         <span class="side old active" id="sideOld">OLD</span>
@@ -547,6 +548,15 @@ function drawBoxes(){
   octx.restore();
 }
 
+// 枠のON/OFF切替（PDF再レンダ・差分再計算なし。cleanImageから即座に復元）
+function toggleBoxes(){
+  state.showBoxes = !state.showBoxes;
+  $("boxToggle").classList.toggle("active", state.showBoxes);
+  if(!state.cleanImage) return;            // まだ差分未描画なら何もしない
+  octx.putImageData(state.cleanImage,0,0); // 枠なし差分に復元
+  if(state.showBoxes) drawBoxes();         // ONなら枠を重ねる
+}
+
 async function buildDiff(idx){
   const scale = state.dpi/72;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
@@ -605,6 +615,7 @@ async function buildDiff(idx){
   $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
   $("pageLabel").textContent = (idx+1)+" / "+state.pages;
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
+  $("boxToggle").disabled=false;
 }
 
 // 新旧切替モード：旧・新それぞれのページCanvasをキャッシュし、選択中の版だけを描画する
@@ -675,6 +686,7 @@ function setModeUI(){
   $("modeToggle").classList.toggle("active", state.mode==="toggle");
   $("toggleInd").style.display = state.mode==="toggle" ? "flex" : "none";
   $("th").disabled = state.mode==="toggle";
+  $("boxToggle").disabled = state.mode!=="diff" || !state.rendered;
 }
 
 async function show(idx){
@@ -758,6 +770,7 @@ $("modeToggle").addEventListener("click", async ()=>{
   if(state.pages) await show(state.cur);
 });
 $("toggleFlip").addEventListener("click", flipSide);
+$("boxToggle").addEventListener("click", toggleBoxes);
 
 // Space キーで新旧切替（トグルモード時のみ）
 document.addEventListener("keydown", e=>{
