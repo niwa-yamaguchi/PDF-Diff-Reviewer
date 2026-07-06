@@ -550,6 +550,7 @@ function drawBoxes(){
 
 // 枠のON/OFF切替（PDF再レンダ・差分再計算なし。cleanImageから即座に復元）
 function toggleBoxes(){
+  if(state.mode!=="diff") return;   // トグルモード等では枠トグルを無効化
   state.showBoxes = !state.showBoxes;
   $("boxToggle").classList.toggle("active", state.showBoxes);
   if(!state.cleanImage) return;            // まだ差分未描画なら何もしない
