@@ -466,6 +466,58 @@ async function renderGray(doc, idx, scale){
 
 function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
 
+// 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
+// 1ブロック膨張してからBFSで連結成分をラベリングする。
+function computeBoxes(flags, cols, rows, block, minBlocks){
+  // 1ブロック膨張したフラグ格子 dil を作る（4近傍＋自身を立てる。斜めは含めない）
+  const dil = new Uint8Array(cols*rows);
+  const offs = [[0,0],[-1,0],[1,0],[0,-1],[0,1]];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(!flags[r*cols+c]) continue;
+      for(const [dr,dc] of offs){
+        const nr=r+dr, nc=c+dc;
+        if(nr<0||nc<0||nr>=rows||nc>=cols) continue;
+        dil[nr*cols+nc]=1;
+      }
+    }
+  }
+  const seen = new Uint8Array(cols*rows);
+  const boxes = [];
+  const qx = new Int32Array(cols*rows), qy = new Int32Array(cols*rows);
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const i=r*cols+c;
+      if(!dil[i]||seen[i]) continue;
+      // BFS
+      let head=0, tail=0;
+      qx[tail]=c; qy[tail]=r; tail++; seen[i]=1;
+      let minC=c,maxC=c,minR=r,maxR=r, origCount=0;
+      while(head<tail){
+        const cx=qx[head], cy=qy[head]; head++;
+        if(flags[cy*cols+cx]) origCount++;
+        if(cx<minC)minC=cx; if(cx>maxC)maxC=cx;
+        if(cy<minR)minR=cy; if(cy>maxR)maxR=cy;
+        const neigh=[[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]];
+        for(const [nx,ny] of neigh){
+          if(nx<0||ny<0||nx>=cols||ny>=rows) continue;
+          const ni=ny*cols+nx;
+          if(dil[ni]&&!seen[ni]){ seen[ni]=1; qx[tail]=nx; qy[tail]=ny; tail++; }
+        }
+      }
+      // ノイズ判定は膨張前の元ブロック数(origCount)で行う。
+      if(origCount < minBlocks) continue;
+      boxes.push({
+        x: minC*block,
+        y: minR*block,
+        w: (maxC-minC+1)*block,
+        h: (maxR-minR+1)*block,
+      });
+    }
+  }
+  return boxes;
+}
+
 async function buildDiff(idx){
   const scale = state.dpi/72;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
