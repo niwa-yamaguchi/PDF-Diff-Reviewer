@@ -184,6 +184,7 @@
   .viewbar .stat{margin-left:auto;display:flex;gap:16px}
   .viewbar .stat .rm{color:var(--removed)}
   .viewbar .stat .ad{color:var(--added)}
+  .viewbar .stat .bx{color:var(--box)}
   .canvas-wrap{
     flex:1;overflow:hidden;position:relative;
     background-image:
@@ -349,6 +350,7 @@
       <div class="stat">
         <span class="rm" id="statRm">削除 —</span>
         <span class="ad" id="statAd">追加 —</span>
+        <span class="bx" id="statBox">変更箇所 —</span>
       </div>
     </div>
     <div class="canvas-wrap">
@@ -612,9 +614,11 @@ async function buildDiff(idx){
   }).filter(b=>b.w>0 && b.h>0);
   if(state.showBoxes) drawBoxes();
   out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
-  state.cache[idx] = {rm, ad};
+  const boxCount = state.boxes.length;
+  state.cache[idx] = {rm, ad, bx: boxCount};
   $("statRm").textContent = "削除 "+rm.toLocaleString();
   $("statAd").textContent = "追加 "+ad.toLocaleString();
+  $("statBox").textContent = "変更箇所 "+boxCount.toLocaleString();
   $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
   $("pageLabel").textContent = (idx+1)+" / "+state.pages;
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
@@ -648,6 +652,7 @@ async function buildToggle(idx){
   $("pageLabel").textContent = (idx+1)+" / "+state.pages;
   $("statRm").textContent = "削除 —";
   $("statAd").textContent = "追加 —";
+  $("statBox").textContent = "変更箇所 —";
   $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
 }
