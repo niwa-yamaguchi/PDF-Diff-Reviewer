@@ -860,7 +860,7 @@ document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
 $("nudgeReset").addEventListener("click",()=>{
   state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
   if(!state.pages) return;
-  if(state.mode==="toggle") drawToggleSide(); else show(state.cur);
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
 
 $("run").addEventListener("click",async()=>{
