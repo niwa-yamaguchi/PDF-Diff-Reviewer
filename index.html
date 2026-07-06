@@ -536,6 +536,38 @@ function computeBoxes(flags, cols, rows, block, minBlocks){
   return boxes;
 }
 
+// 外接矩形群をキャンバス範囲[0,width]/[0,height]にクランプ（端の枠切れ対策）。退化矩形は除外。
+function clampBoxes(raw, width, height){
+  return raw.map(b=>{
+    const x0 = Math.max(0, b.x), y0 = Math.max(0, b.y);
+    const x1 = Math.min(width,  b.x+b.w), y1 = Math.min(height, b.y+b.h);
+    return {x:x0, y:y0, w:x1-x0, h:y1-y0};
+  }).filter(b=>b.w>0 && b.h>0);
+}
+
+// 新旧グレーImageDataから変更枠を算出（差分モード・新旧切替モード共通）。
+// buildDiff の二値化条件（輝度<th、新版に dx,dy オフセット、oInk!==nInk）と同一。
+function computeChangeBoxes(oimg, nimg, width, height){
+  const block = blockSize();
+  const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
+  const bflags = new Uint8Array(cols*rows);
+  const th = state.th;
+  const ow = oimg?oimg.width:0, oh = oimg?oimg.height:0;
+  const nw = nimg?nimg.width:0, nh = nimg?nimg.height:0;
+  for(let y=0;y<height;y++){
+    for(let x=0;x<width;x++){
+      let oInk=false;
+      if(oimg && x<ow && y<oh){ oInk = lum(oimg.data,(y*ow+x)*4) < th; }
+      let nInk=false;
+      const nx = x - state.dx, ny = y - state.dy;
+      if(nimg && nx>=0 && ny>=0 && nx<nw && ny<nh){ nInk = lum(nimg.data,(ny*nw+nx)*4) < th; }
+      if(oInk!==nInk){ bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+    }
+  }
+  const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
+  return clampBoxes(raw, width, height);
+}
+
 function drawBoxes(){
   if(!state.boxes || !state.boxes.length) return;
   const lw = Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
@@ -554,10 +586,11 @@ function drawBoxes(){
 
 // 枠のON/OFF切替（PDF再レンダ・差分再計算なし。cleanImageから即座に復元）
 function toggleBoxes(){
-  if(state.mode!=="diff") return;   // トグルモード等では枠トグルを無効化
+  if(!state.rendered) return;              // 未描画なら何もしない
   state.showBoxes = !state.showBoxes;
   $("boxToggle").classList.toggle("active", state.showBoxes);
-  if(!state.cleanImage) return;            // まだ差分未描画なら何もしない
+  if(state.mode==="toggle"){ drawToggleSide(); return; } // 切替モードは版ごと再描画で枠を出し入れ
+  if(!state.cleanImage) return;            // 差分未描画なら何もしない
   octx.putImageData(state.cleanImage,0,0); // 枠なし差分に復元
   if(state.showBoxes) drawBoxes();         // ONなら枠を重ねる
 }
@@ -606,12 +639,7 @@ async function buildDiff(idx){
   octx.putImageData(res,0,0);
   state.cleanImage = res;
   const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
-  // キャンバス範囲にクランプ（端の枠切れ対策）
-  state.boxes = raw.map(b=>{
-    const x0 = Math.max(0, b.x), y0 = Math.max(0, b.y);
-    const x1 = Math.min(width,  b.x+b.w), y1 = Math.min(height, b.y+b.h);
-    return {x:x0, y:y0, w:x1-x0, h:y1-y0};
-  }).filter(b=>b.w>0 && b.h>0);
+  state.boxes = clampBoxes(raw, width, height);
   if(state.showBoxes) drawBoxes();
   out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
   const boxCount = state.boxes.length;
@@ -638,23 +666,30 @@ async function buildToggle(idx){
     if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
     const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
     const nw = newC?newC.width:0, nh = newC?newC.height:0;
-    state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh};
+    // 枠算出用に旧/新のImageDataも保持（renderGray相当。再取得コストを避ける）
+    const oimg = oldC ? oldC.getContext("2d").getImageData(0,0,ow,oh) : null;
+    const nimg = newC ? newC.getContext("2d").getImageData(0,0,nw,nh) : null;
+    state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh, oimg, nimg};
   }
-  const {ow, oh, nw, nh} = state.toggleCache;
+  const {ow, oh, nw, nh, oimg, nimg} = state.toggleCache;
   const W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
   const H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
   const width  = Math.max(ow, nw, W, 1);
   const height = Math.max(oh, nh, H, 1);
   out.width = width; out.height = height;
 
+  // 枠は差分モードと同一の画素比較で毎回算出（th/dx/dy変更に追従）。
+  state.boxes = computeChangeBoxes(oimg, nimg, width, height);
+
   drawToggleSide();
 
   $("pageLabel").textContent = (idx+1)+" / "+state.pages;
   $("statRm").textContent = "削除 —";
   $("statAd").textContent = "追加 —";
-  $("statBox").textContent = "変更箇所 —";
+  $("statBox").textContent = "変更箇所 "+state.boxes.length.toLocaleString();
   $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
+  $("boxToggle").disabled=false;
 }
 
 // 選択中の版だけを out に描画（PDF再レンダ無し・瞬時）
@@ -668,6 +703,7 @@ function drawToggleSide(){
   if(img){
     if(side==="old") octx.drawImage(img,0,0);
     else octx.drawImage(img,state.dx,state.dy);
+    if(state.showBoxes) drawBoxes(); // 変更枠を重ねる（枠座標は旧/新どちらの表示にも整合）
   } else {
     octx.fillStyle = "#7f8f9e";
     octx.font = "20px sans-serif";
@@ -694,7 +730,7 @@ function setModeUI(){
   $("modeToggle").classList.toggle("active", state.mode==="toggle");
   $("toggleInd").style.display = state.mode==="toggle" ? "flex" : "none";
   $("th").disabled = state.mode==="toggle";
-  $("boxToggle").disabled = state.mode!=="diff" || !state.rendered;
+  $("boxToggle").disabled = !state.rendered;
 }
 
 async function show(idx){
