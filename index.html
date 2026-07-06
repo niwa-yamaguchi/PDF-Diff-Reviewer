@@ -531,6 +531,22 @@ function computeBoxes(flags, cols, rows, block, minBlocks){
   return boxes;
 }
 
+function drawBoxes(){
+  if(!state.boxes || !state.boxes.length) return;
+  const lw = Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
+  octx.save();
+  octx.fillStyle = BOX_FILL;
+  octx.strokeStyle = BOX_COLOR;
+  octx.lineWidth = lw;
+  for(const b of state.boxes){
+    octx.fillRect(b.x, b.y, b.w, b.h);
+    // 枠線が範囲外に出ないよう半線幅内側に寄せる
+    const h = lw/2;
+    octx.strokeRect(b.x+h, b.y+h, Math.max(0,b.w-lw), Math.max(0,b.h-lw));
+  }
+  octx.restore();
+}
+
 async function buildDiff(idx){
   const scale = state.dpi/72;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
@@ -551,6 +567,9 @@ async function buildDiff(idx){
 
   const th = state.th;
   let rm=0, ad=0;
+  const block = blockSize();
+  const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
+  const bflags = new Uint8Array(cols*rows);
   for(let y=0;y<height;y++){
     for(let x=0;x<width;x++){
       // 旧版インク（そのまま）
@@ -564,12 +583,21 @@ async function buildDiff(idx){
       if(oInk||nInk){
         const p=(y*width+x)*4;
         if(oInk&&nInk){ R[p]=60;R[p+1]=60;R[p+2]=60; }          // 共通=グレー
-        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; }    // 削除=赤
-        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; }           // 追加=青
+        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }    // 削除=赤
+        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }           // 追加=青
       }
     }
   }
   octx.putImageData(res,0,0);
+  state.cleanImage = res;
+  const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
+  // キャンバス範囲にクランプ（端の枠切れ対策）
+  state.boxes = raw.map(b=>{
+    const x0 = Math.max(0, b.x), y0 = Math.max(0, b.y);
+    const x1 = Math.min(width,  b.x+b.w), y1 = Math.min(height, b.y+b.h);
+    return {x:x0, y:y0, w:x1-x0, h:y1-y0};
+  }).filter(b=>b.w>0 && b.h>0);
+  if(state.showBoxes) drawBoxes();
   out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
   state.cache[idx] = {rm, ad};
   $("statRm").textContent = "削除 "+rm.toLocaleString();
