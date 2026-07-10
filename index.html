@@ -139,6 +139,14 @@
   .btn.primary:hover{background:var(--signal-dim)}
   .btn:disabled{opacity:.4;cursor:not-allowed}
   .btns{display:flex;flex-direction:column;gap:8px}
+  .alignpad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .alignpad button{
+    font:inherit;font-size:12px;padding:8px 6px;border-radius:6px;
+    border:1px solid var(--line-bright);background:var(--panel-2);color:var(--fg);cursor:pointer;
+  }
+  .alignpad button:hover{border-color:var(--signal)}
+  .alignpad button:disabled{opacity:.4;cursor:not-allowed}
+  .alignpad .full{grid-column:1 / -1}
 
   /* ── ビューア ── */
   section.view{position:relative;overflow:auto;background:var(--ink);
@@ -313,6 +321,17 @@
           <button data-dx="1" data-dy="0">▶</button>
           <span></span><button data-dx="0" data-dy="1">▼</button><span></span>
         </div>
+      </div>
+
+      <div class="field">
+        <span class="label">ページ整列（空白の挿入で再整列）</span>
+        <div class="alignpad">
+          <button id="alignAddNew" disabled title="このスロットの新ページを「追加」扱いにし、旧側に空白を挿入して以降を再整列">この新ページは追加</button>
+          <button id="alignDelOld" disabled title="このスロットの旧ページを「削除」扱いにし、新側に空白を挿入して以降を再整列">この旧ページは削除</button>
+          <button id="alignUndo" class="full" disabled title="直前の整列操作を取り消す">↩ 取り消す</button>
+          <button id="alignReset" class="full" disabled title="整列を初期状態（位置一致）に戻す">整列をリセット</button>
+        </div>
+        <span class="hint" style="font-size:10px;color:var(--muted)">※PDFを読み込み直すと整列はリセットされます</span>
       </div>
 
       <div class="btns">
@@ -759,10 +778,27 @@ function setModeUI(){
   $("boxToggle").disabled = !state.rendered;
 }
 
+function updateAlignButtons(){
+  const on = !!(state.oldDoc && state.newDoc) && state.rendered;
+  $("alignAddNew").disabled = !on;
+  $("alignDelOld").disabled = !on;
+  $("alignUndo").disabled  = !on || state.alignOps.length === 0;
+  $("alignReset").disabled = !on || state.alignOps.length === 0;
+}
+
+async function refreshAfterAlign(){
+  state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
+  state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
+  if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
+  if(state.cur < 0) state.cur = 0;
+  await show(state.cur);
+}
+
 async function show(idx){
   if(idx<0||idx>=state.pages) return;
   state.cur=idx;
   if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
+  updateAlignButtons();
 }
 
 // ── ズーム & パン ──
@@ -891,6 +927,32 @@ $("nudgeReset").addEventListener("click",()=>{
 $("run").addEventListener("click",async()=>{
   $("modeDiff").disabled=false; $("modeToggle").disabled=false;
   await show(0); fitView();
+});
+$("alignAddNew").addEventListener("click", async ()=>{
+  if(!state.rendered) return;
+  state.oldSeq.splice(state.cur, 0, null); // 旧側に空白 → 新ページが全面追加(青)に
+  state.alignOps.push({side:"old", slot:state.cur});
+  await refreshAfterAlign();
+});
+$("alignDelOld").addEventListener("click", async ()=>{
+  if(!state.rendered) return;
+  state.newSeq.splice(state.cur, 0, null); // 新側に空白 → 旧ページが全面削除(赤)に
+  state.alignOps.push({side:"new", slot:state.cur});
+  await refreshAfterAlign();
+});
+$("alignUndo").addEventListener("click", async ()=>{
+  const op = state.alignOps.pop();
+  if(!op) return;
+  const seq = op.side === "old" ? state.oldSeq : state.newSeq;
+  if(seq[op.slot] === null) seq.splice(op.slot, 1); // 念のため null を確認して除去
+  await refreshAfterAlign();
+});
+$("alignReset").addEventListener("click", async ()=>{
+  if(!state.oldDoc || !state.newDoc) return;
+  state.oldSeq = Array.from({length:state.oldDoc.numPages}, (_,i)=>i);
+  state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
+  state.alignOps = [];
+  await refreshAfterAlign();
 });
 $("prev").addEventListener("click",()=>show(state.cur-1));
 $("next").addEventListener("click",()=>show(state.cur+1));
