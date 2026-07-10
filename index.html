@@ -450,6 +450,7 @@ const state = {
   textView:{scale:1, tx:0, ty:0}, // 旧新共有ビュー状態
   textToken:0, // 抽出処理の再入ガード（renderToken と同型）
   textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
+  debugXYCut:false,  // trueでXY-cutのブロック構造をconsoleへ出力
   showBoxes:true, // 変更箇所を四角枠で囲うか
   cleanImage:null, // 枠なしの差分ImageData（枠のON/OFF切替用キャッシュ）
   boxes:null, // computeBoxes の結果（現在ページ分）
@@ -1153,6 +1154,13 @@ function buildTextHighlights(){
   }
   return hi;
 }
+
+// ── XY-cut 多段組み読み順復元（フェーズ3）定数 ──
+const XYCUT_MAX_DEPTH        = 6;   // 再帰深度上限
+const XYCUT_MIN_BLOCK_TOKENS = 2;   // これ未満は分割せず葉に
+const COL_GAP_EM             = 2.5; // 縦カット(段)最小ガター幅 ÷ フォント高
+const ROW_GAP_EM             = 1.6; // 横カット最小空白高 ÷ フォント高
+const COL_MIN_SIDE_LINES     = 3;   // 段分割は両側に≥3行(量子化Y種類)を要求
 
 // ── 表領域のセル格子diff（フェーズ2） ──
 const TABLE_ROWS_MIN = 3;   // 表と判定する最小行数
