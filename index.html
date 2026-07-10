@@ -139,6 +139,14 @@
   .btn.primary:hover{background:var(--signal-dim)}
   .btn:disabled{opacity:.4;cursor:not-allowed}
   .btns{display:flex;flex-direction:column;gap:8px}
+  .alignpad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .alignpad button{
+    font:inherit;font-size:12px;padding:8px 6px;border-radius:6px;
+    border:1px solid var(--line-bright);background:var(--panel-2);color:var(--fg);cursor:pointer;
+  }
+  .alignpad button:hover{border-color:var(--signal)}
+  .alignpad button:disabled{opacity:.4;cursor:not-allowed}
+  .alignpad .full{grid-column:1 / -1}
 
   /* ── ビューア ── */
   section.view{position:relative;overflow:auto;background:var(--ink);
@@ -315,6 +323,16 @@
         </div>
       </div>
 
+      <div class="field">
+        <span class="label">ページ整列（空白の挿入で再整列）</span>
+        <div class="alignpad">
+          <button id="alignDelOld" disabled title="このスロットの旧ページが削除された扱いにし、新側に空白を挿入して以降を再整列">この旧ページは削除されたページ</button>
+          <button id="alignAddNew" disabled title="このスロットの新ページが追加された扱いにし、旧側に空白を挿入して以降を再整列">この新ページは追加されたページ</button>
+          <button id="alignUndo" class="full" disabled title="直前の整列操作を取り消す">↩ 取り消す</button>
+        </div>
+        <span class="hint" style="font-size:10px;color:var(--muted)">※PDFを読み込み直すと整列はリセットされます</span>
+      </div>
+
       <div class="btns">
         <button class="btn primary" id="run" disabled>差分を表示</button>
         <button class="btn" id="dlPng" disabled>現在ページをPNG保存</button>
@@ -435,6 +453,8 @@ const state = {
   showBoxes:true, // 変更箇所を四角枠で囲うか
   cleanImage:null, // 枠なしの差分ImageData（枠のON/OFF切替用キャッシュ）
   boxes:null, // computeBoxes の結果（現在ページ分）
+  oldSeq:null, newSeq:null, // 旧/新のページ順（要素: 0基点ページ番号 or null=空白スペーサ）
+  alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
 };
 
 const $ = id => document.getElementById(id);
@@ -454,7 +474,10 @@ async function loadPdf(file, which){
   state.textHi = null; state.textPage = 0;
   $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
   if(state.oldDoc && state.newDoc){
-    state.pages = Math.max(state.oldDoc.numPages, state.newDoc.numPages);
+    state.oldSeq = Array.from({length:state.oldDoc.numPages}, (_,i)=>i);
+    state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
+    state.alignOps = [];
+    state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
     state.cur = 0; state.cache = {};
     $("run").disabled = false;
     $("runText").disabled = false;
@@ -465,7 +488,7 @@ async function loadPdf(file, which){
 
 // PDFページ → 白背景のカラーCanvas（無い場合は null）
 async function renderPageCanvas(doc, idx, scale){
-  if(!doc || idx >= doc.numPages) return null;
+  if(!doc || idx == null || idx >= doc.numPages) return null;
   const page = await doc.getPage(idx+1);
   const vp = page.getViewport({scale});
   const c = document.createElement("canvas");
@@ -480,6 +503,17 @@ async function renderPageCanvas(doc, idx, scale){
 async function renderGray(doc, idx, scale){
   const c = await renderPageCanvas(doc, idx, scale);
   return c ? c.getContext("2d").getImageData(0,0,c.width,c.height) : null;
+}
+
+// スロット s の実ページ番号（0基点）。スペーサ(null)・範囲外は null。
+function seqIdx(seq, s){ const v = seq ? seq[s] : undefined; return (v == null) ? null : v; }
+
+// ページャ表示: "3 / 12（旧P3 ↔ 新P4）"。スペーサ側は「空白」。
+function pageLabelText(idx){
+  const o = seqIdx(state.oldSeq, idx), n = seqIdx(state.newSeq, idx);
+  const os = (o == null) ? "旧 空白" : "旧P"+(o+1);
+  const ns = (n == null) ? "新 空白" : "新P"+(n+1);
+  return (idx+1)+" / "+state.pages+"（"+os+" ↔ "+ns+"）";
 }
 
 function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
@@ -608,8 +642,8 @@ async function buildDiff(idx){
   const scale = state.dpi/72;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
   const [oimg, nimg] = await Promise.all([
-    renderGray(state.oldDoc, idx, scale),
-    renderGray(state.newDoc, idx, scale)
+    renderGray(state.oldDoc, seqIdx(state.oldSeq, idx), scale),
+    renderGray(state.newDoc, seqIdx(state.newSeq, idx), scale)
   ]);
   const ow = oimg?oimg.width:0, oh = oimg?oimg.height:0;
   const nw = nimg?nimg.width:0, nh = nimg?nimg.height:0;
@@ -657,7 +691,7 @@ async function buildDiff(idx){
   $("statAd").textContent = "追加 "+ad.toLocaleString();
   $("statBox").textContent = "変更箇所 "+boxCount.toLocaleString();
   $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
-  $("pageLabel").textContent = (idx+1)+" / "+state.pages;
+  $("pageLabel").textContent = pageLabelText(idx);
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
   $("boxToggle").disabled=false;
 }
@@ -669,8 +703,8 @@ async function buildToggle(idx){
   if(!state.toggleCache || state.toggleCache.idx !== idx){
     $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
     const [oldC, newC] = await Promise.all([
-      renderPageCanvas(state.oldDoc, idx, scale),
-      renderPageCanvas(state.newDoc, idx, scale)
+      renderPageCanvas(state.oldDoc, seqIdx(state.oldSeq, idx), scale),
+      renderPageCanvas(state.newDoc, seqIdx(state.newSeq, idx), scale)
     ]);
     if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
     const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
@@ -693,7 +727,7 @@ async function buildToggle(idx){
 
   drawToggleSide();
 
-  $("pageLabel").textContent = (idx+1)+" / "+state.pages;
+  $("pageLabel").textContent = pageLabelText(idx);
   $("statRm").textContent = "削除 —";
   $("statAd").textContent = "追加 —";
   $("statBox").textContent = state.showBoxes ? ("変更箇所 "+state.boxes.length.toLocaleString()) : "変更箇所 —";
@@ -743,10 +777,26 @@ function setModeUI(){
   $("boxToggle").disabled = !state.rendered;
 }
 
+function updateAlignButtons(){
+  const on = !!(state.oldDoc && state.newDoc) && state.rendered;
+  $("alignAddNew").disabled = !on;
+  $("alignDelOld").disabled = !on;
+  $("alignUndo").disabled  = !on || state.alignOps.length === 0;
+}
+
+async function refreshAfterAlign(){
+  state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
+  state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
+  if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
+  if(state.cur < 0) state.cur = 0;
+  await show(state.cur);
+}
+
 async function show(idx){
   if(idx<0||idx>=state.pages) return;
   state.cur=idx;
   if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
+  updateAlignButtons();
 }
 
 // ── ズーム & パン ──
@@ -875,6 +925,25 @@ $("nudgeReset").addEventListener("click",()=>{
 $("run").addEventListener("click",async()=>{
   $("modeDiff").disabled=false; $("modeToggle").disabled=false;
   await show(0); fitView();
+});
+$("alignAddNew").addEventListener("click", async ()=>{
+  if(!state.rendered) return;
+  state.oldSeq.splice(state.cur, 0, null); // 旧側に空白 → 新ページが全面追加(青)に
+  state.alignOps.push({side:"old", slot:state.cur});
+  await refreshAfterAlign();
+});
+$("alignDelOld").addEventListener("click", async ()=>{
+  if(!state.rendered) return;
+  state.newSeq.splice(state.cur, 0, null); // 新側に空白 → 旧ページが全面削除(赤)に
+  state.alignOps.push({side:"new", slot:state.cur});
+  await refreshAfterAlign();
+});
+$("alignUndo").addEventListener("click", async ()=>{
+  const op = state.alignOps.pop();
+  if(!op) return;
+  const seq = op.side === "old" ? state.oldSeq : state.newSeq;
+  if(seq[op.slot] === null) seq.splice(op.slot, 1); // 念のため null を確認して除去
+  await refreshAfterAlign();
 });
 $("prev").addEventListener("click",()=>show(state.cur-1));
 $("next").addEventListener("click",()=>show(state.cur+1));
