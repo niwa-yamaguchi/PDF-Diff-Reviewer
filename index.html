@@ -1186,10 +1186,13 @@ async function extractPageTokenLines(doc, idx){
   if(page.rotate % 180 !== 0) return reconstructLinesInItemOrder(content.items);
 
   // 非空トークン化（ord=content.items内の添字を保持）
+  // 空白のみitem（pdf.jsが段間ギャップを表す" "等）は幾何解析から除外。これを含めると
+  // ガターが空白itemで橋渡しされ和集合ギャップが消え、縦カット(段分割)を取りこぼす。
+  // 行の再構成(reconstructLinesInItemOrder)は全item(空白含む)を使うため出力・非回帰には不影響。
   const toks = [];
   let vcount = 0;
   content.items.forEach((it, ord) => {
-    if(!it.str) return;
+    if(!it.str || !it.str.trim()) return;
     const x0 = it.transform[4], y0 = it.transform[5];
     const fh = Math.hypot(it.transform[2], it.transform[3]);
     if(Math.abs(it.transform[1]) > Math.abs(it.transform[0])) vcount++;
