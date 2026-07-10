@@ -1020,12 +1020,11 @@ const TEXT_HI_COLORS = (() => {
 
 // 1ページ分のテキストを行単位に再構成（Y座標でグルーピング→X座標順に連結）。
 // トークンは box化せず item.transform（6要素）と item.width を保持（scale/viewport非依存）。
-async function extractPageTokenLines(doc, idx){
-  const page = await doc.getPage(idx+1);
-  const content = await page.getTextContent();
+// content.items 相当の配列を現行ロジックで行再構成（空str/hasEOL/TOL/末尾トリムを現行同様に処理）
+function reconstructLinesInItemOrder(items){
   const lines = [];
   const TOL = 2.5; // 同一行とみなすY座標の許容差
-  let cur = null; // {y, parts:[{x,str,transform,w}]}
+  let cur = null;  // {y, parts:[{x,str,transform,w}]}
   const flush = () => {
     if(cur && cur.parts.length){
       const sorted = cur.parts.slice().sort((a,b)=>a.x-b.x);
@@ -1035,21 +1034,50 @@ async function extractPageTokenLines(doc, idx){
         tokens.push({str:p.str, off:text.length, transform:p.transform.slice(), w:p.w});
         text += p.str;
       }
-      lines.push({text:text.replace(/\s+$/,""), tokens}); // 末尾空白のみトリム→先頭offは不変
+      lines.push({text:text.replace(/\s+$/,""), tokens});
     }
     cur = null;
   };
-  for(const it of content.items){
+  for(const it of items){
     const y = it.transform[5];
-    if(cur===null || Math.abs(cur.y-y) > TOL){
-      flush();
-      cur = {y, parts:[]};
-    }
+    if(cur===null || Math.abs(cur.y-y) > TOL){ flush(); cur = {y, parts:[]}; }
     if(it.str) cur.parts.push({x:it.transform[4], str:it.str, transform:it.transform, w:it.width});
-    if(it.hasEOL){ flush(); cur = null; } // 明示的な行末なら以降の近接判定を持ち越さない
+    if(it.hasEOL){ flush(); cur = null; }
   }
   flush();
   return lines;
+}
+
+// ⚠開発時検証専用の凍結オラクル（reconstructLinesInItemOrderと同一ロジックの独立コピー）。
+// debugXYCutの非回帰self-check用。受け入れ基準6の確認後（Task5 最終step）に self-check ごと除去する。
+function extractPageTokenLinesLegacy(items){
+  const lines = [];
+  const TOL = 2.5;
+  let cur = null;
+  const flush = () => {
+    if(cur && cur.parts.length){
+      const sorted = cur.parts.slice().sort((a,b)=>a.x-b.x);
+      let text = "";
+      const tokens = [];
+      for(const p of sorted){ tokens.push({str:p.str, off:text.length, transform:p.transform.slice(), w:p.w}); text += p.str; }
+      lines.push({text:text.replace(/\s+$/,""), tokens});
+    }
+    cur = null;
+  };
+  for(const it of items){
+    const y = it.transform[5];
+    if(cur===null || Math.abs(cur.y-y) > TOL){ flush(); cur = {y, parts:[]}; }
+    if(it.str) cur.parts.push({x:it.transform[4], str:it.str, transform:it.transform, w:it.width});
+    if(it.hasEOL){ flush(); cur = null; }
+  }
+  flush();
+  return lines;
+}
+
+async function extractPageTokenLines(doc, idx){
+  const page = await doc.getPage(idx+1);
+  const content = await page.getTextContent();
+  return reconstructLinesInItemOrder(content.items);
 }
 
 // 文書全体を位置つきでページ配列として取得（[pageLines, ...]）
