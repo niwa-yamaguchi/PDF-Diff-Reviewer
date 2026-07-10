@@ -468,7 +468,14 @@ function setDrop(el, name){
 
 async function loadPdf(file, which){
   const buf = await file.arrayBuffer();
-  const doc = await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;
+  const doc = await pdfjsLib.getDocument({
+    data:new Uint8Array(buf),
+    // CID方式(日本語等CJK)フォントのデコードに必要なCMap/標準フォントデータ。
+    // cdnjsのpdf.jsにはcmaps/standard_fontsが無いためjsDelivrのpdfjs-distを参照（静的資産の取得のみ・PDFは外部送信しない）。
+    cMapUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/",
+    cMapPacked:true,
+    standardFontDataUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/"
+  }).promise;
   if(which==="old"){ state.oldDoc = doc; setDrop($("dropOld"), file.name); }
   else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
   state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
