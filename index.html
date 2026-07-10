@@ -450,6 +450,7 @@ const state = {
   textView:{scale:1, tx:0, ty:0}, // 旧新共有ビュー状態
   textToken:0, // 抽出処理の再入ガード（renderToken と同型）
   textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
+  debugXYCut:false,  // trueでXY-cutのブロック構造をconsoleへ出力
   showBoxes:true, // 変更箇所を四角枠で囲うか
   cleanImage:null, // 枠なしの差分ImageData（枠のON/OFF切替用キャッシュ）
   boxes:null, // computeBoxes の結果（現在ページ分）
@@ -467,7 +468,14 @@ function setDrop(el, name){
 
 async function loadPdf(file, which){
   const buf = await file.arrayBuffer();
-  const doc = await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;
+  const doc = await pdfjsLib.getDocument({
+    data:new Uint8Array(buf),
+    // CID方式(日本語等CJK)フォントのデコードに必要なCMap/標準フォントデータ。
+    // cdnjsのpdf.jsにはcmaps/standard_fontsが無いためjsDelivrのpdfjs-distを参照（静的資産の取得のみ・PDFは外部送信しない）。
+    cMapUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/",
+    cMapPacked:true,
+    standardFontDataUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/"
+  }).promise;
   if(which==="old"){ state.oldDoc = doc; setDrop($("dropOld"), file.name); }
   else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
   state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
@@ -1019,12 +1027,11 @@ const TEXT_HI_COLORS = (() => {
 
 // 1ページ分のテキストを行単位に再構成（Y座標でグルーピング→X座標順に連結）。
 // トークンは box化せず item.transform（6要素）と item.width を保持（scale/viewport非依存）。
-async function extractPageTokenLines(doc, idx){
-  const page = await doc.getPage(idx+1);
-  const content = await page.getTextContent();
+// content.items 相当の配列を現行ロジックで行再構成（空str/hasEOL/TOL/末尾トリムを現行同様に処理）
+function reconstructLinesInItemOrder(items){
   const lines = [];
   const TOL = 2.5; // 同一行とみなすY座標の許容差
-  let cur = null; // {y, parts:[{x,str,transform,w}]}
+  let cur = null;  // {y, parts:[{x,str,transform,w}]}
   const flush = () => {
     if(cur && cur.parts.length){
       const sorted = cur.parts.slice().sort((a,b)=>a.x-b.x);
@@ -1034,21 +1041,159 @@ async function extractPageTokenLines(doc, idx){
         tokens.push({str:p.str, off:text.length, transform:p.transform.slice(), w:p.w});
         text += p.str;
       }
-      lines.push({text:text.replace(/\s+$/,""), tokens}); // 末尾空白のみトリム→先頭offは不変
+      lines.push({text:text.replace(/\s+$/,""), tokens});
     }
     cur = null;
   };
-  for(const it of content.items){
+  for(const it of items){
     const y = it.transform[5];
-    if(cur===null || Math.abs(cur.y-y) > TOL){
-      flush();
-      cur = {y, parts:[]};
-    }
+    if(cur===null || Math.abs(cur.y-y) > TOL){ flush(); cur = {y, parts:[]}; }
     if(it.str) cur.parts.push({x:it.transform[4], str:it.str, transform:it.transform, w:it.width});
-    if(it.hasEOL){ flush(); cur = null; } // 明示的な行末なら以降の近接判定を持ち越さない
+    if(it.hasEOL){ flush(); cur = null; }
   }
   flush();
   return lines;
+}
+
+// 区間[lo,hi]の和集合の隙間
+function unionGaps(intervals){
+  if(intervals.length < 2) return [];
+  const sorted = intervals.slice().sort((a,b)=>a[0]-b[0]);
+  const gaps = [];
+  let curEnd = sorted[0][1];
+  for(let i=1;i<sorted.length;i++){
+    const lo = sorted[i][0], hi = sorted[i][1];
+    if(lo > curEnd){ gaps.push({lo:curEnd, hi:lo, size:lo-curEnd}); curEnd = hi; }
+    else if(hi > curEnd){ curEnd = hi; }
+  }
+  return gaps;
+}
+function medianFh(tokens){
+  const fhs = tokens.map(t=>t.fh).filter(v=>v>0).sort((a,b)=>a-b);
+  if(!fhs.length) return 0;
+  const m = fhs.length >> 1;
+  return fhs.length % 2 ? fhs[m] : (fhs[m-1]+fhs[m]) / 2;
+}
+function distinctRowCount(tokens, q){
+  if(q <= 0) return tokens.length;
+  const s = new Set();
+  for(const t of tokens) s.add(Math.round(t.y0 / q));
+  return s.size;
+}
+function minOrd(leafList){
+  let m = Infinity;
+  for(const leaf of leafList) for(const t of leaf) if(t.ord < m) m = t.ord;
+  return m;
+}
+function orderByMinOrd(groups){
+  return groups.map(g=>({g,key:minOrd(g)})).sort((a,b)=>a.key-b.key).flatMap(x=>x.g);
+}
+function xyCut(tokens, depth, ctx){
+  if(tokens.length < XYCUT_MIN_BLOCK_TOKENS || depth >= XYCUT_MAX_DEPTH) return [tokens];
+  const fh = medianFh(tokens);
+  if(fh <= 0) return [tokens];
+  const q = fh / 2;
+  let bestCol = null;
+  for(const g of unionGaps(tokens.map(t=>[t.x0, t.x1]))){
+    if(g.size < COL_GAP_EM * fh) continue;
+    const mid = (g.lo + g.hi) / 2;
+    const left  = tokens.filter(t => t.x0 <  mid);
+    const right = tokens.filter(t => t.x0 >= mid);
+    if(distinctRowCount(left, q)  < COL_MIN_SIDE_LINES) continue;
+    if(distinctRowCount(right, q) < COL_MIN_SIDE_LINES) continue;
+    if(!bestCol || g.size > bestCol.size) bestCol = {size:g.size, left, right};
+  }
+  let bestRow = null;
+  for(const g of unionGaps(tokens.map(t=>[t.y0, t.y1]))){
+    if(g.size < ROW_GAP_EM * fh) continue;
+    if(!bestRow || g.size > bestRow.size) bestRow = {size:g.size, mid:(g.lo+g.hi)/2};
+  }
+  const colScore = bestCol ? bestCol.size / fh : -1;
+  const rowScore = bestRow ? bestRow.size / fh : -1;
+  if(colScore < 0 && rowScore < 0) return [tokens];
+  if(rowScore >= colScore && bestRow){
+    const top = tokens.filter(t => t.y0 >= bestRow.mid);
+    const bot = tokens.filter(t => t.y0 <  bestRow.mid);
+    return orderByMinOrd([ xyCut(top, depth+1, ctx), xyCut(bot, depth+1, ctx) ]);
+  }
+  ctx.hadVerticalCut = true;
+  const childL = xyCut(bestCol.left,  depth+1, ctx);
+  const childR = xyCut(bestCol.right, depth+1, ctx);
+  return [...childL, ...childR];
+}
+
+// 全item(空str含む)を葉bboxへ点割当し、葉ごとに現行ロジックで再構成→読み順連結
+function assembleFromLeaves(items, leaves){
+  const boxes = leaves.map(leaf => {
+    let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+    for(const t of leaf){ if(t.x0<x0)x0=t.x0; if(t.x1>x1)x1=t.x1; if(t.y0<y0)y0=t.y0; if(t.y1>y1)y1=t.y1; }
+    return {x0,x1,y0,y1};
+  });
+  const buckets = leaves.map(()=>[]);
+  for(const it of items){
+    const px = it.transform[4], py = it.transform[5];
+    let bi = -1;
+    for(let i=0;i<boxes.length;i++){
+      const b = boxes[i];
+      if(px>=b.x0 && px<=b.x1 && py>=b.y0 && py<=b.y1){ bi=i; break; }
+    }
+    if(bi < 0){
+      let bd = Infinity;
+      for(let i=0;i<boxes.length;i++){
+        const b = boxes[i];
+        const dx = Math.max(b.x0-px, 0, px-b.x1), dy = Math.max(b.y0-py, 0, py-b.y1);
+        const d = dx*dx + dy*dy;
+        if(d < bd){ bd = d; bi = i; }
+      }
+    }
+    buckets[bi < 0 ? 0 : bi].push(it);
+  }
+  const lines = [];
+  for(const bucket of buckets){
+    for(const ln of reconstructLinesInItemOrder(bucket)) lines.push(ln);
+  }
+  return lines;
+}
+function logXYCutBlocks(idx, leaves, hadVerticalCut){
+  console.log(`[XYCut] page ${idx+1}: leaves=${leaves.length} hadVerticalCut=${hadVerticalCut}`,
+    leaves.map(l => l.length));
+}
+
+async function extractPageTokenLines(doc, idx){
+  const page = await doc.getPage(idx+1);
+  const content = await page.getTextContent();
+
+  // 前処理ゲート: 回転ページは現行動作（横書き前提が崩れるため）
+  if(page.rotate % 180 !== 0) return reconstructLinesInItemOrder(content.items);
+
+  // 非空トークン化（ord=content.items内の添字を保持）
+  // 空白のみitem（pdf.jsが段間ギャップを表す" "等）は幾何解析から除外。これを含めると
+  // ガターが空白itemで橋渡しされ和集合ギャップが消え、縦カット(段分割)を取りこぼす。
+  // 行の再構成(reconstructLinesInItemOrder)は全item(空白含む)を使うため出力・非回帰には不影響。
+  const toks = [];
+  let vcount = 0;
+  content.items.forEach((it, ord) => {
+    if(!it.str || !it.str.trim()) return;
+    const x0 = it.transform[4], y0 = it.transform[5];
+    const fh = Math.hypot(it.transform[2], it.transform[3]);
+    if(Math.abs(it.transform[1]) > Math.abs(it.transform[0])) vcount++;
+    toks.push({ord, x0, x1:x0 + it.width, y0, y1:y0 + fh, fh});
+  });
+
+  // 縦書き主体ページは現行動作
+  if(toks.length && vcount * 2 > toks.length) return reconstructLinesInItemOrder(content.items);
+  if(toks.length < XYCUT_MIN_BLOCK_TOKENS) return reconstructLinesInItemOrder(content.items);
+
+  const ctx = {hadVerticalCut:false};
+  const leaves = xyCut(toks, 0, ctx);
+
+  // 列存在ゲート: 縦カット無しは現行動作（バイト一致・非回帰）。有りは葉ごと再構成。
+  const result = ctx.hadVerticalCut
+    ? assembleFromLeaves(content.items, leaves)
+    : reconstructLinesInItemOrder(content.items);
+
+  if(state.debugXYCut) logXYCutBlocks(idx, leaves, ctx.hadVerticalCut);
+  return result;
 }
 
 // 文書全体を位置つきでページ配列として取得（[pageLines, ...]）
@@ -1153,6 +1298,13 @@ function buildTextHighlights(){
   }
   return hi;
 }
+
+// ── XY-cut 多段組み読み順復元（フェーズ3）定数 ──
+const XYCUT_MAX_DEPTH        = 6;   // 再帰深度上限
+const XYCUT_MIN_BLOCK_TOKENS = 2;   // これ未満は分割せず葉に
+const COL_GAP_EM             = 2.5; // 縦カット(段)最小ガター幅 ÷ フォント高
+const ROW_GAP_EM             = 1.6; // 横カット最小空白高 ÷ フォント高
+const COL_MIN_SIDE_LINES     = 3;   // 段分割は両側に≥3行(量子化Y種類)を要求
 
 // ── 表領域のセル格子diff（フェーズ2） ──
 const TABLE_ROWS_MIN = 3;   // 表と判定する最小行数
