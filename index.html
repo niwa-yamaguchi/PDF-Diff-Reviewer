@@ -326,10 +326,9 @@
       <div class="field">
         <span class="label">ページ整列（空白の挿入で再整列）</span>
         <div class="alignpad">
-          <button id="alignAddNew" disabled title="このスロットの新ページを「追加」扱いにし、旧側に空白を挿入して以降を再整列">この新ページは追加</button>
-          <button id="alignDelOld" disabled title="このスロットの旧ページを「削除」扱いにし、新側に空白を挿入して以降を再整列">この旧ページは削除</button>
+          <button id="alignDelOld" disabled title="このスロットの旧ページが削除された扱いにし、新側に空白を挿入して以降を再整列">この旧ページは削除された</button>
+          <button id="alignAddNew" disabled title="このスロットの新ページが追加された扱いにし、旧側に空白を挿入して以降を再整列">この新ページは追加された</button>
           <button id="alignUndo" class="full" disabled title="直前の整列操作を取り消す">↩ 取り消す</button>
-          <button id="alignReset" class="full" disabled title="整列を初期状態（位置一致）に戻す">整列をリセット</button>
         </div>
         <span class="hint" style="font-size:10px;color:var(--muted)">※PDFを読み込み直すと整列はリセットされます</span>
       </div>
@@ -783,7 +782,6 @@ function updateAlignButtons(){
   $("alignAddNew").disabled = !on;
   $("alignDelOld").disabled = !on;
   $("alignUndo").disabled  = !on || state.alignOps.length === 0;
-  $("alignReset").disabled = !on || state.alignOps.length === 0;
 }
 
 async function refreshAfterAlign(){
@@ -945,13 +943,6 @@ $("alignUndo").addEventListener("click", async ()=>{
   if(!op) return;
   const seq = op.side === "old" ? state.oldSeq : state.newSeq;
   if(seq[op.slot] === null) seq.splice(op.slot, 1); // 念のため null を確認して除去
-  await refreshAfterAlign();
-});
-$("alignReset").addEventListener("click", async ()=>{
-  if(!state.oldDoc || !state.newDoc) return;
-  state.oldSeq = Array.from({length:state.oldDoc.numPages}, (_,i)=>i);
-  state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
-  state.alignOps = [];
   await refreshAfterAlign();
 });
 $("prev").addEventListener("click",()=>show(state.cur-1));
