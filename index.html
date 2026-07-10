@@ -1159,32 +1159,6 @@ function logXYCutBlocks(idx, leaves, hadVerticalCut){
     leaves.map(l => l.length));
 }
 
-// ⚠開発時検証専用の凍結オラクル（reconstructLinesInItemOrderと同一ロジックの独立コピー）。
-// debugXYCutの非回帰self-check用。受け入れ基準6の確認後（Task5 最終step）に self-check ごと除去する。
-function extractPageTokenLinesLegacy(items){
-  const lines = [];
-  const TOL = 2.5;
-  let cur = null;
-  const flush = () => {
-    if(cur && cur.parts.length){
-      const sorted = cur.parts.slice().sort((a,b)=>a.x-b.x);
-      let text = "";
-      const tokens = [];
-      for(const p of sorted){ tokens.push({str:p.str, off:text.length, transform:p.transform.slice(), w:p.w}); text += p.str; }
-      lines.push({text:text.replace(/\s+$/,""), tokens});
-    }
-    cur = null;
-  };
-  for(const it of items){
-    const y = it.transform[5];
-    if(cur===null || Math.abs(cur.y-y) > TOL){ flush(); cur = {y, parts:[]}; }
-    if(it.str) cur.parts.push({x:it.transform[4], str:it.str, transform:it.transform, w:it.width});
-    if(it.hasEOL){ flush(); cur = null; }
-  }
-  flush();
-  return lines;
-}
-
 async function extractPageTokenLines(doc, idx){
   const page = await doc.getPage(idx+1);
   const content = await page.getTextContent();
@@ -1218,15 +1192,7 @@ async function extractPageTokenLines(doc, idx){
     ? assembleFromLeaves(content.items, leaves)
     : reconstructLinesInItemOrder(content.items);
 
-  // 自己チェック（設計§9・受け入れ基準6）: 非カットページは凍結オラクルとdeep-equalであること
-  if(state.debugXYCut){
-    logXYCutBlocks(idx, leaves, ctx.hadVerticalCut);
-    if(!ctx.hadVerticalCut){
-      const oracle = extractPageTokenLinesLegacy(content.items);
-      if(JSON.stringify(result) !== JSON.stringify(oracle))
-        console.error(`[XYCut] page ${idx+1}: NON-REGRESSION MISMATCH (非カットページが現行と不一致)`);
-    }
-  }
+  if(state.debugXYCut) logXYCutBlocks(idx, leaves, ctx.hadVerticalCut);
   return result;
 }
 
