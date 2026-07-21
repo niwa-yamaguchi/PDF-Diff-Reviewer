@@ -147,6 +147,9 @@
   .alignpad button:hover{border-color:var(--signal)}
   .alignpad button:disabled{opacity:.4;cursor:not-allowed}
   .alignpad .full{grid-column:1 / -1}
+  .autoalign{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg)}
+  .autoalign input{width:14px;height:14px;accent-color:var(--signal);cursor:pointer}
+  .alignreadout{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px;min-height:13px}
 
   /* ── ビューア ── */
   section.view{position:relative;overflow:auto;background:var(--ink);
@@ -321,6 +324,14 @@
           <button data-dx="1" data-dy="0">▶</button>
           <span></span><button data-dx="0" data-dy="1">▼</button><span></span>
         </div>
+      </div>
+
+      <div class="field">
+        <label class="autoalign">
+          <input type="checkbox" id="autoAlign">
+          <span>自動位置合わせ（回転・拡縮・移動）</span>
+        </label>
+        <div class="alignreadout" id="alignReadout">—</div>
       </div>
 
       <div class="field">
@@ -709,23 +720,6 @@ function estimateSimilarity(oldGray, oldW, oldH, newGray, newW, newH, opts={}){
     && scale >= minScale && scale <= maxScale
     && Math.abs(angle) <= maxAngle;
   return { angle, scale, txFrac, tyFrac, conf: best.conf, applied };
-}
-
-// [DEV-ONLY] Task 9 で削除。コンソールから __alignSelfTest() で実行。
-function __alignSelfTest(){
-  const N=128;
-  const cross=()=>{ const g=new Float64Array(N*N).fill(255); const c=N/2;
-    for(let i=0;i<N;i++) for(let w=-1;w<=1;w++){ g[i*N+(c+w)]=0; g[(c+w)*N+i]=0; }
-    for(let y=N*0.15|0;y<N*0.30|0;y++) for(let x=N*0.60|0;x<N*0.80|0;x++) g[y*N+x]=0; return g; };
-  const oldG=cross();
-  const trueAngle=6*Math.PI/180, trueScale=1.08;
-  const newG=warpAffine(oldG, N, trueAngle, trueScale, 4, -6);
-  const est=estimateSimilarity(oldG, N, N, newG, N, N);
-  const okApplied = est.applied===true;
-  const okAngle = Math.abs((-est.angle)-trueAngle) < 3*Math.PI/180;
-  const okScale = Math.abs((1/est.scale)-trueScale) < 0.05;
-  console.log("[alignSelfTest]", {est, okApplied, okAngle, okScale});
-  return okApplied && okAngle && okScale;
 }
 
 const $ = id => document.getElementById(id);
@@ -1141,6 +1135,16 @@ function updateAlignButtons(){
   $("alignUndo").disabled  = !on || state.alignOps.length === 0;
 }
 
+function updateAlignReadout(){
+  const el = $("alignReadout");
+  if(!state.autoAlign){ el.textContent = "—"; return; }
+  const a = state.alignCache[state.cur];
+  if(!a){ el.textContent = "自動整列: 推定待ち"; return; }
+  if(!a.applied){ el.textContent = "自動整列: 低信頼（適用せず）"; return; }
+  const deg = (a.angle*180/Math.PI).toFixed(2);
+  el.textContent = `自動整列: θ=${deg>=0?"+":""}${deg}° / ×${a.scale.toFixed(3)} / 適用`;
+}
+
 async function refreshAfterAlign(){
   state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
   state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
@@ -1155,6 +1159,7 @@ async function show(idx){
   state.cur=idx;
   if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
   updateAlignButtons();
+  updateAlignReadout();
 }
 
 // ── ズーム & パン ──
@@ -1278,6 +1283,15 @@ $("nudgeReset").addEventListener("click",()=>{
   state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
   if(!state.pages) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+$("autoAlign").addEventListener("change", async e=>{
+  state.autoAlign = e.target.checked;
+  if(!state.pages) return;
+  // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
+  // トグルモードでも推定完了後に読み出しを更新できるよう await して同期させる。
+  if(state.mode==="toggle"){ state.toggleCache=null; await buildToggle(state.cur); }
+  else await show(state.cur);
+  updateAlignReadout();
 });
 
 $("run").addEventListener("click",async()=>{
