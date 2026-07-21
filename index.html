@@ -1286,7 +1286,7 @@ $("nudgeReset").addEventListener("click",()=>{
 });
 $("autoAlign").addEventListener("change", async e=>{
   state.autoAlign = e.target.checked;
-  if(!state.pages) return;
+  if(!state.pages){ updateAlignReadout(); return; }
   // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
   // トグルモードでも推定完了後に読み出しを更新できるよう await して同期させる。
   if(state.mode==="toggle"){ state.toggleCache=null; await buildToggle(state.cur); }
