@@ -777,6 +777,40 @@ async function renderPageCanvas(doc, idx, scale){
   return c;
 }
 
+// alignCache の正規化パラメータ（new→old）から、現在Canvas寸法での適用可否と行列要素を返す。
+// applied=false または未推定なら恒等（手動 dx/dy のみ）。
+function alignMatrixFor(idx, oldW, oldH, newW, newH){
+  const a = state.autoAlign ? state.alignCache[idx] : null;
+  if(!a || !a.applied) return { angle:0, scale:1, tx:0, ty:0, applied:false };
+  const Wc = Math.max(oldW, newW), Hc = Math.max(oldH, newH);
+  return { angle:a.angle, scale:a.scale, tx:a.txFrac*Wc, ty:a.tyFrac*Hc, applied:true };
+}
+
+// 新版ページCanvas(newC)を旧版フレームへワープしたカラーCanvasを返す。
+// setTransform に自動行列を積み、その上に手動 dx/dy を平行移動として合成する。
+// 出力Canvas寸法は buildDiff/buildToggle 側で決めた width/height を使う。
+function renderAlignedNewCanvas(newC, m, width, height){
+  const c = document.createElement("canvas");
+  c.width = width; c.height = height;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,width,height);
+  if(!newC) return c;
+  const ncx = newC.width/2, ncy = newC.height/2;
+  if(m.applied){
+    // dest = center(=そのまま原点系) + t + scale·R(angle)·(src-newCenter)
+    // ここでは newCenter を回転中心にし、旧フレーム原点へ (ncx,ncy)+dx/dy でマップ
+    const cos=Math.cos(m.angle)*m.scale, sin=Math.sin(m.angle)*m.scale;
+    const e = ncx + m.tx + state.dx;
+    const f = ncy + m.ty + state.dy;
+    ctx.setTransform(cos, sin, -sin, cos, e - (cos*ncx - sin*ncy), f - (sin*ncx + cos*ncy));
+    ctx.drawImage(newC, 0, 0);
+    ctx.setTransform(1,0,0,1,0,0);
+  } else {
+    ctx.drawImage(newC, state.dx, state.dy); // 現行と同一（整数平行移動）
+  }
+  return c;
+}
+
 // PDFページ → グレースケール ImageData（無い場合は白紙）
 async function renderGray(doc, idx, scale){
   const c = await renderPageCanvas(doc, idx, scale);
@@ -919,20 +953,26 @@ function toggleBoxes(){
 async function buildDiff(idx){
   const scale = state.dpi/72;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
-  const [oimg, nimg] = await Promise.all([
-    renderGray(state.oldDoc, seqIdx(state.oldSeq, idx), scale),
-    renderGray(state.newDoc, seqIdx(state.newSeq, idx), scale)
+  const [oldC, newC] = await Promise.all([
+    renderPageCanvas(state.oldDoc, seqIdx(state.oldSeq, idx), scale),
+    renderPageCanvas(state.newDoc, seqIdx(state.newSeq, idx), scale)
   ]);
-  const ow = oimg?oimg.width:0, oh = oimg?oimg.height:0;
-  const nw = nimg?nimg.width:0, nh = nimg?nimg.height:0;
-  const W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
-  const H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
+  const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
+  const nw = newC?newC.width:0, nh = newC?newC.height:0;
+  const m = alignMatrixFor(idx, ow, oh, nw, nh);
+  // 作業フレーム: 旧版矩形 ∪（適用時は全体を包む十分な大きさ）。恒等時は現行のW/H計算に一致。
+  const W = Math.max(ow, nw + Math.max(0,state.dx)) || Math.max(ow,nw);
+  const H = Math.max(oh, nh + Math.max(0,state.dy)) || Math.max(oh,nh);
   const width  = Math.max(ow, nw, W, 1);
   const height = Math.max(oh, nh, H, 1);
 
+  const alignedNewC = renderAlignedNewCanvas(newC, m, width, height);
+  const oimg = oldC ? oldC.getContext("2d").getImageData(0,0,ow,oh) : null;
+  const nAligned = alignedNewC.getContext("2d").getImageData(0,0,width,height);
+
   out.width = width; out.height = height;
   const res = octx.createImageData(width, height);
-  const R = res.data; R.fill(255); // 白背景
+  const R = res.data; R.fill(255);
 
   const th = state.th;
   let rm=0, ad=0;
@@ -941,19 +981,15 @@ async function buildDiff(idx){
   const bflags = new Uint8Array(cols*rows);
   for(let y=0;y<height;y++){
     for(let x=0;x<width;x++){
-      // 旧版インク（そのまま）
       let oInk=false;
       if(oimg && x<ow && y<oh){ oInk = lum(oimg.data,(y*ow+x)*4) < th; }
-      // 新版インク（dx,dy オフセット適用）
-      let nInk=false;
-      const nx = x - state.dx, ny = y - state.dy;
-      if(nimg && nx>=0 && ny>=0 && nx<nw && ny<nh){ nInk = lum(nimg.data,(ny*nw+nx)*4) < th; }
-
+      // 整列済み新版は既に作業フレーム(width×height)へ配置済み → 同座標参照
+      const nInk = lum(nAligned.data,(y*width+x)*4) < th;
       if(oInk||nInk){
         const p=(y*width+x)*4;
-        if(oInk&&nInk){ R[p]=60;R[p+1]=60;R[p+2]=60; }          // 共通=グレー
-        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }    // 削除=赤
-        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }           // 追加=青
+        if(oInk&&nInk){ R[p]=60;R[p+1]=60;R[p+2]=60; }
+        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
       }
     }
   }
