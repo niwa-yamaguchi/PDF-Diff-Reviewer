@@ -923,6 +923,23 @@ function computeChangeBoxes(oimg, nimg, width, height){
   return clampBoxes(raw, width, height);
 }
 
+// 整列済み新版（作業フレームに配置済み）を旧版と同座標比較して変更枠を算出。
+function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
+  const th = state.th, block = blockSize();
+  const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
+  const bflags = new Uint8Array(cols*rows);
+  for(let y=0;y<height;y++){
+    for(let x=0;x<width;x++){
+      let oInk=false;
+      if(oimg && x<ow && y<oh) oInk = lum(oimg.data,(y*ow+x)*4) < th;
+      const nInk = lum(nAlignedImg.data,(y*width+x)*4) < th;
+      if(oInk !== nInk) bflags[((y/block)|0)*cols + ((x/block)|0)]=1;
+    }
+  }
+  const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
+  return clampBoxes(raw, width, height);
+}
+
 function drawBoxes(){
   if(!state.boxes || !state.boxes.length) return;
   const lw = Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
@@ -1028,16 +1045,20 @@ async function buildToggle(idx){
     const nimg = newC ? newC.getContext("2d").getImageData(0,0,nw,nh) : null;
     state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh, oimg, nimg};
   }
-  const {ow, oh, nw, nh, oimg, nimg} = state.toggleCache;
+  const {ow, oh, nw, nh, oimg, oldC, newC} = state.toggleCache;
+  const m = alignMatrixFor(idx, ow, oh, nw, nh);
   const W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
   const H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
   const width  = Math.max(ow, nw, W, 1);
   const height = Math.max(oh, nh, H, 1);
   out.width = width; out.height = height;
 
-  // 枠ON時のみ、差分モードと同一の画素比較で枠を算出（th/dx/dy変更に追従）。
-  // OFF時は走査を省き従来どおり瞬時（切替モードの軽快さを維持）。
-  state.boxes = state.showBoxes ? computeChangeBoxes(oimg, nimg, width, height) : [];
+  // 整列済み新版（枠算出・NEW表示の双方に使う）
+  const alignedNewC = renderAlignedNewCanvas(newC, m, width, height);
+  const nAlignedImg = alignedNewC.getContext("2d").getImageData(0,0,width,height);
+  state.toggleCache.alignedNewC = alignedNewC;
+  // 枠算出: 旧版 ImageData と整列済み新版 ImageData を同座標比較（computeChangeBoxes を同座標版で使用）
+  state.boxes = state.showBoxes ? computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height) : [];
 
   drawToggleSide();
 
@@ -1057,10 +1078,10 @@ function drawToggleSide(){
   octx.clearRect(0,0,out.width,out.height);
   octx.fillStyle = "#fff"; octx.fillRect(0,0,out.width,out.height);
   const side = state.toggleSide;
-  const img = side==="old" ? c.oldC : c.newC;
-  if(img){
-    if(side==="old") octx.drawImage(img,0,0);
-    else octx.drawImage(img,state.dx,state.dy);
+  const hasPage = side==="old" ? !!c.oldC : !!c.newC;
+  if(hasPage){
+    if(side==="old") octx.drawImage(c.oldC,0,0);
+    else octx.drawImage(c.alignedNewC,0,0); // 整列＋dx/dy 焼き込み済み
     if(state.showBoxes) drawBoxes(); // 変更枠を重ねる（枠座標は旧/新どちらの表示にも整合）
   } else {
     octx.fillStyle = "#7f8f9e";
