@@ -750,11 +750,13 @@ async function loadPdf(file, which){
   else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
   state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
   state.textHi = null; state.textPage = 0;
+  state.alignCache = {}; // 自動整列の推定結果も破棄
   $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
   if(state.oldDoc && state.newDoc){
     state.oldSeq = Array.from({length:state.oldDoc.numPages}, (_,i)=>i);
     state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
     state.alignOps = [];
+    state.alignCache = {}; // 明示的に再破棄（(a)で既に空だが両PDF読込時初期化として明示）
     state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
     state.cur = 0; state.cache = {};
     $("run").disabled = false;
@@ -775,6 +777,24 @@ async function renderPageCanvas(doc, idx, scale){
   ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
   await page.render({canvasContext:ctx, viewport:vp}).promise;
   return c;
+}
+
+// autoAlign ON かつ当ページ未推定なら、フーリエ・メリンで推定して alignCache に格納。
+// oldC/newC はカラーCanvas。グレースケールFloat配列へ変換して estimateSimilarity に渡す。
+function canvasToGrayF(c){
+  if(!c) return null;
+  const {width:w, height:h} = c;
+  const d = c.getContext("2d").getImageData(0,0,w,h).data;
+  const g = new Float64Array(w*h);
+  for(let i=0,p=0;i<g.length;i++,p+=4) g[i] = 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
+  return { g, w, h };
+}
+function ensureAlignEstimate(idx, oldC, newC){
+  if(!state.autoAlign) return;
+  if(state.alignCache[idx]) return; // ページ別キャッシュ
+  const O = canvasToGrayF(oldC), Nw = canvasToGrayF(newC);
+  if(!O || !Nw){ state.alignCache[idx] = {angle:0,scale:1,txFrac:0,tyFrac:0,conf:0,applied:false}; return; }
+  state.alignCache[idx] = estimateSimilarity(O.g, O.w, O.h, Nw.g, Nw.w, Nw.h);
 }
 
 // alignCache の正規化パラメータ（new→old）から、現在Canvas寸法での適用可否と行列要素を返す。
@@ -976,6 +996,7 @@ async function buildDiff(idx){
   ]);
   const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
   const nw = newC?newC.width:0, nh = newC?newC.height:0;
+  ensureAlignEstimate(idx, oldC, newC);
   const m = alignMatrixFor(idx, ow, oh, nw, nh);
   // 作業フレーム: 旧版矩形 ∪（適用時は全体を包む十分な大きさ）。恒等時は現行のW/H計算に一致。
   const W = Math.max(ow, nw + Math.max(0,state.dx)) || Math.max(ow,nw);
@@ -1046,6 +1067,7 @@ async function buildToggle(idx){
     state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh, oimg, nimg};
   }
   const {ow, oh, nw, nh, oimg, oldC, newC} = state.toggleCache;
+  ensureAlignEstimate(idx, oldC, newC);
   const m = alignMatrixFor(idx, ow, oh, nw, nh);
   const W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
   const H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
@@ -1122,6 +1144,7 @@ function updateAlignButtons(){
 async function refreshAfterAlign(){
   state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
   state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
+  state.alignCache = {}; // スロット→ページ対応が変わるため自動整列も再推定させる
   if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
   if(state.cur < 0) state.cur = 0;
   await show(state.cur);
