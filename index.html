@@ -456,7 +456,277 @@ const state = {
   boxes:null, // computeBoxes の結果（現在ページ分）
   oldSeq:null, newSeq:null, // 旧/新のページ順（要素: 0基点ページ番号 or null=空白スペーサ）
   alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
+  autoAlign:false, // 自動位置合わせ（フーリエ・メリン）のON/OFF
+  alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, conf, applied}（正規化・dpi非依存）
 };
+
+// ==== Fourier-Mellin 相似変換 推定コア（scratchpad/align-core.mjs より移植・挙動不変） ====
+
+// in-place 反復基数2 Cooley-Tukey FFT。長さは2の冪。inverse時は 1/n 正規化。
+function fft1d(re, im, inverse){
+  const n = re.length;
+  for(let i=1, j=0; i<n; i++){
+    let bit = n >> 1;
+    for(; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if(i < j){ const tr=re[i];re[i]=re[j];re[j]=tr; const ti=im[i];im[i]=im[j];im[j]=ti; }
+  }
+  for(let len=2; len<=n; len<<=1){
+    const ang = (inverse ? 2 : -2) * Math.PI / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    const half = len >> 1;
+    for(let i=0;i<n;i+=len){
+      let cwr=1, cwi=0;
+      for(let k=0;k<half;k++){
+        const a = i+k, b = i+k+half;
+        const vr = re[b]*cwr - im[b]*cwi;
+        const vi = re[b]*cwi + im[b]*cwr;
+        re[b]=re[a]-vr; im[b]=im[a]-vi;
+        re[a]+=vr; im[a]+=vi;
+        const ncwr = cwr*wr - cwi*wi; cwi = cwr*wi + cwi*wr; cwr = ncwr;
+      }
+    }
+  }
+  if(inverse){ for(let i=0;i<n;i++){ re[i]/=n; im[i]/=n; } }
+}
+
+// N×N in-place（行FFT → 列FFT）。re,im は長さ N*N の row-major。
+function fft2d(re, im, N, inverse){
+  const rr = new Float64Array(N), ri = new Float64Array(N);
+  for(let y=0;y<N;y++){
+    const off = y*N;
+    for(let x=0;x<N;x++){ rr[x]=re[off+x]; ri[x]=im[off+x]; }
+    fft1d(rr, ri, inverse);
+    for(let x=0;x<N;x++){ re[off+x]=rr[x]; im[off+x]=ri[x]; }
+  }
+  const cr = new Float64Array(N), ci = new Float64Array(N);
+  for(let x=0;x<N;x++){
+    for(let y=0;y<N;y++){ cr[y]=re[y*N+x]; ci[y]=im[y*N+x]; }
+    fft1d(cr, ci, inverse);
+    for(let y=0;y<N;y++){ re[y*N+x]=cr[y]; im[y*N+x]=ci[y]; }
+  }
+}
+
+function hannWindow(N){
+  const w1 = new Float64Array(N);
+  for(let i=0;i<N;i++) w1[i] = 0.5*(1 - Math.cos(2*Math.PI*i/(N-1)));
+  const w = new Float64Array(N*N);
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++) w[y*N+x] = w1[y]*w1[x];
+  return w;
+}
+
+// 双一次サンプル（範囲外は fill 値）
+function sampleBilinear(g, W, H, x, y, fill){
+  if(x<0 || y<0 || x>W-1 || y>H-1) return fill;
+  const x0=Math.floor(x), y0=Math.floor(y);
+  const x1=Math.min(x0+1,W-1), y1=Math.min(y0+1,H-1);
+  const fx=x-x0, fy=y-y0;
+  const a=g[y0*W+x0], b=g[y0*W+x1], c=g[y1*W+x0], d=g[y1*W+x1];
+  return a*(1-fx)*(1-fy) + b*fx*(1-fy) + c*(1-fx)*fy + d*fx*fy;
+}
+
+// 中心基準アフィン: dst = R(angle)·S(scale)·(src-center) + center + (tx,ty)。逆写像で埋める。背景=255。
+function warpAffine(src, N, angle, scale, tx, ty){
+  const dst = new Float64Array(N*N).fill(255);
+  const c = (N-1)/2;
+  const cos=Math.cos(angle), sin=Math.sin(angle);
+  // 逆変換: src = center + (1/scale)·R(-angle)·(dst - center - t)
+  const inv = 1/scale;
+  for(let y=0;y<N;y++){
+    for(let x=0;x<N;x++){
+      const px = x - c - tx, py = y - c - ty;
+      const sx = c + inv*( cos*px + sin*py);
+      const sy = c + inv*(-sin*px + cos*py);
+      dst[y*N+x] = sampleBilinear(src, N, N, sx, sy, 255);
+    }
+  }
+  return dst;
+}
+
+// 窓掛け → 2D-FFT → fftshift済 log振幅（DC中央）
+function magnitudeSpectrum(gray, N, win){
+  const re = new Float64Array(N*N), im = new Float64Array(N*N);
+  for(let i=0;i<N*N;i++) re[i] = gray[i]*win[i];
+  fft2d(re, im, N, false);
+  const mag = new Float64Array(N*N);
+  const h = N>>1;
+  for(let y=0;y<N;y++){
+    const sy = (y+h)%N;
+    for(let x=0;x<N;x++){
+      const sx = (x+h)%N;
+      mag[sy*N+sx] = Math.log(1 + Math.hypot(re[y*N+x], im[y*N+x]));
+    }
+  }
+  return mag;
+}
+
+// 振幅スペクトルを対数極座標へ再標本化。row=log-rho, col=theta(0..PI)。
+// 振幅スペクトルは原点対称のため theta は [0,PI) で十分（回転180°曖昧は estimateSimilarity で解消）。
+function logPolar(mag, N, nRho, nTheta){
+  const cx=N/2, cy=N/2;
+  const rhoMax = N/2;
+  const logBase = Math.exp(Math.log(rhoMax)/nRho);
+  const out = new Float64Array(nRho*nTheta);
+  for(let ri=0; ri<nRho; ri++){
+    const rho = Math.pow(logBase, ri);
+    for(let ti=0; ti<nTheta; ti++){
+      const theta = Math.PI*ti/nTheta;
+      const x = cx + rho*Math.cos(theta);
+      const y = cy + rho*Math.sin(theta);
+      out[ri*nTheta+ti] = sampleBilinear(mag, N, N, x, y, 0);
+    }
+  }
+  return out;
+}
+
+// 位相相関。a,b は N×N（同一スケール）。戻り (dx,dy) は b を動かして a に合わせるシフト。
+// psr = (peak - mean) / std （ピーク近傍5×5を除外して算出）。
+function phaseCorrelate(a, b, N){
+  const ar=new Float64Array(N*N), ai=new Float64Array(N*N);
+  const br=new Float64Array(N*N), bi=new Float64Array(N*N);
+  ar.set(a); br.set(b);
+  fft2d(ar, ai, N, false);
+  fft2d(br, bi, N, false);
+  const cr=new Float64Array(N*N), ci=new Float64Array(N*N);
+  for(let i=0;i<N*N;i++){
+    // A * conj(B)
+    const re = ar[i]*br[i] + ai[i]*bi[i];
+    const im = ai[i]*br[i] - ar[i]*bi[i];
+    const mag = Math.hypot(re, im) || 1e-12;
+    cr[i]=re/mag; ci[i]=im/mag;
+  }
+  fft2d(cr, ci, N, true); // 相関面（実部）
+  let peak=-Infinity, px=0, py=0;
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    const v=cr[y*N+x];
+    if(v>peak){ peak=v; px=x; py=y; }
+  }
+  // PSR（ピーク5×5近傍を除外）
+  let sum=0, sum2=0, cnt=0;
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    const ddx=Math.min(((x-px)%N+N)%N, ((px-x)%N+N)%N);
+    const ddy=Math.min(((y-py)%N+N)%N, ((py-y)%N+N)%N);
+    if(ddx<=2 && ddy<=2) continue;
+    const v=cr[y*N+x]; sum+=v; sum2+=v*v; cnt++;
+  }
+  const mean=sum/cnt;
+  const std=Math.sqrt(Math.max(sum2/cnt - mean*mean, 1e-12));
+  const psr=(peak-mean)/std;
+  // ピーク位置 → 符号付きシフト。相関面のピークはシフト量そのもの（wrapを [-N/2,N/2) へ）。
+  let sx=px, sy=py;
+  if(sx>=N/2) sx-=N;
+  if(sy>=N/2) sy-=N;
+  // A*conj(B) のピークは「a に対する b のずれ」= b は (sx,sy) だけ a より進んでいる。
+  // b を (-sx,-sy) 動かすと a に一致。
+  return { dx:sx, dy:sy, peak, psr };
+}
+
+// 共通フレーム Wc×Hc に原点配置した gray を N×N へ同一係数で縮小（背景255）。
+function resampleToN(gray, W, H, Wc, Hc, N){
+  const out = new Float64Array(N*N).fill(255);
+  for(let y=0;y<N;y++){
+    const sy = y * Hc / N;
+    for(let x=0;x<N;x++){
+      const sx = x * Wc / N;
+      out[y*N+x] = (sx <= W-1 && sy <= H-1) ? sampleBilinear(gray, W, H, sx, sy, 255) : 255;
+    }
+  }
+  return out;
+}
+
+// フーリエ・メリンで相似変換（new→old）を推定。
+// opts: { N=128, minPsr=18, maxAngleDeg=45, minScale=0.5, maxScale=2.0 }
+// minPsr は conf = min(rs.psr, tr.psr) に対する単一閾値のみで判定する
+// （候補間のピーク比較・分離度ゲートは導入しない — 過去に試したが、
+// 回転がほぼ0のときに複数候補が正しい同一解に収束して「僅差」になる
+// ケース（=一致の裏付け）と、範囲外スケールで誤って偽の一致に収束する
+// ケース（=曖昧さ）を区別できず、前者を誤って棄却する回帰を起こしたため
+// 撤回した）。
+// 実測（十字パターン, N=128、conf = min(rs.psr, tr.psr)）:
+//   既知の相似変換（6°/1.08倍/(4,-6)）        : conf ~25.9  → 採用したい
+//   純粋な倍率変化のみ（回転0, scale=1.02）    : conf ~71.5  → 採用したい
+//   純粋な倍率変化のみ（回転0, scale=1.08）    : conf ~58.6  → 採用したい
+//   純粋な倍率変化のみ（回転0, scale=1.3）     : conf ~52.8  → 採用したい
+//   純粋な倍率変化のみ（回転0, scale=0.85）    : conf ~31.9  → 採用したい
+//   純粋な平行移動のみ（tx=3,ty=2）            : conf ~106.3 → 採用したい
+//   純粋な平行移動のみ（tx=10,ty=-8）          : conf ~96.2  → 採用したい
+//   範囲外縮小 scale=0.3（[0.5,2]の範囲外）    : conf ~7.0   → 棄却したい
+//   範囲外拡大 scale=2.9（[0.5,2]の範囲外）    : conf ~12.7  → 棄却したい
+//   範囲外拡大 scale=3.0（[0.5,2]の範囲外）    : conf ~13.2  → 棄却したい
+// 「棄却したい」群は最大でも ~13.2、「採用したい」群は最小でも ~25.9 と
+// 明確な間隙があるため、両側に十分マージンを残せる 18 を採用する。
+
+function estimateSimilarity(oldGray, oldW, oldH, newGray, newW, newH, opts={}){
+  const N = opts.N || 128;
+  const minPsr = opts.minPsr ?? 18;
+  const maxAngle = (opts.maxAngleDeg ?? 45) * Math.PI/180;
+  const minScale = opts.minScale ?? 0.5, maxScale = opts.maxScale ?? 2.0;
+  const NONE = { angle:0, scale:1, txFrac:0, tyFrac:0, conf:0, applied:false };
+
+  const Wc = Math.max(oldW, newW), Hc = Math.max(oldH, newH);
+  const oldN = resampleToN(oldGray, oldW, oldH, Wc, Hc, N);
+  const newN = resampleToN(newGray, newW, newH, Wc, Hc, N);
+  const win = hannWindow(N);
+
+  // 回転・拡縮: 振幅スペクトル → 対数極座標 → 位相相関
+  const magO = magnitudeSpectrum(oldN, N, win);
+  const magNw = magnitudeSpectrum(newN, N, win);
+  const lpO = logPolar(magO, N, N, N);
+  const lpN = logPolar(magNw, N, N, N);
+  const rs = phaseCorrelate(lpO, lpN, N); // dx=theta方向, dy=rho方向（b=lpN→a=lpO のシフト）
+  const rhoMax = N/2, logBase = Math.exp(Math.log(rhoMax)/N);
+  const angleStep = Math.PI / N;
+  const thetaBase = rs.dx * angleStep;   // lpN→lpO のθずれ
+  const scaleBase = Math.pow(logBase, rs.dy);
+
+  // 符号・180°曖昧を候補探索で解消: 各候補で new を補正し old と平行移動相関、ピーク最大を採用。
+  const candidates = [];
+  for(const th of [thetaBase, thetaBase + Math.PI, -thetaBase]){
+    for(const sc of [scaleBase, 1/scaleBase]){
+      candidates.push({ th, sc });
+    }
+  }
+  let best = null;
+  for(const {th, sc} of candidates){
+    if(!(sc >= minScale && sc <= maxScale)) continue;
+    if(Math.abs(((th+Math.PI)%(2*Math.PI)) - Math.PI) > maxAngle) continue; // |th| を [-PI,PI]で評価
+    // new を (-th, 1/sc) で補正して old に合わせにいく（new→old の逆補正）
+    const warped = warpAffine(newN, N, -th, 1/sc, 0, 0);
+    const tr = phaseCorrelate(oldN, warped, N);
+    const conf = Math.min(rs.psr, tr.psr);
+    if(!best || tr.peak > best.tr.peak){
+      best = { th, sc, tr, conf };
+    }
+  }
+  if(!best) return NONE;
+
+  // new→old 適用変換: 角 = -th, 倍率 = 1/sc, 平行移動 = tr.(dx,dy)（N画素）→ 共通フレーム比
+  const angle = -best.th;
+  const scale = 1/best.sc;
+  const txFrac = best.tr.dx / N;
+  const tyFrac = best.tr.dy / N;
+  const applied = best.conf >= minPsr
+    && scale >= minScale && scale <= maxScale
+    && Math.abs(angle) <= maxAngle;
+  return { angle, scale, txFrac, tyFrac, conf: best.conf, applied };
+}
+
+// [DEV-ONLY] Task 9 で削除。コンソールから __alignSelfTest() で実行。
+function __alignSelfTest(){
+  const N=128;
+  const cross=()=>{ const g=new Float64Array(N*N).fill(255); const c=N/2;
+    for(let i=0;i<N;i++) for(let w=-1;w<=1;w++){ g[i*N+(c+w)]=0; g[(c+w)*N+i]=0; }
+    for(let y=N*0.15|0;y<N*0.30|0;y++) for(let x=N*0.60|0;x<N*0.80|0;x++) g[y*N+x]=0; return g; };
+  const oldG=cross();
+  const trueAngle=6*Math.PI/180, trueScale=1.08;
+  const newG=warpAffine(oldG, N, trueAngle, trueScale, 4, -6);
+  const est=estimateSimilarity(oldG, N, N, newG, N, N);
+  const okApplied = est.applied===true;
+  const okAngle = Math.abs((-est.angle)-trueAngle) < 3*Math.PI/180;
+  const okScale = Math.abs((1/est.scale)-trueScale) < 0.05;
+  console.log("[alignSelfTest]", {est, okApplied, okAngle, okScale});
+  return okApplied && okAngle && okScale;
+}
 
 const $ = id => document.getElementById(id);
 const out = $("out"), octx = out.getContext("2d");
