@@ -825,10 +825,22 @@ function renderAlignedNewCanvas(newC, m, width, height){
   return c;
 }
 
-// PDFページ → グレースケール ImageData（無い場合は白紙）
-async function renderGray(doc, idx, scale){
-  const c = await renderPageCanvas(doc, idx, scale);
-  return c ? c.getContext("2d").getImageData(0,0,c.width,c.height) : null;
+// applied=true 時、renderAlignedNewCanvas と同一の変換で newC の4隅を写像し、
+// 変換後の外接矩形（宛先フレーム座標系）を返す。W/H拡張の判定にのみ使う。
+function alignedNewBounds(newC, m){
+  if(!newC || !m.applied) return null;
+  const ncx = newC.width/2, ncy = newC.height/2;
+  const cos = Math.cos(m.angle)*m.scale, sin = Math.sin(m.angle)*m.scale;
+  const e = ncx + m.tx + state.dx - (cos*ncx - sin*ncy);
+  const f = ncy + m.ty + state.dy - (sin*ncx + cos*ncy);
+  const corners = [[0,0],[newC.width,0],[0,newC.height],[newC.width,newC.height]];
+  let x1 = -Infinity, y1 = -Infinity;
+  for(const [x,y] of corners){
+    const px = cos*x - sin*y + e, py = sin*x + cos*y + f;
+    if(px > x1) x1 = px;
+    if(py > y1) y1 = py;
+  }
+  return { x1, y1 };
 }
 
 // スロット s の実ページ番号（0基点）。スペーサ(null)・範囲外は null。
@@ -914,29 +926,6 @@ function clampBoxes(raw, width, height){
   }).filter(b=>b.w>0 && b.h>0);
 }
 
-// 新旧グレーImageDataから変更枠を算出（差分モード・新旧切替モード共通）。
-// buildDiff の二値化条件（輝度<th、新版に dx,dy オフセット、oInk!==nInk）と同一。
-function computeChangeBoxes(oimg, nimg, width, height){
-  const block = blockSize();
-  const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
-  const bflags = new Uint8Array(cols*rows);
-  const th = state.th;
-  const ow = oimg?oimg.width:0, oh = oimg?oimg.height:0;
-  const nw = nimg?nimg.width:0, nh = nimg?nimg.height:0;
-  for(let y=0;y<height;y++){
-    for(let x=0;x<width;x++){
-      let oInk=false;
-      if(oimg && x<ow && y<oh){ oInk = lum(oimg.data,(y*ow+x)*4) < th; }
-      let nInk=false;
-      const nx = x - state.dx, ny = y - state.dy;
-      if(nimg && nx>=0 && ny>=0 && nx<nw && ny<nh){ nInk = lum(nimg.data,(ny*nw+nx)*4) < th; }
-      if(oInk!==nInk){ bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
-    }
-  }
-  const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
-  return clampBoxes(raw, width, height);
-}
-
 // 整列済み新版（作業フレームに配置済み）を旧版と同座標比較して変更枠を算出。
 function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
   const th = state.th, block = blockSize();
@@ -992,9 +981,12 @@ async function buildDiff(idx){
   const nw = newC?newC.width:0, nh = newC?newC.height:0;
   ensureAlignEstimate(idx, oldC, newC);
   const m = alignMatrixFor(idx, ow, oh, nw, nh);
-  // 作業フレーム: 旧版矩形 ∪（適用時は全体を包む十分な大きさ）。恒等時は現行のW/H計算に一致。
-  const W = Math.max(ow, nw + Math.max(0,state.dx)) || Math.max(ow,nw);
-  const H = Math.max(oh, nh + Math.max(0,state.dy)) || Math.max(oh,nh);
+  const warpedBounds = alignedNewBounds(newC, m);
+  // 作業フレーム: 旧版矩形 ∪ 新版矩形(恒等時はdx/dy平行移動を考慮) ∪ ワープ後新版の外接矩形(適用時)。
+  // 「正/遠い側だけ拡張」の既存規約は維持（負のdx/dyによる近い側のクリップは現行仕様のまま変更しない）。
+  let W = Math.max(ow, nw + Math.max(0,state.dx)) || Math.max(ow,nw);
+  let H = Math.max(oh, nh + Math.max(0,state.dy)) || Math.max(oh,nh);
+  if(warpedBounds){ W = Math.max(W, Math.ceil(warpedBounds.x1)); H = Math.max(H, Math.ceil(warpedBounds.y1)); }
   const width  = Math.max(ow, nw, W, 1);
   const height = Math.max(oh, nh, H, 1);
 
@@ -1055,16 +1047,18 @@ async function buildToggle(idx){
     if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
     const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
     const nw = newC?newC.width:0, nh = newC?newC.height:0;
-    // 枠算出用に旧/新のImageDataも保持（renderGray相当。再取得コストを避ける）
+    // 枠算出用に旧版のImageDataも保持（再取得コストを避ける。新版は整列後にのみ使うため保持不要）
     const oimg = oldC ? oldC.getContext("2d").getImageData(0,0,ow,oh) : null;
-    const nimg = newC ? newC.getContext("2d").getImageData(0,0,nw,nh) : null;
-    state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh, oimg, nimg};
+    state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh, oimg};
   }
   const {ow, oh, nw, nh, oimg, oldC, newC} = state.toggleCache;
   ensureAlignEstimate(idx, oldC, newC);
   const m = alignMatrixFor(idx, ow, oh, nw, nh);
-  const W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
-  const H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
+  const warpedBounds = alignedNewBounds(newC, m);
+  // 作業フレーム: 旧版矩形 ∪ 新版矩形(恒等時はdx/dy平行移動を考慮) ∪ ワープ後新版の外接矩形(適用時)。
+  let W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
+  let H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
+  if(warpedBounds){ W = Math.max(W, Math.ceil(warpedBounds.x1)); H = Math.max(H, Math.ceil(warpedBounds.y1)); }
   const width  = Math.max(ow, nw, W, 1);
   const height = Math.max(oh, nh, H, 1);
   out.width = width; out.height = height;
@@ -1073,7 +1067,7 @@ async function buildToggle(idx){
   const alignedNewC = renderAlignedNewCanvas(newC, m, width, height);
   const nAlignedImg = alignedNewC.getContext("2d").getImageData(0,0,width,height);
   state.toggleCache.alignedNewC = alignedNewC;
-  // 枠算出: 旧版 ImageData と整列済み新版 ImageData を同座標比較（computeChangeBoxes を同座標版で使用）
+  // 枠算出: 旧版 ImageData と整列済み新版 ImageData を同座標で比較
   state.boxes = state.showBoxes ? computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height) : [];
 
   drawToggleSide();
@@ -1142,7 +1136,7 @@ function updateAlignReadout(){
   if(!a){ el.textContent = "自動整列: 推定待ち"; return; }
   if(!a.applied){ el.textContent = "自動整列: 低信頼（適用せず）"; return; }
   const deg = (a.angle*180/Math.PI).toFixed(2);
-  el.textContent = `自動整列: θ=${deg>=0?"+":""}${deg}° / ×${a.scale.toFixed(3)} / 適用`;
+  el.textContent = `自動整列: θ=${a.angle>=0?"+":""}${deg}° / ×${a.scale.toFixed(3)} / 適用`;
 }
 
 async function refreshAfterAlign(){
