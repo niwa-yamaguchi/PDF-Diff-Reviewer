@@ -314,6 +314,10 @@
         <div class="row"><span>インク判定 しきい値</span><span class="val" id="thVal">128</span></div>
         <input type="range" id="th" min="40" max="220" step="1" value="128">
       </div>
+      <div class="field ctrl">
+        <div class="row"><span>位置ズレ許容（px）</span><span class="val" id="toleranceVal">0</span></div>
+        <input type="range" id="tolerance" min="0" max="8" step="1" value="0">
+      </div>
 
       <div class="field">
         <span class="label">位置合わせ（新版を移動）</span>
@@ -467,6 +471,7 @@
 const state = {
   oldDoc:null, newDoc:null, pages:0, cur:0,
   dpi:150, th:128, dx:0, dy:0,
+  tolerancePx:0, // 位置ズレ許容半径（基準DPI150でのpx数）。既定0=恒等（現行動作と同じ）
   manualAngle:0, manualScale:1, // 手動 傾き補正(ラジアン)・拡大縮小(倍率)。既定で恒等
   cache:{}, // pageIndex -> {rm, ad}
   mode:"diff", toggleSide:"old", toggleCache:null, // 新旧切替モード用（現在ページ分のみ保持）
@@ -894,6 +899,7 @@ const BOX_BASE_DPI = 150;
 const BOX_BASE = 16;
 const BOX_MIN_BLOCKS = 2;
 function blockSize(){ return Math.max(4, Math.round(BOX_BASE * state.dpi / BOX_BASE_DPI)); }
+function toleranceRadiusPx(){ return Math.round(state.tolerancePx * state.dpi / BOX_BASE_DPI); }
 
 // 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
 // 1ブロック膨張してからBFSで連結成分をラベリングする。
@@ -1007,12 +1013,31 @@ function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
   const th = state.th, block = blockSize();
   const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
   const bflags = new Uint8Array(cols*rows);
-  for(let y=0;y<height;y++){
-    for(let x=0;x<width;x++){
-      let oInk=false;
-      if(oimg && x<ow && y<oh) oInk = lum(oimg.data,(y*ow+x)*4) < th;
-      const nInk = lum(nAlignedImg.data,(y*width+x)*4) < th;
-      if(oInk !== nInk) bflags[((y/block)|0)*cols + ((x/block)|0)]=1;
+  const radius = toleranceRadiusPx();
+  if(radius>0){
+    const oMask = new Uint8Array(width*height), nMask = new Uint8Array(width*height);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(oimg && x<ow && y<oh) oMask[i] = lum(oimg.data,(y*ow+x)*4) < th ? 1 : 0;
+        nMask[i] = lum(nAlignedImg.data,(y*width+x)*4) < th ? 1 : 0;
+      }
+    }
+    const {removed, added} = toleratedDiffMasks(oMask, nMask, width, height, radius);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(removed[i]||added[i]) bflags[((y/block)|0)*cols + ((x/block)|0)]=1;
+      }
+    }
+  } else {
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        let oInk=false;
+        if(oimg && x<ow && y<oh) oInk = lum(oimg.data,(y*ow+x)*4) < th;
+        const nInk = lum(nAlignedImg.data,(y*width+x)*4) < th;
+        if(oInk !== nInk) bflags[((y/block)|0)*cols + ((x/block)|0)]=1;
+      }
     }
   }
   const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
@@ -1079,17 +1104,43 @@ async function buildDiff(idx){
   const block = blockSize();
   const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
   const bflags = new Uint8Array(cols*rows);
-  for(let y=0;y<height;y++){
-    for(let x=0;x<width;x++){
-      let oInk=false;
-      if(oimg && x<ow && y<oh){ oInk = lum(oimg.data,(y*ow+x)*4) < th; }
-      // 整列済み新版は既に作業フレーム(width×height)へ配置済み → 同座標参照
-      const nInk = lum(nAligned.data,(y*width+x)*4) < th;
-      if(oInk||nInk){
-        const p=(y*width+x)*4;
-        if(oInk&&nInk){ R[p]=60;R[p+1]=60;R[p+2]=60; }
-        else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
-        else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+  const radius = toleranceRadiusPx();
+  if(radius>0){
+    // 位置ズレ許容あり: マスク構築 → 膨張 → 許容つき分類 の多段パス
+    const oMask = new Uint8Array(width*height), nMask = new Uint8Array(width*height);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(oimg && x<ow && y<oh) oMask[i] = lum(oimg.data,(y*ow+x)*4) < th ? 1 : 0;
+        nMask[i] = lum(nAligned.data,(y*width+x)*4) < th ? 1 : 0;
+      }
+    }
+    const {removed, added} = toleratedDiffMasks(oMask, nMask, width, height, radius);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(oMask[i]||nMask[i]){
+          const p=i*4;
+          if(removed[i]){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+          else if(added[i]){ R[p]=77;R[p+1]=141;R[p+2]=255; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+          else { R[p]=60;R[p+1]=60;R[p+2]=60; }
+        }
+      }
+    }
+  } else {
+    // 位置ズレ許容なし(既定): 現行の単一ループ(後方互換・性能維持)
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        let oInk=false;
+        if(oimg && x<ow && y<oh){ oInk = lum(oimg.data,(y*ow+x)*4) < th; }
+        // 整列済み新版は既に作業フレーム(width×height)へ配置済み → 同座標参照
+        const nInk = lum(nAligned.data,(y*width+x)*4) < th;
+        if(oInk||nInk){
+          const p=(y*width+x)*4;
+          if(oInk&&nInk){ R[p]=60;R[p+1]=60;R[p+2]=60; }
+          else if(oInk){ R[p]=255;R[p+1]=91;R[p+2]=87; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+          else { R[p]=77;R[p+1]=141;R[p+2]=255; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+        }
       }
     }
   }
@@ -1347,6 +1398,11 @@ $("dpi").addEventListener("change",async()=>{
 });
 $("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
 $("th").addEventListener("change",()=>{if(state.mode==="diff" && state.pages)show(state.cur);});
+$("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
+$("tolerance").addEventListener("change",()=>{
+  if(!state.pages) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
 
 document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
   b.addEventListener("click",()=>{
