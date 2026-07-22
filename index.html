@@ -327,6 +327,24 @@
       </div>
 
       <div class="field">
+        <span class="label">傾き補正（新版を回転）</span>
+        <div class="nudge">
+          <button data-rot="-1">↺ -0.1°</button>
+          <button class="c" id="rotReset">0.0°</button>
+          <button data-rot="1">+0.1° ↻</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="label">拡大縮小（新版を拡縮）</span>
+        <div class="nudge">
+          <button data-scale="-1">－0.1%</button>
+          <button class="c" id="scaleReset">100.0%</button>
+          <button data-scale="1">＋0.1%</button>
+        </div>
+      </div>
+
+      <div class="field">
         <label class="autoalign">
           <input type="checkbox" id="autoAlign">
           <span>自動位置合わせ（回転・拡縮・移動）</span>
@@ -1152,6 +1170,12 @@ function updateAlignReadout(){
   el.textContent = `自動整列: θ=${a.angle>=0?"+":""}${deg}° / ×${a.scale.toFixed(3)} / 適用`;
 }
 
+function updateManualAlignReadout(){
+  const deg = state.manualAngle*180/Math.PI;
+  $("rotReset").textContent = (deg>=0?"+":"")+deg.toFixed(1)+"°";
+  $("scaleReset").textContent = (state.manualScale*100).toFixed(1)+"%";
+}
+
 async function refreshAfterAlign(){
   state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
   state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
@@ -1167,6 +1191,7 @@ async function show(idx){
   if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
   updateAlignButtons();
   updateAlignReadout();
+  updateManualAlignReadout();
 }
 
 // ── ズーム & パン ──
@@ -1288,6 +1313,34 @@ document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
 });
 $("nudgeReset").addEventListener("click",()=>{
   state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
+  if(!state.pages) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+document.querySelectorAll("button[data-rot]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    state.manualAngle += (+b.dataset.rot) * 0.1 * Math.PI/180;
+    updateManualAlignReadout();
+    if(!state.pages) return;
+    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  });
+});
+$("rotReset").addEventListener("click",()=>{
+  state.manualAngle = 0;
+  updateManualAlignReadout();
+  if(!state.pages) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+document.querySelectorAll("button[data-scale]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    state.manualScale = Math.max(0.1, state.manualScale + (+b.dataset.scale) * 0.001);
+    updateManualAlignReadout();
+    if(!state.pages) return;
+    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  });
+});
+$("scaleReset").addEventListener("click",()=>{
+  state.manualScale = 1;
+  updateManualAlignReadout();
   if(!state.pages) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
