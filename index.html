@@ -957,6 +957,51 @@ function clampBoxes(raw, width, height){
   }).filter(b=>b.w>0 && b.h>0);
 }
 
+// 2値マスク(Uint8Array, width*height)を正方形(チェビシェフ距離<=radius)で膨張する純関数。
+// 半径Rに依らず横→縦の分離フィルタ(スライディングウィンドウ)でO(width*height)。radius<=0は恒等。
+function dilateMask(mask, width, height, radius){
+  if(radius<=0) return mask;
+  const tmp = new Uint8Array(width*height);
+  for(let y=0;y<height;y++){
+    const rowOff = y*width;
+    let cnt=0;
+    for(let x=-radius;x<width;x++){
+      const inX=x+radius;
+      if(inX<width && mask[rowOff+inX]) cnt++;
+      const outX=x-radius-1;
+      if(outX>=0 && mask[rowOff+outX]) cnt--;
+      if(x>=0) tmp[rowOff+x] = cnt>0 ? 1 : 0;
+    }
+  }
+  const out = new Uint8Array(width*height);
+  for(let x=0;x<width;x++){
+    let cnt=0;
+    for(let y=-radius;y<height;y++){
+      const inY=y+radius;
+      if(inY<height && tmp[inY*width+x]) cnt++;
+      const outY=y-radius-1;
+      if(outY>=0 && tmp[outY*width+x]) cnt--;
+      if(y>=0) out[y*width+x] = cnt>0 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+// 旧・新のインクマスクから「位置的許容つき」の削除/追加マスクを算出する純関数。
+// removed: 旧にインクがあり、かつ新側の許容範囲内(膨張後)にもインクが無い
+// added:   新にインクがあり、かつ旧側の許容範囲内にもインクが無い
+function toleratedDiffMasks(oMask, nMask, width, height, radius){
+  const oDil = dilateMask(oMask, width, height, radius);
+  const nDil = dilateMask(nMask, width, height, radius);
+  const n = width*height;
+  const removed = new Uint8Array(n), added = new Uint8Array(n);
+  for(let i=0;i<n;i++){
+    if(oMask[i] && !nDil[i]) removed[i]=1;
+    else if(nMask[i] && !oDil[i]) added[i]=1;
+  }
+  return {removed, added};
+}
+
 // 整列済み新版（作業フレームに配置済み）を旧版と同座標比較して変更枠を算出。
 function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
   const th = state.th, block = blockSize();
