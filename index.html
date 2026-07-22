@@ -449,6 +449,7 @@
 const state = {
   oldDoc:null, newDoc:null, pages:0, cur:0,
   dpi:150, th:128, dx:0, dy:0,
+  manualAngle:0, manualScale:1, // 手動 傾き補正(ラジアン)・拡大縮小(倍率)。既定で恒等
   cache:{}, // pageIndex -> {rm, ad}
   mode:"diff", toggleSide:"old", toggleCache:null, // 新旧切替モード用（現在ページ分のみ保持）
   renderToken:0, // buildToggle の再入ガード（世代カウンタ）
@@ -798,12 +799,18 @@ function ensureAlignEstimate(idx, oldC, newC){
 }
 
 // alignCache の正規化パラメータ（new→old）から、現在Canvas寸法での適用可否と行列要素を返す。
-// applied=false または未推定なら恒等（手動 dx/dy のみ）。
+// 自動推定値（ONかつ適用時）に手動角度・倍率を合成する（角度=加算、倍率=乗算）。
+// 自動が無効/未適用のときは手動値のみが効く。手動値も既定(0/1)なら恒等（現行と完全一致）。
 function alignMatrixFor(idx, oldW, oldH, newW, newH){
   const a = state.autoAlign ? state.alignCache[idx] : null;
-  if(!a || !a.applied) return { angle:0, scale:1, tx:0, ty:0, applied:false };
+  const autoOn = !!(a && a.applied);
+  const angle = (autoOn ? a.angle : 0) + state.manualAngle;
+  const scale = (autoOn ? a.scale : 1) * state.manualScale;
   const Wc = Math.max(oldW, newW), Hc = Math.max(oldH, newH);
-  return { angle:a.angle, scale:a.scale, tx:a.txFrac*Wc, ty:a.tyFrac*Hc, applied:true };
+  const tx = autoOn ? a.txFrac*Wc : 0;
+  const ty = autoOn ? a.tyFrac*Hc : 0;
+  const applied = autoOn || state.manualAngle !== 0 || state.manualScale !== 1;
+  return { angle, scale, tx, ty, applied };
 }
 
 // 新版ページCanvas(newC)を旧版フレームへワープしたカラーCanvasを返す。
