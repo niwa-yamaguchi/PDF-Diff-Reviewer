@@ -1500,10 +1500,11 @@ $("dlPdf").addEventListener("click",async()=>{
     await buildDiff(i);
     const img=out.toDataURL("image/png");
     const w=out.width, h=out.height;
+    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale; // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す
     const orient = w>h ? "l":"p";
-    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[w,h]}); }
-    else { pdf.addPage([w,h],orient); }
-    pdf.addImage(img,"PNG",0,0,w,h);
+    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
+    else { pdf.addPage([wPt,hPt],orient); }
+    pdf.addImage(img,"PNG",0,0,wPt,hPt);
   }
   pdf.save("diff.pdf");
   await show(state.cur);
@@ -2215,10 +2216,11 @@ $("dlTextPdf").addEventListener("click", async()=>{
     const canvas = composeTextExport(oldC, newC, i, total);
     const img = canvas.toDataURL("image/png");
     const w = canvas.width, h = canvas.height;
+    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale; // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す
     const orient = w>h ? "l":"p";
-    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[w,h]}); }
-    else { pdf.addPage([w,h],orient); }
-    pdf.addImage(img,"PNG",0,0,w,h);
+    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
+    else { pdf.addPage([wPt,hPt],orient); }
+    pdf.addImage(img,"PNG",0,0,wPt,hPt);
   }
   pdf.save("textdiff.pdf");
   $("textStatus").textContent = "PDFを保存しました";
