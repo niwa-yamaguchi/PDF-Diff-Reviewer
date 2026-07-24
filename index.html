@@ -270,7 +270,7 @@
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
       <!-- ビルド工程が無い1ファイル運用のため、更新の都度ここを手動で書き換える -->
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-23</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-24</span>
     </div>
   </div>
   <div class="legend">
@@ -307,6 +307,10 @@
     </div>
 
     <div id="visualCtrl">
+      <div class="btns">
+        <button class="btn primary" id="run" disabled>差分を表示</button>
+      </div>
+
       <div class="field ctrl">
         <div class="row"><span>解像度 DPI</span><span class="val" id="dpiVal">150</span></div>
         <input type="range" id="dpi" min="72" max="300" step="6" value="150">
@@ -368,7 +372,6 @@
       </div>
 
       <div class="btns">
-        <button class="btn primary" id="run" disabled>差分を表示</button>
         <button class="btn" id="dlPng" disabled>現在ページをPNG保存</button>
         <button class="btn" id="dlPdf" disabled>全ページをPDF保存</button>
       </div>
@@ -776,6 +779,7 @@ async function loadPdf(file, which){
   state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
   state.textHi = null; state.textPage = 0;
   state.alignCache = {}; // 自動整列の推定結果も破棄
+  state.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
   $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
   if(state.oldDoc && state.newDoc){
     state.oldSeq = Array.from({length:state.oldDoc.numPages}, (_,i)=>i);
@@ -1395,13 +1399,13 @@ $("fileNew").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.fi
 $("dpi").addEventListener("input",e=>{state.dpi=+e.target.value;$("dpiVal").textContent=e.target.value;});
 $("dpi").addEventListener("change",async()=>{
   state.cache={}; state.toggleCache=null;
-  if(state.pages){await show(state.cur); fitView();}
+  if(state.rendered){await show(state.cur); fitView();}
 });
 $("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
-$("th").addEventListener("change",()=>{if(state.mode==="diff" && state.pages)show(state.cur);});
+$("th").addEventListener("change",()=>{if(state.mode==="diff" && state.rendered)show(state.cur);});
 $("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
 $("tolerance").addEventListener("change",()=>{
-  if(!state.pages) return;
+  if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
 
@@ -1409,46 +1413,46 @@ document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
   b.addEventListener("click",()=>{
     state.dx+=(+b.dataset.dx); state.dy+=(+b.dataset.dy);
     $("nudgeReset").textContent=state.dx+","+state.dy;
-    if(!state.pages) return;
+    if(!state.rendered) return;
     if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
   });
 });
 $("nudgeReset").addEventListener("click",()=>{
   state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
-  if(!state.pages) return;
+  if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
 document.querySelectorAll("button[data-rot]").forEach(b=>{
   b.addEventListener("click",()=>{
     state.manualAngle += (+b.dataset.rot) * 0.1 * Math.PI/180;
     updateManualAlignReadout();
-    if(!state.pages) return;
+    if(!state.rendered) return;
     if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
   });
 });
 $("rotReset").addEventListener("click",()=>{
   state.manualAngle = 0;
   updateManualAlignReadout();
-  if(!state.pages) return;
+  if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
 document.querySelectorAll("button[data-scale]").forEach(b=>{
   b.addEventListener("click",()=>{
     state.manualScale = Math.max(0.1, state.manualScale + (+b.dataset.scale) * 0.001);
     updateManualAlignReadout();
-    if(!state.pages) return;
+    if(!state.rendered) return;
     if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
   });
 });
 $("scaleReset").addEventListener("click",()=>{
   state.manualScale = 1;
   updateManualAlignReadout();
-  if(!state.pages) return;
+  if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
 $("autoAlign").addEventListener("change", async e=>{
   state.autoAlign = e.target.checked;
-  if(!state.pages){ updateAlignReadout(); return; }
+  if(!state.rendered){ updateAlignReadout(); return; }
   // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
   // トグルモードでも推定完了後に読み出しを更新できるよう await して同期させる。
   if(state.mode==="toggle"){ state.toggleCache=null; await buildToggle(state.cur); }
