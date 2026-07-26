@@ -757,6 +757,71 @@ function estimateSimilarity(oldGray, oldW, oldH, newGray, newW, newH, opts={}){
   return { angle, scale, txFrac, tyFrac, conf: best.conf, applied };
 }
 
+// ── 整列候補の実測検証（インク画素の一致率） ──────────────────────
+// 自動整列の採否を PSR（位相相関ピークの鋭さ＝間接指標）ではなく、
+// 「実際に重ねたときインクがどれだけ一致したか」で決めるための道具立て。
+
+// グレー配列を閾値でインクマスク化（1=インク）
+function inkMaskFromGray(gray, n, th){
+  const m = new Uint8Array(n);
+  for(let i=0;i<n;i++) m[i] = gray[i] < th ? 1 : 0;
+  return m;
+}
+
+// 共通フレーム Wc×Hc に左上原点で置いた W×H のマスクを tw×th へ縮小する。
+// ブロック内に1つでもインクがあれば1とする max-pooling。平均やバイリニアで
+// 縮小すると図面の細線が薄まって消え、一致率が測れなくなるため max を使う。
+function downsampleMaskMax(mask, W, H, Wc, Hc, tw, th){
+  const out = new Uint8Array(tw*th);
+  for(let ty=0; ty<th; ty++){
+    const y0 = Math.floor(ty*Hc/th);
+    const y1 = Math.min(H, Math.max(y0+1, Math.floor((ty+1)*Hc/th)));
+    for(let tx=0; tx<tw; tx++){
+      const x0 = Math.floor(tx*Wc/tw);
+      const x1 = Math.min(W, Math.max(x0+1, Math.floor((tx+1)*Wc/tw)));
+      let v = 0;
+      for(let y=y0; y<y1 && !v; y++){
+        if(y>=H) break;
+        const row = y*W;
+        for(let x=x0; x<x1; x++){
+          if(x>=W) break;
+          if(mask[row+x]){ v=1; break; }
+        }
+      }
+      out[ty*tw+tx] = v;
+    }
+  }
+  return out;
+}
+
+// インク画素の IoU（|O∩N| / |O∪N|）。両方インク0なら 1（＝完全一致）。
+function inkIoU(a, b, n){
+  let inter=0, uni=0;
+  for(let i=0;i<n;i++){
+    const x=a[i], y=b[i];
+    if(x|y){ uni++; if(x&y) inter++; }
+  }
+  return uni===0 ? 1 : inter/uni;
+}
+
+// マスクを中心基準の相似変換で写像（最近傍・範囲外は0）。
+// 符号規約は warpAffine / renderAlignedNewCanvas と同じ:
+//   dst = center + t + scale·R(angle)·(src - center)
+function warpMask(mask, W, H, angle, scale, tx, ty){
+  const out = new Uint8Array(W*H);
+  const cx=(W-1)/2, cy=(H-1)/2;
+  const cos=Math.cos(angle), sin=Math.sin(angle), inv=1/scale;
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const px = x - cx - tx, py = y - cy - ty;
+      const sx = Math.round(cx + inv*( cos*px + sin*py));
+      const sy = Math.round(cy + inv*(-sin*px + cos*py));
+      if(sx>=0 && sx<W && sy>=0 && sy<H) out[y*W+x] = mask[sy*W+sx];
+    }
+  }
+  return out;
+}
+
 const $ = id => document.getElementById(id);
 const out = $("out"), octx = out.getContext("2d");
 
