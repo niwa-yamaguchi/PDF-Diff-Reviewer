@@ -822,6 +822,76 @@ function warpMask(mask, W, H, angle, scale, tx, ty){
   return out;
 }
 
+const SCORE_N = 512;          // スコア計算グリッドの長辺（縮小空間で計算して安価にする）
+const SCORE_MIN_GAIN = 0.02;  // 恒等よりIoUがこれだけ上がること（絶対差）
+const SCORE_MIN_RATIO = 1.02; // 恒等よりIoUがこれだけ上がること（相対比）
+
+// 整列候補（恒等 / 平行移動± / FMT）を実際にインクマスクへ適用し、
+// IoU が最も高いものを選ぶ。恒等を実質的に上回らない限り恒等のままとする。
+//
+// 旧実装は estimateSimilarity の PSR 単一閾値(minPsr)で採否を決めていたが、PSRは
+// 「相関面がどれだけ尖っているか」であって「重ねた結果どれだけ一致したか」ではない。
+// そのためリサンプル解像度を変えるたびに閾値の再校正が必要で（N=128→256→512、
+// minPsr=18→30 の経緯を estimateSimilarity のコメント参照）、実PDF図面で
+// 「低信頼で不適用」が頻発していた。ここでは採否を実測のIoUに一本化する。
+//
+// 平行移動候補は phaseCorrelate の符号規約への依存を避けるため ± 両方を候補に入れる。
+// 正しい方はIoUで勝ち、誤った方は恒等より悪くなって落ちるので、検証が符号を決める。
+// 実測（合成図面 400×300・(+12,-5)ずれ）では +tr.dx/FN 側が IoU 0.702、-tr 側が 0.091 と
+// 明確に決着した（＝phaseCorrelate の戻り値はそのまま new→old の補正量として使える）。
+//
+// 閾値校正の実測値（合成図面 400×300・1px幅の細線主体・th=128、スコアグリッド 512×384）:
+//   完全に同じ2枚   : scoreBase 1.000 → scoreBest 1.000  → 恒等（改善余地なし・不適用）
+//   (+12,-5)のずれ  : scoreBase 0.210 → scoreBest 0.702  → translate 採用（差 0.49 / 比 3.34）
+//   無関係な2枚     : scoreBase 0.000 → scoreBest 0.000  → 恒等（不適用）
+// 「採用したい」群は差 0.49・比 3.34、「棄却したい」群は差 0.00 と間隙が大きいため、
+// SCORE_MIN_GAIN=0.02 / SCORE_MIN_RATIO=1.02 で十分に分離できる（校正の変更は不要だった）。
+//
+// 注意: 正しく整列してもIoUは1.0にならない（上記で 0.702）。同じグリッド上で整数シフトを
+// 総当りした上限自体が 0.851 で、残差は phaseCorrelate が 512×512 の「正方」リサンプル上の
+// 整数画素までしか解けないこと（このケースで縦 0.27px の誤差）と、1px線の最近傍丸めによる。
+// Canvasへ実際に適用する平行移動の誤差は 0.28px と無視できるので、この目減りは表示される
+// 一致率にのみ現れる。SCORE_MIN_* は絶対値ではなく恒等との差／比で判定するため影響しない。
+function bestAlignment(O, Nw, th){
+  const Wc = Math.max(O.w, Nw.w), Hc = Math.max(O.h, Nw.h);
+  const long = Math.max(Wc, Hc);
+  const gw = Math.max(8, Math.round(SCORE_N * Wc / long));
+  const gh = Math.max(8, Math.round(SCORE_N * Hc / long));
+  const oM = downsampleMaskMax(inkMaskFromGray(O.g,  O.w*O.h,  th), O.w,  O.h,  Wc, Hc, gw, gh);
+  const nM = downsampleMaskMax(inkMaskFromGray(Nw.g, Nw.w*Nw.h, th), Nw.w, Nw.h, Wc, Hc, gw, gh);
+  const n = gw*gh;
+
+  const cands = [{ angle:0, scale:1, txFrac:0, tyFrac:0, method:"identity" }];
+
+  // 平行移動候補: 用紙正規化後は倍率が既知なので、平行移動だけを位相相関で求める
+  const FN = 512;
+  const oN = resampleToN(O.g,  O.w,  O.h,  Wc, Hc, FN);
+  const nN = resampleToN(Nw.g, Nw.w, Nw.h, Wc, Hc, FN);
+  const tr = phaseCorrelate(oN, nN, FN);
+  cands.push({ angle:0, scale:1, txFrac: tr.dx/FN, tyFrac: tr.dy/FN, method:"translate" });
+  cands.push({ angle:0, scale:1, txFrac:-tr.dx/FN, tyFrac:-tr.dy/FN, method:"translate" });
+
+  // FMT候補: 既存の推定器をそのまま使うが、applied（PSRゲート）は見ない
+  const fmt = estimateSimilarity(O.g, O.w, O.h, Nw.g, Nw.w, Nw.h);
+  cands.push({ angle:fmt.angle, scale:fmt.scale, txFrac:fmt.txFrac, tyFrac:fmt.tyFrac, method:"fmt" });
+
+  let base = 0, best = null;
+  for(const c of cands){
+    const warped = warpMask(nM, gw, gh, c.angle, c.scale, c.txFrac*gw, c.tyFrac*gh);
+    const s = inkIoU(oM, warped, n);
+    if(c.method === "identity") base = s;
+    if(!best || s > best.score) best = { c, score:s };
+  }
+  const applied = best.c.method !== "identity"
+    && (best.score - base) >= SCORE_MIN_GAIN
+    && best.score >= base * SCORE_MIN_RATIO;
+  const chosen = applied ? best.c : cands[0];
+  return {
+    angle: chosen.angle, scale: chosen.scale, txFrac: chosen.txFrac, tyFrac: chosen.tyFrac,
+    applied, method: chosen.method, scoreBase: base, scoreBest: best.score
+  };
+}
+
 const $ = id => document.getElementById(id);
 const out = $("out"), octx = out.getContext("2d");
 
@@ -933,8 +1003,13 @@ function ensureAlignEstimate(idx, oldC, newC){
   if(!state.autoAlign) return;
   if(state.alignCache[idx]) return; // ページ別キャッシュ
   const O = canvasToGrayF(oldC), Nw = canvasToGrayF(newC);
-  if(!O || !Nw){ state.alignCache[idx] = {angle:0,scale:1,txFrac:0,tyFrac:0,conf:0,applied:false}; return; }
-  state.alignCache[idx] = estimateSimilarity(O.g, O.w, O.h, Nw.g, Nw.w, Nw.h);
+  // 片側が空白スロットなら比較対象が無いので恒等（一致率は定義上1として扱う）
+  if(!O || !Nw){
+    state.alignCache[idx] = {angle:0,scale:1,txFrac:0,tyFrac:0,
+      applied:false,method:"identity",scoreBase:1,scoreBest:1};
+    return;
+  }
+  state.alignCache[idx] = bestAlignment(O, Nw, state.th);
 }
 
 // alignCache の正規化パラメータ（new→old）から、現在Canvas寸法での適用可否と行列要素を返す。
@@ -1388,14 +1463,40 @@ function updateAlignButtons(){
   $("alignUndo").disabled  = !on || state.alignOps.length === 0;
 }
 
+// 用紙合わせ（自動・常時）と自動整列（トグル）の状態を、推定値ではなく実測値で表示する。
 function updateAlignReadout(){
   const el = $("alignReadout");
-  if(!state.autoAlign){ el.textContent = "—"; return; }
-  const a = state.alignCache[state.cur];
-  if(!a){ el.textContent = "自動整列: 推定待ち"; return; }
-  if(!a.applied){ el.textContent = "自動整列: 低信頼（適用せず）"; return; }
-  const deg = (a.angle*180/Math.PI).toFixed(2);
-  el.textContent = `自動整列: θ=${a.angle>=0?"+":""}${deg}° / ×${a.scale.toFixed(3)} / 適用`;
+  const lines = [];
+  const p = state.curPlan;
+  if(p && p.normalized){
+    // refSide が "old" なら旧版が基準＝新版を拡大している
+    const grown = p.refSide === "old" ? "新版" : "旧版";
+    lines.push(`用紙合わせ: ${grown}を×${p.ratio.toFixed(3)}で描画（自動）`);
+  } else if(p && p.aspectMismatch){
+    lines.push("用紙合わせ: 用紙の縦横比が違うため未適用");
+  }
+  if(!state.autoAlign){
+    lines.push("自動整列: OFF");
+  } else {
+    const a = state.alignCache[state.cur];
+    if(!a){
+      lines.push("自動整列: 推定待ち");
+    } else {
+      const pct = v => Math.round(v*100)+"%";
+      const sc = `一致率 ${pct(a.scoreBase)} → ${pct(a.scoreBest)}`;
+      if(!a.applied){
+        lines.push(`自動整列: ${sc}（改善せず・恒等のまま）`);
+      } else if(a.method === "translate"){
+        const sgn = v => (v>=0?"+":"")+v;
+        const dx = Math.round(a.txFrac*out.width), dy = Math.round(a.tyFrac*out.height);
+        lines.push(`自動整列: 平行移動 ${sgn(dx)},${sgn(dy)}px / ${sc}`);
+      } else {
+        const deg = (a.angle*180/Math.PI).toFixed(2);
+        lines.push(`自動整列: θ=${a.angle>=0?"+":""}${deg}° ×${a.scale.toFixed(3)} / ${sc}`);
+      }
+    }
+  }
+  el.textContent = lines.join(" ／ ");
 }
 
 function updateManualAlignReadout(){
@@ -1529,7 +1630,10 @@ $("dpi").addEventListener("change",async()=>{
   if(state.rendered){await show(state.cur); fitView();}
 });
 $("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
-$("th").addEventListener("change",()=>{if(state.mode==="diff" && state.rendered)show(state.cur);});
+$("th").addEventListener("change",()=>{
+  state.alignCache = {}; // 一致率スコアが th 依存のため再推定させる
+  if(state.mode==="diff" && state.rendered)show(state.cur);
+});
 $("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
 $("tolerance").addEventListener("change",()=>{
   if(!state.rendered) return;
