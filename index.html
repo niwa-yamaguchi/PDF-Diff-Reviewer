@@ -497,6 +497,7 @@ const state = {
   alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
   autoAlign:false, // 自動位置合わせ（フーリエ・メリン）のON/OFF
   alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, conf, applied}（正規化・dpi非依存）
+  curPlan:null,    // 現在ページの framePlan 返り値（用紙合わせの読み出し表示に使う）
 };
 
 // ==== Fourier-Mellin 相似変換 推定コア（scratchpad/align-core.mjs より移植・挙動不変） ====
@@ -779,6 +780,7 @@ async function loadPdf(file, which){
   state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
   state.textHi = null; state.textPage = 0;
   state.alignCache = {}; // 自動整列の推定結果も破棄
+  state.curPlan = null;  // 用紙合わせの読み出しも破棄
   state.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
   $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
   if(state.oldDoc && state.newDoc){
@@ -1121,11 +1123,19 @@ function toggleBoxes(){
 }
 
 async function buildDiff(idx){
-  const scale = state.dpi/72;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
+  const oi = seqIdx(state.oldSeq, idx), ni = seqIdx(state.newSeq, idx);
+  // 用紙サイズが違う場合、大きい用紙を基準に「同一ピクセル寸法」となる描画scaleを求める。
+  // 同寸なら plan.oldScale === plan.newScale === dpi/72 で現行と完全一致。
+  const [oldPt, newPt] = await Promise.all([
+    pageSizePt(state.oldDoc, oi),
+    pageSizePt(state.newDoc, ni)
+  ]);
+  const plan = framePlan(oldPt, newPt, state.dpi);
+  state.curPlan = plan;
   const [oldC, newC] = await Promise.all([
-    renderPageCanvas(state.oldDoc, seqIdx(state.oldSeq, idx), scale),
-    renderPageCanvas(state.newDoc, seqIdx(state.newSeq, idx), scale)
+    renderPageCanvas(state.oldDoc, oi, plan.oldScale),
+    renderPageCanvas(state.newDoc, ni, plan.newScale)
   ]);
   const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
   const nw = newC?newC.width:0, nh = newC?newC.height:0;
@@ -1213,12 +1223,20 @@ async function buildDiff(idx){
 // 新旧切替モード：旧・新それぞれのページCanvasをキャッシュし、選択中の版だけを描画する
 async function buildToggle(idx){
   const token = ++state.renderToken;
-  const scale = state.dpi/72;
+  const oi = seqIdx(state.oldSeq, idx), ni = seqIdx(state.newSeq, idx);
+  // Canvasキャッシュにヒットしても読み出し表示に plan が要るため、キャッシュ判定より前に求める。
+  const [oldPt, newPt] = await Promise.all([
+    pageSizePt(state.oldDoc, oi),
+    pageSizePt(state.newDoc, ni)
+  ]);
+  if(token !== state.renderToken) return; // await を挟んだので割り込みチェック（stale-draw防止）
+  const plan = framePlan(oldPt, newPt, state.dpi);
+  state.curPlan = plan;
   if(!state.toggleCache || state.toggleCache.idx !== idx){
     $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
     const [oldC, newC] = await Promise.all([
-      renderPageCanvas(state.oldDoc, seqIdx(state.oldSeq, idx), scale),
-      renderPageCanvas(state.newDoc, seqIdx(state.newSeq, idx), scale)
+      renderPageCanvas(state.oldDoc, oi, plan.oldScale),
+      renderPageCanvas(state.newDoc, ni, plan.newScale)
     ]);
     if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
     const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
@@ -1549,7 +1567,10 @@ $("dlPdf").addEventListener("click",async()=>{
     await buildDiff(i);
     const img=out.toDataURL("image/png");
     const w=out.width, h=out.height;
-    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale; // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す
+    // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す。
+    // 用紙サイズ正規化時も「基準ページ(大きい用紙)は必ず dpi/72 で描画する」(framePlan の
+    // frameScale)ため、フレーム寸法を dpi/72 で割ると基準ページのpt実寸が得られる。式は不変。
+    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale;
     const orient = w>h ? "l":"p";
     if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
     else { pdf.addPage([wPt,hPt],orient); }
