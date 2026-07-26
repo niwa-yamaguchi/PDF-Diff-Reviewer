@@ -496,7 +496,7 @@ const state = {
   oldSeq:null, newSeq:null, // 旧/新のページ順（要素: 0基点ページ番号 or null=空白スペーサ）
   alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
   autoAlign:false, // 自動位置合わせ（フーリエ・メリン）のON/OFF
-  alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, conf, applied}（正規化・dpi非依存）
+  alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, applied, method, scoreBase, scoreBest}（正規化・dpi非依存）
   curPlan:null,    // 現在ページの framePlan 返り値（用紙合わせの読み出し表示に使う）
 };
 
@@ -1027,10 +1027,11 @@ function ensureAlignEstimate(idx, oldC, newC){
   if(!state.autoAlign) return;
   if(state.alignCache[idx]) return; // ページ別キャッシュ
   const O = canvasToGrayF(oldC), Nw = canvasToGrayF(newC);
-  // 片側が空白スロットなら比較対象が無いので恒等（一致率は定義上1として扱う）
+  // 片側が空白スロットなら比較対象が無いので恒等。スコアは定義上1だが、全面が追加/削除
+  // として出るページで「一致率100%」と読ませないよう blank フラグで読み出しを分岐させる。
   if(!O || !Nw){
     state.alignCache[idx] = {angle:0,scale:1,txFrac:0,tyFrac:0,
-      applied:false,method:"identity",scoreBase:1,scoreBest:1};
+      applied:false,method:"identity",scoreBase:1,scoreBest:1,blank:true};
     return;
   }
   state.alignCache[idx] = bestAlignment(O, Nw, state.th);
@@ -1505,6 +1506,8 @@ function updateAlignReadout(){
     const a = state.alignCache[state.cur];
     if(!a){
       lines.push("自動整列: 推定待ち");
+    } else if(a.blank){
+      lines.push("自動整列: 片側が空白のため対象外");
     } else {
       const pct = v => Math.round(v*100)+"%";
       const sc = `一致率 ${pct(a.scoreBase)} → ${pct(a.scoreBest)}`;
