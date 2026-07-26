@@ -270,7 +270,7 @@
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
       <!-- ビルド工程が無い1ファイル運用のため、更新の都度ここを手動で書き換える -->
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-24</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-26</span>
     </div>
   </div>
   <div class="legend">
@@ -793,6 +793,50 @@ async function loadPdf(file, which){
     $("status").textContent = "準備完了 — 「差分を表示」を押してください";
     $("textStatus").textContent = "準備完了 — 「テキスト差分を表示」を押してください";
   }
+}
+
+// ── 用紙サイズ正規化 ────────────────────────────────────────────
+// 用紙サイズ違い(A4版↔A3版)の倍率は推定不要で、PDFのページ実寸(pt)から確定する。
+// 大きい用紙を基準(dpi/72)にし、小さい用紙側だけを ratio 倍の高解像度で描くことで、
+// 両版を「同一ピクセル寸法」に揃える。ベクタPDFなら両版とも劣化ゼロ。
+// 用紙が同寸なら normalized=false で両方 dpi/72 となり、現行と完全一致する。
+const FRAME_RATIO_EPS = 0.002;   // 用紙同寸とみなす倍率の許容（丸め差で毎回ワープしないため）
+const FRAME_ASPECT_EPS = 0.01;   // 縦横比の不一致とみなす閾値
+
+// ページ実寸(pt)。ページが無いスロット(空白/範囲外)は null。
+// pdf.js はページオブジェクトを内部キャッシュするため、renderPageCanvas と
+// 二重に getPage しても実質的な再取得コストは生じない。
+async function pageSizePt(doc, idx){
+  if(!doc || idx == null || idx >= doc.numPages) return null;
+  const page = await doc.getPage(idx+1);
+  const vp = page.getViewport({scale:1});
+  return { w: vp.width, h: vp.height };
+}
+
+// 旧新のページ実寸から、両者が同一ピクセル寸法になる描画scaleを決める（純関数）。
+// 縦横比が違う組（A4縦↔A3横など）は相似でないため正規化せず、警告フラグだけ立てる。
+function framePlan(oldPt, newPt, dpi){
+  const base = dpi/72;
+  const none = { oldScale:base, newScale:base, frameScale:base, ratio:1,
+                 normalized:false, aspectMismatch:false, refSide:null };
+  if(!oldPt || !newPt) return none;
+  if(!(oldPt.w>0 && oldPt.h>0 && newPt.w>0 && newPt.h>0)) return none;
+  const refIsOld = (oldPt.w*oldPt.h) >= (newPt.w*newPt.h);
+  const ref   = refIsOld ? oldPt : newPt;
+  const other = refIsOld ? newPt : oldPt;
+  const rw = ref.w/other.w, rh = ref.h/other.h;
+  if(Math.abs(rw-rh)/Math.max(rw,rh) > FRAME_ASPECT_EPS){
+    return { ...none, aspectMismatch:true };
+  }
+  const ratio = Math.min(rw, rh);
+  if(Math.abs(ratio-1) <= FRAME_RATIO_EPS) return none;
+  return {
+    oldScale:  refIsOld ? base : base*ratio,
+    newScale:  refIsOld ? base*ratio : base,
+    frameScale: base,
+    ratio, normalized:true, aspectMismatch:false,
+    refSide: refIsOld ? "old" : "new"
+  };
 }
 
 // PDFページ → 白背景のカラーCanvas（無い場合は null）
