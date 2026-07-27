@@ -270,7 +270,7 @@
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
       <!-- ビルド工程が無い1ファイル運用のため、更新の都度ここを手動で書き換える -->
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-26</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-27</span>
     </div>
   </div>
   <div class="legend">
@@ -914,6 +914,98 @@ function bestAlignment(O, Nw, th){
     angle: chosen.angle, scale: chosen.scale, txFrac: chosen.txFrac, tyFrac: chosen.tyFrac,
     applied, method: chosen.method, scoreBase: base, scoreBest: best.score
   };
+}
+
+// ── 直角回転（0/90/180/270）の推定 ──────────────────────────────
+// 改訂前後で用紙の向きが変わっているページ（旧A1横 ↔ 新A1縦など）を扱うための段。
+//
+// 角度探索の上限 maxAngleDeg=45（estimateSimilarity）を90°超へ広げるのではなく、
+// 直角成分を相似変換から切り離して「新版キャンバスごと回す」方式を採る。理由は3つ:
+//   1. 残差が ±45° 未満に収まるため、estimateSimilarity の閾値校正
+//      （N=128→256→512 / minPsr=18→30、同関数のコメント参照）をやり直さずに済む。
+//   2. framePlan に回転後のページ寸法を渡せるため、A4縦↔A4横が「縦横比が違う用紙」
+//      として正規化を諦める問題（aspectMismatch）が関数を触らずに解ける。
+//   3. 直角回転は画素の並べ替えだけで補間が入らないため無損失。
+//
+// k は全経路で「新版を時計回りに k×90° 回す量」で統一する。既存の angle
+// （warpAffine / estimateSimilarity）は数学規約の反時計回り正で符号が逆だが、
+// k は描画前のキャンバスに、angle はその後の相似変換に、それぞれ独立に適用され
+// 合成されないため、符号を突き合わせる箇所は生じない。
+const QUAD_N = 256;           // 象限判定のリサンプル解像度。象限という粗い量を決めるだけなので
+                              // FMT側の512は要らない。実測で不足なら上げる。
+const QUAD_MIN_GAIN  = 0.02;  // k=0 より IoU がこれだけ上がること（絶対差）
+const QUAD_MIN_RATIO = 1.02;  // k=0 より IoU がこれだけ上がること（相対比）
+// 初期値は bestAlignment の SCORE_MIN_* と同値だが別定数として持つ。この段のスコアは
+// 「各自を N×N へ伸縮した空間」、bestAlignment のスコアは「共通フレーム」で意味が違うため、
+// 片方の再校正がもう片方を巻き込まないようにする。
+//
+// 実測（合成図面 400×300、th=128、QUAD_N=256。scores は [k=0,1,2,3]）:
+//   K=1（新版が時計回り90°）:  k=3 採用 / scores=[0.027, 0.024, 0.001, 1.000]
+//   K=2（新版が時計回り180°）: k=2 採用 / scores=[0.024, 0.001, 1.000, 0.027]
+//   K=3（新版が時計回り270°）: k=1 採用 / scores=[0.001, 1.000, 0.027, 0.024]
+//   同一の2枚:                 k=0 不採用 / scores=[1.000, 0.027, 0.024, 0.001]
+//   無関係な2枚:                k=0 不採用 / scores=[0.015, 0.028, 0.019, 0.013]
+//   正方形寄り(320×300) K=1:   k=3 採用 / scores=[0.135, 0.001, 0.115, 1.000]
+//   帯状(800×200) K=1:         k=3 採用 / scores=[0.090, 0.001, 0.123, 1.000]
+// 「採用したい」群（回転ペア）と「棄却したい」群（同一・無関係）の間隙が
+// QUAD_MIN_GAIN / QUAD_MIN_RATIO を十分に上回ることを確認済み。
+
+// グレー配列の直角回転。k=0..3 で「時計回りに k×90°」。添字の並べ替えのみで補間なし。
+// k=0 は入力配列をそのまま返す（コピーしない）— 呼び出し側は破壊しないこと。
+function rotateGray90(g, W, H, k){
+  const kk = ((k % 4) + 4) % 4;
+  if(kk === 0) return { g, w:W, h:H };
+  if(kk === 2){
+    const out = new Float64Array(W*H);
+    for(let y=0;y<H;y++) for(let x=0;x<W;x++) out[y*W+x] = g[(H-1-y)*W + (W-1-x)];
+    return { g:out, w:W, h:H };
+  }
+  const w = H, h = W;   // 90°/270° は縦横が入れ替わる
+  const out = new Float64Array(w*h);
+  if(kk === 1){
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++) out[y*w+x] = g[(H-1-x)*W + y];
+  } else {
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++) out[y*w+x] = g[x*W + (W-1-y)];
+  }
+  return { g:out, w, h };
+}
+
+// 2枚を「各自の実寸で N×N へ伸縮」してから比較したインクIoU。
+//
+// resampleToN を Wc=W, Hc=H で呼ぶと stretch-to-fill になる。これが要点で、
+// 用紙アスペクトの一致判定が伸縮そのものに吸収される: 旧A4縦に対し k=0（新A4横）を
+// 伸ばすと両者が逆方向に潰れて内容が合わずIoUが落ち、正しい象限では両者が同じ形に
+// 伸びて素直に合う。おかげで用紙寸法による事前分岐（縦横が入れ替わっていれば k∈{1,3}）
+// が不要になり、正方形に近い用紙も同じ経路で扱える。
+//
+// マスクは元解像度で2値化してから max-pooling で落とす（bilinear縮小だと図面の細線が
+// 薄まって消え、一致率が測れなくなる — downsampleMaskMax のコメント参照）。位相相関の
+// 側はグレーのまま bilinear で構わない。
+function quadrantScore(O, Nw, th, N){
+  const oN = resampleToN(O.g,  O.w,  O.h,  O.w,  O.h,  N);
+  const nN = resampleToN(Nw.g, Nw.w, Nw.h, Nw.w, Nw.h, N);
+  const tr = phaseCorrelate(oN, nN, N);
+  const oM = downsampleMaskMax(inkMaskFromGray(O.g,  O.w*O.h,  th), O.w,  O.h,  O.w,  O.h,  N, N);
+  const nM = downsampleMaskMax(inkMaskFromGray(Nw.g, Nw.w*Nw.h, th), Nw.w, Nw.h, Nw.w, Nw.h, N, N);
+  const warped = warpMask(nM, N, N, 0, 1, tr.dxSub, tr.dySub);
+  return inkIoU(oM, warped, N*N);
+}
+
+// k=0..3 を実測して最良を選ぶ。bestAlignment と同じく「恒等（k=0）を実質的に
+// 上回らない限り回さない」に倒す。僅差で誤って回るより、回らずに手動で直せる方がよい。
+function bestQuadrant(O, Nw, th, opts={}){
+  const N = opts.N || QUAD_N;
+  const scores = [0,0,0,0];
+  for(let k=0;k<4;k++){
+    const R = rotateGray90(Nw.g, Nw.w, Nw.h, k);
+    scores[k] = quadrantScore(O, R, th, N);
+  }
+  let bk = 0;
+  for(let k=1;k<4;k++) if(scores[k] > scores[bk]) bk = k;
+  const applied = bk !== 0
+    && (scores[bk] - scores[0]) >= (opts.minGain ?? QUAD_MIN_GAIN)
+    && scores[bk] >= scores[0] * (opts.minRatio ?? QUAD_MIN_RATIO);
+  return { k: applied ? bk : 0, scores, applied };
 }
 
 const $ = id => document.getElementById(id);
