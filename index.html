@@ -261,6 +261,8 @@
     border-top:1px solid var(--line);padding:8px 20px;
     font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.06em;
   }
+  footer a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
+  footer a:hover{color:var(--signal);border-bottom-color:var(--signal)}
 </style>
 </head>
 <body>
@@ -270,7 +272,7 @@
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
       <!-- ビルド工程が無い1ファイル運用のため、更新の都度ここを手動で書き換える -->
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-27</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-28</span>
     </div>
   </div>
   <div class="legend">
@@ -471,7 +473,7 @@
   </section>
 </main>
 
-<footer>100% CLIENT-SIDE · pdf.js + canvas · deploy to any static host (Cloudflare Pages / GitHub Pages)</footer>
+<footer>100% CLIENT-SIDE · pdf.js + canvas · deploy to any static host (Cloudflare Pages / GitHub Pages) · <a href="https://github.com/niwa-yamaguchi/PDF-Diff-Reviewer" target="_blank" rel="noopener noreferrer">SOURCE ON GITHUB</a></footer>
 
 <script>
 // pdf.js worker を blob 経由で同一オリジン化（CDNワーカーのCORS回避）
