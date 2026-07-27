@@ -508,6 +508,10 @@ const state = {
   alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, applied, method, scoreBase, scoreBest}（正規化・dpi非依存）
   quadCache:{},    // pageIndex -> {k, scores:[4], applied, blank?}（直角回転の自動推定。dpi非依存）
   quadManual:{},   // pageIndex -> 0..3（直角回転の手動上書き。未設定はキーなし＝自動に従う）
+  quadGen:0,       // quadCache破棄の世代カウンタ（renderTokenと同型）。ensureQuadEstimateはawaitで
+                   // プローブ描画を挟むため、その間にquadCacheが破棄されると古いスロット→ページ対応の
+                   // 結果を書き戻してしまう。quadCache={}にする箇所すべてでこれをインクリメントし、
+                   // await前後で値が変わっていたら書き込みを捨てる。
   curPlan:null,    // 現在ページの framePlan 返り値（用紙合わせの読み出し表示に使う）
 };
 
@@ -967,6 +971,17 @@ const QUAD_MIN_RATIO = 1.02;  // k=0 より IoU がこれだけ上がること�
 // 本タスクで再校正した）。0.15 の場合、棄却側バッファは 0.15-0.0134=0.1366、
 // 採用側バッファは 0.8647-0.15=0.7147 で、いずれも検証スクリプトで0.05以上を
 // 明示的にアサートして確認済み。
+//
+// 追試（疎インクの図面、外枠＋右下の表題欄＋短いストローク数本、600×400。密な合成図面7件
+// とは別サンプル）: 採用側の最小 gain は上記 0.7147 のバッファほど余裕が無く、以下まで縮む。
+//   sparse K=1: gain=0.9655  scores=[0.034, 0.615, 0.150, 1.000]
+//   sparse K=2: gain=0.3845  scores=[0.615, 0.150, 1.000, 0.034]
+//   sparse K=3: gain=0.8501  scores=[0.150, 1.000, 0.034, 0.615]
+// 最小 gain=0.3845 は閾値0.15の2.5倍あるため定数はこのままで妥当だが、密な合成図面での
+// バッファ0.7147は疎な実図面では半分以下に縮むと認識しておく（今後の再校正の参考値）。
+// また上下対称な枠のみのページ（真値K=2）は scores=[1.000, 0.001, 1.000, 0.001] のように
+// k=0とk=2が同点になり、strict '>' のargmaxはk=0側を残すため applied=false に倒れる
+// （誤って回転するのではなく、本来回すべき対称ページで回転しない側に外れる）。
 
 // グレー配列の直角回転。k=0..3 で「時計回りに k×90°」。添字の並べ替えのみで補間なし。
 // k=0 は入力配列をそのまま返す（コピーしない）— 呼び出し側は破壊しないこと。
@@ -1049,7 +1064,7 @@ async function loadPdf(file, which){
   state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
   state.textHi = null; state.textPage = 0;
   state.alignCache = {}; // 自動整列の推定結果も破棄
-  state.quadCache = {}; state.quadManual = {}; // 直角回転の推定・手動上書きも破棄
+  state.quadCache = {}; state.quadManual = {}; state.quadGen++; // 直角回転の推定・手動上書きも破棄
   state.curPlan = null;  // 用紙合わせの読み出しも破棄
   state.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
   $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
@@ -1058,7 +1073,7 @@ async function loadPdf(file, which){
     state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
     state.alignOps = [];
     state.alignCache = {}; // 明示的に再破棄（(a)で既に空だが両PDF読込時初期化として明示）
-    state.quadCache = {}; state.quadManual = {}; // 同上
+    state.quadCache = {}; state.quadManual = {}; state.quadGen++; // 同上
     state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
     state.cur = 0; state.cache = {};
     $("run").disabled = false;
@@ -1150,6 +1165,11 @@ function rotateCanvas90(c, k){
   d.width  = (kk === 2) ? c.width  : c.height;
   d.height = (kk === 2) ? c.height : c.width;
   const ctx = d.getContext("2d");
+  // 未描画領域は透明黒のまま残るが、lum()/canvasToGrayF() はアルファを見ないため
+  // 透明画素は輝度0＝インクとして誤認される。renderPageCanvas 等の他のcanvas生成箇所と
+  // 同様に白で下地を敷いてから描く（回転で全面が埋まる場合でも一貫させておく）。
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,d.width,d.height);
+  ctx.imageSmoothingEnabled = false; // 直角回転の無損失性をブラウザ実装依存にしないため明示的に無効化
   if(kk === 1)      ctx.setTransform(0, 1, -1, 0, c.height, 0);          // 時計回り90°
   else if(kk === 2) ctx.setTransform(-1, 0, 0, -1, c.width, c.height);   // 180°
   else              ctx.setTransform(0, -1, 1, 0, 0, c.width);           // 時計回り270°
@@ -1163,15 +1183,22 @@ async function ensureQuadEstimate(idx, oi, ni, oldPt, newPt){
   if(!state.autoAlign) return;
   if(state.quadCache[idx]) return; // ページ別キャッシュ
   // 片側が空白スロットなら比較対象が無いので回さない（ensureAlignEstimate の blank 分岐と同じ扱い）
+  // ここは await をまたがない早期書き込みなので世代ガードは不要。
   if(!oldPt || !newPt){
     state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
     return;
   }
+  // 以降はプローブ描画で await をまたぐため、その間に loadPdf/refreshAfterAlign/th変更で
+  // quadCache が破棄される（＝スロット→ページ対応が変わる）と、古い対応で算出した k を
+  // 新しい対応のスロットへ書き戻してしまう。世代を捕捉し、書き込み直前に必ず照合する。
+  const gen = state.quadGen;
   const probeScale = pt => QUAD_PROBE_LONG / Math.max(pt.w, pt.h);
   const [oc, nc] = await Promise.all([
     renderPageCanvas(state.oldDoc, oi, probeScale(oldPt)),
     renderPageCanvas(state.newDoc, ni, probeScale(newPt))
   ]);
+  if(gen !== state.quadGen) return; // await中に世代が進んだので破棄（stale-write防止）。
+  // これより下は同期処理のみなので再チェック不要。
   const O = canvasToGrayF(oc), Nw = canvasToGrayF(nc);
   if(!O || !Nw){
     state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
@@ -1728,7 +1755,7 @@ async function refreshAfterAlign(){
   state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
   state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
   state.alignCache = {}; // スロット→ページ対応が変わるため自動整列も再推定させる
-  state.quadCache = {}; state.quadManual = {}; // スロット→ページ対応が変わるため直角回転も破棄
+  state.quadCache = {}; state.quadManual = {}; state.quadGen++; // スロット→ページ対応が変わるため直角回転も破棄
   if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
   if(state.cur < 0) state.cur = 0;
   await show(state.cur);
@@ -1852,7 +1879,7 @@ $("dpi").addEventListener("change",async()=>{
 $("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
 $("th").addEventListener("change",()=>{
   state.alignCache = {}; // 一致率スコアが th 依存のため再推定させる
-  state.quadCache = {};  // 象限スコアも th 依存のため再推定させる
+  state.quadCache = {}; state.quadGen++; // 象限スコアも th 依存のため再推定させる
   if(state.mode==="diff" && state.rendered)show(state.cur);
 });
 $("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
@@ -1882,22 +1909,27 @@ function invalidateForQuadChange(){
   state.toggleCache = null;
 }
 document.querySelectorAll("button[data-quad]").forEach(b=>{
-  b.addEventListener("click",()=>{
+  b.addEventListener("click", async ()=>{
     const cur = effectiveQuad(state.cur);
     state.quadManual[state.cur] = ((cur + (+b.dataset.quad)) % 4 + 4) % 4;
     invalidateForQuadChange();
     updateManualAlignReadout();
     if(!state.rendered) return;
-    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+    // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
+    // トグルモードでも「向き」表示を更新できるよう await して同期させる（autoAlign の change ハンドラと同じ対処）。
+    if(state.mode==="toggle"){ await buildToggle(state.cur); updateAlignReadout(); }
+    else await show(state.cur);
   });
 });
-$("quadReset").addEventListener("click",()=>{
+$("quadReset").addEventListener("click", async ()=>{
   if(state.quadManual[state.cur] == null) return; // 既に自動
   delete state.quadManual[state.cur];             // 自動判定へ戻す
   invalidateForQuadChange();
   updateManualAlignReadout();
   if(!state.rendered) return;
-  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  // 同上（data-quad ハンドラと同じ理由でトグルモードのみ明示的に読み出しを更新する）。
+  if(state.mode==="toggle"){ await buildToggle(state.cur); updateAlignReadout(); }
+  else await show(state.cur);
 });
 document.querySelectorAll("button[data-rot]").forEach(b=>{
   b.addEventListener("click",()=>{
