@@ -336,6 +336,15 @@
       </div>
 
       <div class="field">
+        <span class="label">向き（新版を90°回転）</span>
+        <div class="nudge">
+          <button data-quad="-1">↺ -90°</button>
+          <button class="c" id="quadReset" title="クリックで自動判定に戻す">0°</button>
+          <button data-quad="1">+90° ↻</button>
+        </div>
+      </div>
+
+      <div class="field">
         <span class="label">傾き補正（新版を回転）</span>
         <div class="nudge">
           <button data-rot="-1">↺ -0.1°</button>
@@ -356,7 +365,7 @@
       <div class="field">
         <label class="autoalign">
           <input type="checkbox" id="autoAlign">
-          <span>自動位置合わせ（回転・拡縮・移動）</span>
+          <span>自動位置合わせ（向き・回転・拡縮・移動）</span>
         </label>
         <div class="alignreadout" id="alignReadout">—</div>
       </div>
@@ -1669,6 +1678,18 @@ function updateAlignReadout(){
   } else if(p && p.aspectMismatch){
     lines.push("用紙合わせ: 用紙の縦横比が違うため未適用");
   }
+  const qm = state.quadManual[state.cur];
+  if(qm != null){
+    lines.push(`向き: 手動 ${qm*90}°`);
+  } else if(state.autoAlign){
+    const qc = state.quadCache[state.cur];
+    // 未推定・片側空白のときは行を出さない（autoAlign OFF も同様。「自動整列: OFF」の行で足りる）
+    if(qc && !qc.blank){
+      const qpct = v => Math.round(v*100)+"%";
+      if(qc.applied) lines.push(`向き: 自動 ${qc.k*90}°（一致率 ${qpct(qc.scores[0])} → ${qpct(qc.scores[qc.k])}）`);
+      else lines.push("向き: 0°（回転なし）");
+    }
+  }
   if(!state.autoAlign){
     lines.push("自動整列: OFF");
   } else {
@@ -1699,6 +1720,8 @@ function updateManualAlignReadout(){
   const deg = state.manualAngle*180/Math.PI;
   $("rotReset").textContent = (deg>=0?"+":"")+deg.toFixed(1)+"°";
   $("scaleReset").textContent = (state.manualScale*100).toFixed(1)+"%";
+  const manual = state.quadManual[state.cur] != null;
+  $("quadReset").textContent = (effectiveQuad(state.cur)*90)+"°" + (manual ? "（手動）" : "");
 }
 
 async function refreshAfterAlign(){
@@ -1848,6 +1871,31 @@ document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
 });
 $("nudgeReset").addEventListener("click",()=>{
   state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
+  if(!state.rendered) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+// 向き（直角回転）。押した時点で手動上書きが確定し、当ページの自動推定より優先される。
+// k が変わると絵が丸ごと変わるため、当ページの整列推定と差分集計キャッシュを破棄する。
+function invalidateForQuadChange(){
+  delete state.alignCache[state.cur];
+  delete state.cache[state.cur];
+  state.toggleCache = null;
+}
+document.querySelectorAll("button[data-quad]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    const cur = effectiveQuad(state.cur);
+    state.quadManual[state.cur] = ((cur + (+b.dataset.quad)) % 4 + 4) % 4;
+    invalidateForQuadChange();
+    updateManualAlignReadout();
+    if(!state.rendered) return;
+    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  });
+});
+$("quadReset").addEventListener("click",()=>{
+  if(state.quadManual[state.cur] == null) return; // 既に自動
+  delete state.quadManual[state.cur];             // 自動判定へ戻す
+  invalidateForQuadChange();
+  updateManualAlignReadout();
   if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
