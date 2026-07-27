@@ -497,6 +497,8 @@ const state = {
   alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
   autoAlign:false, // 自動位置合わせ（フーリエ・メリン）のON/OFF
   alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, applied, method, scoreBase, scoreBest}（正規化・dpi非依存）
+  quadCache:{},    // pageIndex -> {k, scores:[4], applied, blank?}（直角回転の自動推定。dpi非依存）
+  quadManual:{},   // pageIndex -> 0..3（直角回転の手動上書き。未設定はキーなし＝自動に従う）
   curPlan:null,    // 現在ページの framePlan 返り値（用紙合わせの読み出し表示に使う）
 };
 
@@ -1038,6 +1040,7 @@ async function loadPdf(file, which){
   state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
   state.textHi = null; state.textPage = 0;
   state.alignCache = {}; // 自動整列の推定結果も破棄
+  state.quadCache = {}; state.quadManual = {}; // 直角回転の推定・手動上書きも破棄
   state.curPlan = null;  // 用紙合わせの読み出しも破棄
   state.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
   $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
@@ -1046,6 +1049,7 @@ async function loadPdf(file, which){
     state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
     state.alignOps = [];
     state.alignCache = {}; // 明示的に再破棄（(a)で既に空だが両PDF読込時初期化として明示）
+    state.quadCache = {}; state.quadManual = {}; // 同上
     state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
     state.cur = 0; state.cache = {};
     $("run").disabled = false;
@@ -1122,6 +1126,61 @@ function canvasToGrayF(c){
   for(let i=0,p=0;i<g.length;i++,p+=4) g[i] = 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
   return { g, w, h };
 }
+// 象限判定用のプローブ描画の長辺px。本描画(state.dpi)とは独立の固定解像度にしてあるため、
+// quadCache は dpi 非依存（＝dpi変更で破棄する必要がない。alignCache と同じ考え）。
+const QUAD_PROBE_LONG = 512;
+
+// キャンバスの直角回転。k=0 は入力をそのまま返す（新規canvasを作らない）。
+// これが「回転が絡まないペアでは現行と1画素も変わらない」ことの担保になっている。
+// 直角かつ整数オフセットの回転はサンプル点が元画素の中心に厳密一致するため、
+// setTransform 経由でも補間の影響を受けない（Task 4 のブラウザ実測で確認する）。
+function rotateCanvas90(c, k){
+  const kk = ((k % 4) + 4) % 4;
+  if(!c || kk === 0) return c;
+  const d = document.createElement("canvas");
+  d.width  = (kk === 2) ? c.width  : c.height;
+  d.height = (kk === 2) ? c.height : c.width;
+  const ctx = d.getContext("2d");
+  if(kk === 1)      ctx.setTransform(0, 1, -1, 0, c.height, 0);          // 時計回り90°
+  else if(kk === 2) ctx.setTransform(-1, 0, 0, -1, c.width, c.height);   // 180°
+  else              ctx.setTransform(0, -1, 1, 0, 0, c.width);           // 時計回り270°
+  ctx.drawImage(c, 0, 0);
+  return d;
+}
+
+// autoAlign ON かつ当ページ未推定なら、低解像度プローブを描画して象限を推定しキャッシュする。
+// oldPt/newPt は呼び出し側が pageSizePt で既に得ているものを渡す（再取得しない）。
+async function ensureQuadEstimate(idx, oi, ni, oldPt, newPt){
+  if(!state.autoAlign) return;
+  if(state.quadCache[idx]) return; // ページ別キャッシュ
+  // 片側が空白スロットなら比較対象が無いので回さない（ensureAlignEstimate の blank 分岐と同じ扱い）
+  if(!oldPt || !newPt){
+    state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
+    return;
+  }
+  const probeScale = pt => QUAD_PROBE_LONG / Math.max(pt.w, pt.h);
+  const [oc, nc] = await Promise.all([
+    renderPageCanvas(state.oldDoc, oi, probeScale(oldPt)),
+    renderPageCanvas(state.newDoc, ni, probeScale(newPt))
+  ]);
+  const O = canvasToGrayF(oc), Nw = canvasToGrayF(nc);
+  if(!O || !Nw){
+    state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
+    return;
+  }
+  state.quadCache[idx] = bestQuadrant(O, Nw, state.th);
+}
+
+// 当ページに適用する直角回転量。手動上書きが最優先、次に自動推定、既定は0。
+// 同期関数なので、呼び出し側は先に await ensureQuadEstimate(...) を済ませること。
+function effectiveQuad(idx){
+  const m = state.quadManual[idx];
+  if(m != null) return m;
+  if(!state.autoAlign) return 0;
+  const q = state.quadCache[idx];
+  return (q && q.applied) ? q.k : 0;
+}
+
 function ensureAlignEstimate(idx, oldC, newC){
   if(!state.autoAlign) return;
   if(state.alignCache[idx]) return; // ページ別キャッシュ
@@ -1395,12 +1454,18 @@ async function buildDiff(idx){
     pageSizePt(state.oldDoc, oi),
     pageSizePt(state.newDoc, ni)
   ]);
-  const plan = framePlan(oldPt, newPt, state.dpi);
+  // 直角成分を先に確定し、回転後の寸法で用紙合わせを決める。
+  // これにより A4縦↔A4横 が framePlan の aspectMismatch に落ちなくなる。
+  await ensureQuadEstimate(idx, oi, ni, oldPt, newPt);
+  const quad = effectiveQuad(idx);
+  const newPtR = (newPt && (quad % 2)) ? {w:newPt.h, h:newPt.w} : newPt;
+  const plan = framePlan(oldPt, newPtR, state.dpi);
   state.curPlan = plan;
-  const [oldC, newC] = await Promise.all([
+  const [oldC, newC0] = await Promise.all([
     renderPageCanvas(state.oldDoc, oi, plan.oldScale),
     renderPageCanvas(state.newDoc, ni, plan.newScale)
   ]);
+  const newC = rotateCanvas90(newC0, quad); // quad=0 なら newC0 をそのまま返す（現行と同一）
   const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
   const nw = newC?newC.width:0, nh = newC?newC.height:0;
   ensureAlignEstimate(idx, oldC, newC);
@@ -1494,20 +1559,25 @@ async function buildToggle(idx){
     pageSizePt(state.newDoc, ni)
   ]);
   if(token !== state.renderToken) return; // await を挟んだので割り込みチェック（stale-draw防止）
-  const plan = framePlan(oldPt, newPt, state.dpi);
+  await ensureQuadEstimate(idx, oi, ni, oldPt, newPt);
+  if(token !== state.renderToken) return; // 象限推定でも await を挟むため再チェック
+  const quad = effectiveQuad(idx);
+  const newPtR = (newPt && (quad % 2)) ? {w:newPt.h, h:newPt.w} : newPt;
+  const plan = framePlan(oldPt, newPtR, state.dpi);
   state.curPlan = plan;
-  if(!state.toggleCache || state.toggleCache.idx !== idx){
+  if(!state.toggleCache || state.toggleCache.idx !== idx || state.toggleCache.quad !== quad){
     $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
-    const [oldC, newC] = await Promise.all([
+    const [oldC, newC0] = await Promise.all([
       renderPageCanvas(state.oldDoc, oi, plan.oldScale),
       renderPageCanvas(state.newDoc, ni, plan.newScale)
     ]);
     if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
+    const newC = rotateCanvas90(newC0, quad); // staleチェックの後に回す（無駄な回転を避ける）
     const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
     const nw = newC?newC.width:0, nh = newC?newC.height:0;
     // 枠算出用に旧版のImageDataも保持（再取得コストを避ける。新版は整列後にのみ使うため保持不要）
     const oimg = oldC ? oldC.getContext("2d").getImageData(0,0,ow,oh) : null;
-    state.toggleCache = {idx, oldC, newC, ow, oh, nw, nh, oimg};
+    state.toggleCache = {idx, quad, oldC, newC, ow, oh, nw, nh, oimg};
   }
   const {ow, oh, nw, nh, oimg, oldC, newC} = state.toggleCache;
   ensureAlignEstimate(idx, oldC, newC);
@@ -1635,6 +1705,7 @@ async function refreshAfterAlign(){
   state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
   state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
   state.alignCache = {}; // スロット→ページ対応が変わるため自動整列も再推定させる
+  state.quadCache = {}; state.quadManual = {}; // スロット→ページ対応が変わるため直角回転も破棄
   if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
   if(state.cur < 0) state.cur = 0;
   await show(state.cur);
@@ -1758,6 +1829,7 @@ $("dpi").addEventListener("change",async()=>{
 $("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
 $("th").addEventListener("change",()=>{
   state.alignCache = {}; // 一致率スコアが th 依存のため再推定させる
+  state.quadCache = {};  // 象限スコアも th 依存のため再推定させる
   if(state.mode==="diff" && state.rendered)show(state.cur);
 });
 $("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
