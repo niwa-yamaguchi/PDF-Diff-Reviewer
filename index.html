@@ -18,6 +18,7 @@
     --line-bright:#3a4c5e;
     --fg:#e8eef4;
     --muted:#7f8f9e;
+    --common:#3c3c3c;       /* 旧新どちらにもインクあり = 共通 */
     --removed:#ff5b57;      /* 旧版のみ = 削除 */
     --added:#4d8dff;        /* 新版のみ = 追加 */
     --added-text:#2fa84f;   /* テキスト差分モードの追加（緑） */
@@ -276,7 +277,7 @@
     </div>
   </div>
   <div class="legend">
-    <span class="k"><span class="swatch" style="background:#3c3c3c"></span>共通</span>
+    <span class="k"><span class="swatch" style="background:var(--common)"></span>共通</span>
     <span class="k"><span class="swatch" style="background:var(--removed)"></span>削除（旧版のみ）</span>
     <span class="k"><span class="swatch" style="background:var(--added)"></span>追加（新版のみ）</span>
     <span class="k"><span class="swatch" style="border:2px solid var(--box);background:var(--box-fill)"></span>変更枠</span>
@@ -1308,7 +1309,7 @@ function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
 const BOX_COLOR = "#ff9500";
 const BOX_FILL  = "rgba(255,149,0,0.18)";
 // 差分の塗り色。buildDiff の画素ループと書き出し凡例が共有する唯一の定義。
-// CSS変数 --removed / --added とも一致させること（片方だけ変えない）。
+// CSS変数 --common / --removed / --added とも一致させること（片方だけ変えない）。
 const DIFF_RGB = {
   common:  [60, 60, 60],   // 旧新どちらにもインクあり
   removed: [255, 91, 87],  // 旧版のみ = 削除
@@ -2028,7 +2029,7 @@ function legendLayout(items, unit, opts, measureW){
   items.forEach((it, i) => {
     if(i) cx += gapItem;
     const textW = measureW(it.label, fontPx);
-    parts.push({swX: cx, textX: cx + swPx + gapSw, textW});
+    parts.push({swX: cx, textX: cx + swPx + gapSw}); // 描画に要るのは色見本と文字の開始X座標だけ
     cx += swPx + gapSw + textW;
   });
   return {w: cx + pad, h: swPx + pad * 2, fontPx, swPx, pad, chrome, parts};
@@ -2043,15 +2044,19 @@ const ctxMeasurer = ctx => (label, fontPx) => {
   return w;
 };
 
-// 描画せず寸法だけ返す（配置の衝突判定用）
+// 描画せずレイアウト一式を返す（配置の衝突判定用）。返り値はそのまま drawLegend の
+// pre 引数へ渡せる。こうしないと「幅ガードで測った寸法」と「実際に描く寸法」が
+// 別計算になり、将来 legendLayout に状態依存が入ったとき両者がズレる。
 function measureLegend(ctx, items, unit, opts){
-  const L = legendLayout(items, unit, opts, ctxMeasurer(ctx));
-  return {w: L.w, h: L.h};
+  return legendLayout(items, unit, opts, ctxMeasurer(ctx));
 }
 
-// (x,y)を凡例ボックスの左上として描画する
-function drawLegend(ctx, items, x, y, unit, opts){
-  const L = legendLayout(items, unit, opts, ctxMeasurer(ctx));
+// (x,y)を凡例ボックスの左上として描画する。
+// pre に measureLegend の返り値を渡すとレイアウト計算と文字幅実測を再利用する。
+function drawLegend(ctx, items, x, y, unit, opts, pre){
+  const L = pre || legendLayout(items, unit, opts, ctxMeasurer(ctx));
+  // DPI下限72(=unit 1.0)では常に1px以上になるため現状は発火しないが、
+  // 将来DPI下限を下げたときに枠線が消えるのを防ぐ保険
   const bw = Math.max(1, LG_BORDER_PT * unit);
   ctx.save();
   if(L.chrome){
@@ -2081,17 +2086,23 @@ function drawLegend(ctx, items, x, y, unit, opts){
     ctx.fillText(it.label, x + p.textX, top + L.swPx/2);
   });
   ctx.restore();
+  return L;
 }
 
 const LG_MARGIN_PT = 10; // 凡例ボックスの左上マージン
 
 // 図面比較の凡例項目。色は buildDiff が実際に塗る DIFF_RGB と同じ定義から作る。
-function diffLegendItems(){
-  const items = [
+// 引数 kind は「書き出す画像の中身」であって state.mode ではない。dlPdf は切替モード中に
+// 押されてもループ内で buildDiff を呼ぶため中身は差分画像であり "diff" を渡す。
+// state.mode を関数内で直接読むと、この経路で凡例が「変更枠」だけになり誤りになる。
+function diffLegendItems(kind){
+  const items = [];
+  // 切替モードの画像は旧版/新版そのもの。共通/削除/追加の3色は実在しないので出さない。
+  if(kind !== "toggle") items.push(
     {color: rgbCss(DIFF_RGB.common),  label: "共通"},
     {color: rgbCss(DIFF_RGB.removed), label: "削除（旧版のみ）"},
     {color: rgbCss(DIFF_RGB.added),   label: "追加（新版のみ）"},
-  ];
+  );
   // 枠を出していないときに「変更枠」だけ凡例に残ると誤解を招くので連動させる
   if(state.showBoxes) items.push({stroke: BOX_COLOR, fill: BOX_FILL, label: "変更枠"});
   return items;
@@ -2099,20 +2110,24 @@ function diffLegendItems(){
 
 // src と同寸のCanvasへ複製し、複製側にだけ凡例を重ねて返す。src は変更しない。
 // 寸法を変えないので、PDFの用紙寸法(wPt/hPt)は従来と一致する。
-function exportCanvasWithLegend(src){
-  const c = document.createElement("canvas");
+// dest を渡すとそのCanvasを使い回す（全ページPDFで巨大なバッキングストアを毎ページ
+// 確保しないため）。width/height の再代入でCanvasは自動クリアされる。
+function exportCanvasWithLegend(src, kind, dest){
+  const c = dest || document.createElement("canvas");
   c.width = src.width; c.height = src.height;
   const ctx = c.getContext("2d");
   ctx.drawImage(src, 0, 0);
   const unit = state.dpi / 72;
   const m = LG_MARGIN_PT * unit;
-  drawLegend(ctx, diffLegendItems(), m, m, unit);
+  drawLegend(ctx, diffLegendItems(kind), m, m, unit);
   return c;
 }
 
 $("dlPng").addEventListener("click",()=>{
-  // 切替モードは旧版/新版そのもので差分色が無いため凡例を付けない
-  const shot = state.mode==="toggle" ? out : exportCanvasWithLegend(out);
+  // 切替モードの画像で説明を要する色はオレンジの変更枠だけ。枠OFFなら凡例は不要なので
+  // out をそのまま出す。それ以外（差分モード全般／切替モードで枠ON）は凡例を重ねる。
+  const bare = state.mode==="toggle" && !state.showBoxes;
+  const shot = bare ? out : exportCanvasWithLegend(out, state.mode);
   shot.toBlob(b=>{
     const a=document.createElement("a");
     a.href=URL.createObjectURL(b);
@@ -2127,10 +2142,11 @@ $("dlPdf").addEventListener("click",async()=>{
   const {jsPDF}=window.jspdf;
   $("status").innerHTML='<span class="busy">PDF生成中…</span>';
   let pdf=null;
+  const scratch=document.createElement("canvas"); // 全ページで使い回す複製先（毎ページ確保するとピークメモリが倍になる）
   for(let i=0;i<state.pages;i++){
     await buildDiff(i);
-    // dlPdf はモードに関わらず buildDiff で差分を描くため、常に凡例を付ける
-    const shot=exportCanvasWithLegend(out);
+    // dlPdf は state.mode に関わらず buildDiff で差分を描くため、常に差分用の凡例を付ける
+    const shot=exportCanvasWithLegend(out, "diff", scratch);
     const img=shot.toDataURL("image/png");
     const w=shot.width, h=shot.height;
     // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す。
@@ -2698,7 +2714,8 @@ function composeTextExport(oldC, newC, pageIndex, total){
   const lgX = 4 + ctx.measureText("OLD").width + 16;
   const lgLimit = W - 4 - ctx.measureText(pageText).width - 16;
   if(lgX + lg.w <= lgLimit){
-    drawLegend(ctx, lgItems, lgX, labelH/2 - lg.h/2, TEXT_LG_UNIT, lgOpts);
+    // 幅ガードで使った lg をそのまま渡し、描画側で同じレイアウトを再計算させない
+    drawLegend(ctx, lgItems, lgX, labelH/2 - lg.h/2, TEXT_LG_UNIT, lgOpts, lg);
   }
 
   ctx.drawImage(oldC, (W-oldC.width)/2, labelH);
