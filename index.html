@@ -2658,6 +2658,10 @@ async function renderTextPageOffscreen(side, pageIndex){
   return canvas;
 }
 
+// テキスト比較のラベル帯(高さ28px・フォント16px固定)に収まる凡例のスケール。
+// 図面側の state.dpi/72 とは別系統の固定値（帯もフォントもDPIに依存しないため）。
+const TEXT_LG_UNIT = 1.6;
+
 // 旧(上)・新(下)を各ラベル帯付きで縦積み合成（等倍・非伸縮、横中央寄せ）（ページ無し側は白Canvasで代替）
 function composeTextExport(oldC, newC, pageIndex, total){
   const fallback = (w,h) => { const c=document.createElement("canvas"); c.width=w; c.height=h; c.getContext("2d").fillStyle="#fff"; c.getContext("2d").fillRect(0,0,w,h); return c; };
@@ -2679,7 +2683,24 @@ function composeTextExport(oldC, newC, pageIndex, total){
   ctx.fillText("OLD", 4, labelH/2);
   ctx.fillStyle = "#333";
   ctx.textAlign = "right";
-  ctx.fillText("p "+(pageIndex+1)+" / "+total, W-4, labelH/2);
+  const pageText = "p "+(pageIndex+1)+" / "+total;
+  ctx.fillText(pageText, W-4, labelH/2);
+
+  // 凡例は最上部の帯にのみ。帯は既に白地なので下地・枠(chrome)は描かない。
+  // OLDラベルの右に置き、ページ番号と重なるほど幅が無ければ描画を諦める。
+  const lgItems = [
+    {color: TEXT_HI_COLORS.removed, label: "削除"},
+    {color: TEXT_HI_COLORS.added,   label: "追加"},
+    {color: TEXT_HI_COLORS.changed, label: "変更"},
+  ];
+  const lgOpts = {chrome: false};
+  const lg = measureLegend(ctx, lgItems, TEXT_LG_UNIT, lgOpts);
+  const lgX = 4 + ctx.measureText("OLD").width + 16;
+  const lgLimit = W - 4 - ctx.measureText(pageText).width - 16;
+  if(lgX + lg.w <= lgLimit){
+    drawLegend(ctx, lgItems, lgX, labelH/2 - lg.h/2, TEXT_LG_UNIT, lgOpts);
+  }
+
   ctx.drawImage(oldC, (W-oldC.width)/2, labelH);
 
   const newLabelY = labelH + oldC.height + gap;
