@@ -2083,8 +2083,37 @@ function drawLegend(ctx, items, x, y, unit, opts){
   ctx.restore();
 }
 
+const LG_MARGIN_PT = 10; // 凡例ボックスの左上マージン
+
+// 図面比較の凡例項目。色は buildDiff が実際に塗る DIFF_RGB と同じ定義から作る。
+function diffLegendItems(){
+  const items = [
+    {color: rgbCss(DIFF_RGB.common),  label: "共通"},
+    {color: rgbCss(DIFF_RGB.removed), label: "削除（旧版のみ）"},
+    {color: rgbCss(DIFF_RGB.added),   label: "追加（新版のみ）"},
+  ];
+  // 枠を出していないときに「変更枠」だけ凡例に残ると誤解を招くので連動させる
+  if(state.showBoxes) items.push({stroke: BOX_COLOR, fill: BOX_FILL, label: "変更枠"});
+  return items;
+}
+
+// src と同寸のCanvasへ複製し、複製側にだけ凡例を重ねて返す。src は変更しない。
+// 寸法を変えないので、PDFの用紙寸法(wPt/hPt)は従来と一致する。
+function exportCanvasWithLegend(src){
+  const c = document.createElement("canvas");
+  c.width = src.width; c.height = src.height;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(src, 0, 0);
+  const unit = state.dpi / 72;
+  const m = LG_MARGIN_PT * unit;
+  drawLegend(ctx, diffLegendItems(), m, m, unit);
+  return c;
+}
+
 $("dlPng").addEventListener("click",()=>{
-  out.toBlob(b=>{
+  // 切替モードは旧版/新版そのもので差分色が無いため凡例を付けない
+  const shot = state.mode==="toggle" ? out : exportCanvasWithLegend(out);
+  shot.toBlob(b=>{
     const a=document.createElement("a");
     a.href=URL.createObjectURL(b);
     const name = state.mode==="toggle"
@@ -2100,8 +2129,10 @@ $("dlPdf").addEventListener("click",async()=>{
   let pdf=null;
   for(let i=0;i<state.pages;i++){
     await buildDiff(i);
-    const img=out.toDataURL("image/png");
-    const w=out.width, h=out.height;
+    // dlPdf はモードに関わらず buildDiff で差分を描くため、常に凡例を付ける
+    const shot=exportCanvasWithLegend(out);
+    const img=shot.toDataURL("image/png");
+    const w=shot.width, h=shot.height;
     // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す。
     // 用紙サイズ正規化時も「基準ページ(大きい用紙)は必ず dpi/72 で描画する」(framePlan の
     // frameScale)ため、フレーム寸法を dpi/72 で割ると基準ページのpt実寸が得られる。式は不変。
