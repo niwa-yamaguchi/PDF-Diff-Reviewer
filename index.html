@@ -2007,6 +2007,82 @@ $("alignUndo").addEventListener("click", async ()=>{
 $("prev").addEventListener("click",()=>show(state.cur-1));
 $("next").addEventListener("click",()=>show(state.cur+1));
 
+// ── 書き出し用の凡例 ──
+// 画面表示のCanvas(out)には描かない（画面はヘッダーのHTML凡例が担う）。書き出し時に
+// 複製したCanvasへだけ重ねるため、パン/ズームやPDFの用紙寸法には影響しない。
+// レイアウト定数は全てpt。unit(=1ptあたりのpx数)を掛けてpxへ変換するので、DPIを
+// 上げても紙面上の凡例の大きさは変わらない。
+const LG_FONT_PT = 8, LG_SWATCH_PT = 8, LG_GAP_ITEM_PT = 10, LG_GAP_SW_PT = 4, LG_PAD_PT = 6, LG_BORDER_PT = 1;
+
+// 凡例の幾何だけを返す純関数。文字幅の実測は measureW で外から受け取る。
+// 返す座標は全て「凡例ボックスの左上を原点とした相対px」。
+function legendLayout(items, unit, opts, measureW){
+  const chrome = !(opts && opts.chrome === false);
+  const fontPx = LG_FONT_PT * unit;
+  const swPx   = LG_SWATCH_PT * unit;
+  const gapItem = LG_GAP_ITEM_PT * unit;
+  const gapSw   = LG_GAP_SW_PT * unit;
+  const pad = chrome ? LG_PAD_PT * unit : 0;
+  let cx = pad;
+  const parts = [];
+  items.forEach((it, i) => {
+    if(i) cx += gapItem;
+    const textW = measureW(it.label, fontPx);
+    parts.push({swX: cx, textX: cx + swPx + gapSw, textW});
+    cx += swPx + gapSw + textW;
+  });
+  return {w: cx + pad, h: swPx + pad * 2, fontPx, swPx, pad, chrome, parts};
+}
+
+// 実測用: 呼び出し側のctx状態を壊さないようsave/restoreで包む
+const ctxMeasurer = ctx => (label, fontPx) => {
+  ctx.save();
+  ctx.font = "bold " + fontPx + "px sans-serif";
+  const w = ctx.measureText(label).width;
+  ctx.restore();
+  return w;
+};
+
+// 描画せず寸法だけ返す（配置の衝突判定用）
+function measureLegend(ctx, items, unit, opts){
+  const L = legendLayout(items, unit, opts, ctxMeasurer(ctx));
+  return {w: L.w, h: L.h};
+}
+
+// (x,y)を凡例ボックスの左上として描画する
+function drawLegend(ctx, items, x, y, unit, opts){
+  const L = legendLayout(items, unit, opts, ctxMeasurer(ctx));
+  const bw = Math.max(1, LG_BORDER_PT * unit);
+  ctx.save();
+  if(L.chrome){
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillRect(x, y, L.w, L.h);
+    ctx.strokeStyle = "#999";
+    ctx.lineWidth = bw;
+    ctx.strokeRect(x + bw/2, y + bw/2, L.w - bw, L.h - bw); // 枠線を内側へ寄せる
+  }
+  ctx.font = "bold " + L.fontPx + "px sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  const top = y + L.pad;
+  L.parts.forEach((p, i) => {
+    const it = items[i];
+    if(it.color){
+      ctx.fillStyle = it.color;
+      ctx.fillRect(x + p.swX, top, L.swPx, L.swPx);
+    } else {
+      ctx.fillStyle = it.fill;
+      ctx.fillRect(x + p.swX, top, L.swPx, L.swPx);
+      ctx.strokeStyle = it.stroke;
+      ctx.lineWidth = bw;
+      ctx.strokeRect(x + p.swX + bw/2, top + bw/2, L.swPx - bw, L.swPx - bw);
+    }
+    ctx.fillStyle = "#222";
+    ctx.fillText(it.label, x + p.textX, top + L.swPx/2);
+  });
+  ctx.restore();
+}
+
 $("dlPng").addEventListener("click",()=>{
   out.toBlob(b=>{
     const a=document.createElement("a");
