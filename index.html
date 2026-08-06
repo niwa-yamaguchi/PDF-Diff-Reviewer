@@ -2004,13 +2004,18 @@ $("toggleFlip").addEventListener("click", flipSide);
 $("boxToggle").addEventListener("click", toggleBoxes);
 $("boxEdit").addEventListener("click", ()=>setBoxEditMode(!state.boxEditMode));
 
+// フォーム部品やcontenteditableにフォーカスがある間はショートカットキーを奪わないためのガード。複数のkeydownリスナーで共用する。
+function isTypingTarget(e){
+  const tag = (e.target && e.target.tagName) || "";
+  if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return true;
+  return !!(e.target && e.target.isContentEditable);
+}
+
 // Space キーで新旧切替（トグルモード時のみ）。枠編集モード中はパンの修飾キーとして使う。
 document.addEventListener("keydown", e=>{
   if(state.topMode!=="visual") return;
   if(e.code!=="Space" || e.repeat) return;
-  const tag = (e.target && e.target.tagName) || "";
-  if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return;
-  if(e.target && e.target.isContentEditable) return;
+  if(isTypingTarget(e)) return;
   if(state.boxEditMode){ spaceHeld = true; e.preventDefault(); return; }
   if(state.mode==="toggle" && hasImage()){
     e.preventDefault();
@@ -2023,9 +2028,7 @@ window.addEventListener("blur", ()=>{ spaceHeld = false; }); // 押しっぱな�
 // 枠編集モードのキー操作。E=モード切替、Esc=選択解除→モード終了。
 document.addEventListener("keydown", e=>{
   if(state.topMode!=="visual") return;
-  const tag = (e.target && e.target.tagName) || "";
-  if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return;
-  if(e.target && e.target.isContentEditable) return;
+  if(isTypingTarget(e)) return;
   if(e.key==="e" || e.key==="E"){
     if(!state.rendered) return;
     e.preventDefault();
