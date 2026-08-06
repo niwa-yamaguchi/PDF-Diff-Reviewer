@@ -420,6 +420,9 @@
         <button id="modeDiff" class="active" disabled title="差分表示">差分</button>
         <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
         <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
+        <button id="boxEdit" disabled title="変更枠を手で編集（E）">枠を編集</button>
+        <button id="boxDel" disabled style="display:none" title="選択中の枠を削除（Delete）">枠を削除</button>
+        <button id="boxReset" disabled style="display:none" title="このページの手編集を破棄して自動検出に戻す">自動検出に戻す</button>
       </div>
       <div class="toggleind" id="toggleInd" style="display:none">
         <span class="side old active" id="sideOld">OLD</span>
@@ -1493,6 +1496,40 @@ function drawBoxesTo(ctx, boxes, lw){
 // 書き出し用の線幅。現行 drawBoxes と同じ式（DPIに比例）。
 const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
 
+const HANDLE = 5; // リサイズハンドルの半径（画面px固定。拡大率に依らず掴みやすさを一定にする）
+// 8ハンドルの伸縮方向。handlePoints の並びと1対1で対応させること。
+const HANDLE_DIRS = [[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0]];
+const HANDLE_CURSORS = ["nwse-resize","ns-resize","nesw-resize","ew-resize","nwse-resize","ns-resize","nesw-resize","ew-resize"];
+// 8ハンドルの中心（画面座標）。左上から時計回り。
+function handlePoints(x,y,w,h){
+  return [[x,y],[x+w/2,y],[x+w,y],[x+w,y+h/2],[x+w,y+h],[x+w/2,y+h],[x,y+h],[x,y+h/2]];
+}
+// ポインタイベント→フレーム座標（out のピクセル座標）
+function toFrame(e){
+  const r = wrap.getBoundingClientRect();
+  return {x:(e.clientX-r.left-view.tx)/view.scale, y:(e.clientY-r.top-view.ty)/view.scale};
+}
+// 手前(リスト後方)から探して最初に当たった枠のindex。無ければ -1。
+function hitBox(p){
+  const bs = state.boxes || [];
+  for(let i=bs.length-1;i>=0;i--){
+    const b = bs[i];
+    if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h) return i;
+  }
+  return -1;
+}
+// 選択枠のハンドルに当たっていればそのindex、外れていれば -1。判定は画面px基準。
+function hitHandle(p){
+  if(state.boxSel<0 || !state.boxes || state.boxSel>=state.boxes.length) return -1;
+  const b = state.boxes[state.boxSel], s = view.scale;
+  const pts = handlePoints(b.x, b.y, b.w, b.h);
+  const r = HANDLE/s; // 画面px半径をフレーム座標へ換算
+  for(let i=0;i<pts.length;i++){
+    if(Math.abs(p.x-pts[i][0])<=r && Math.abs(p.y-pts[i][1])<=r) return i;
+  }
+  return -1;
+}
+
 // 画面解像度のオーバーレイへ枠を描く。CSS transform は掛けず view 変換を自前で適用するため、
 // 枠線は画面px固定になり拡大しても太らない。out の実データには一切触れない。
 function drawBoxLayer(){
@@ -1511,6 +1548,18 @@ function drawBoxLayer(){
     bctx.fillRect(x, y, w, h);
     bctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
   }
+  if(state.boxEditMode && state.boxSel>=0 && state.boxSel<state.boxes.length){
+    const b = state.boxes[state.boxSel];
+    const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
+    bctx.setLineDash([5,4]);
+    bctx.strokeStyle = "#fff"; bctx.lineWidth = 1;
+    bctx.strokeRect(x, y, w, h);
+    bctx.setLineDash([]);
+    for(const [hx,hy] of handlePoints(x,y,w,h)){
+      bctx.fillStyle = "#fff"; bctx.fillRect(hx-HANDLE, hy-HANDLE, HANDLE*2, HANDLE*2);
+      bctx.strokeStyle = BOX_COLOR; bctx.strokeRect(hx-HANDLE, hy-HANDLE, HANDLE*2, HANDLE*2);
+    }
+  }
   bctx.restore();
 }
 
@@ -1528,12 +1577,42 @@ function toggleBoxes(){
   if(!state.rendered) return;
   state.showBoxes = !state.showBoxes;
   $("boxToggle").classList.toggle("active", state.showBoxes);
+  if(!state.showBoxes && state.boxEditMode) setBoxEditMode(false);
   if(state.showBoxes && !state.boxEdits[state.cur] && !state.boxAuto[state.cur]){
     show(state.cur);   // 未算出のページのみ通常経路で算出させる
     return;
   }
   if(!state.boxEdits[state.cur] && state.boxAuto[state.cur]) state.boxes = state.boxAuto[state.cur];
   updateBoxStat();
+  drawBoxLayer();
+}
+
+// 枠編集モードのボタン状態・カーソル・補助ボタンの出し入れ
+function setBoxEditUI(){
+  const on = state.boxEditMode;
+  $("boxEdit").disabled = !state.rendered;
+  $("boxEdit").classList.toggle("active", on);
+  wrap.classList.toggle("boxedit", on);
+  $("boxDel").style.display = on ? "" : "none";
+  $("boxReset").style.display = on ? "" : "none";
+  $("boxDel").disabled = state.boxSel < 0;
+  $("boxReset").disabled = !state.boxEdits[state.cur];
+}
+// 枠が見えないと編集できないため、ONにするとき強調がOFFなら自動でONにする。
+function setBoxEditMode(on){
+  if(on && !state.rendered) return;
+  state.boxEditMode = on;
+  state.boxSel = -1;
+  if(on && !state.showBoxes){ toggleBoxes(); }
+  setBoxEditUI();
+  drawBoxLayer();
+}
+
+// 編集モード中の押下。今は選択だけを行う。
+function boxEditPointerDown(e){
+  e.preventDefault();
+  state.boxSel = hitBox(toFrame(e));
+  setBoxEditUI();
   drawBoxLayer();
 }
 
@@ -1754,6 +1833,7 @@ function setModeUI(){
   $("toggleInd").style.display = state.mode==="toggle" ? "flex" : "none";
   $("th").disabled = state.mode==="toggle";
   $("boxToggle").disabled = !state.rendered;
+  setBoxEditUI();
 }
 
 function updateAlignButtons(){
@@ -1834,10 +1914,12 @@ async function refreshAfterAlign(){
 async function show(idx){
   if(idx<0||idx>=state.pages) return;
   state.cur=idx;
+  state.boxSel=-1; // ページが変われば選択は無効
   if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
   updateAlignButtons();
   updateAlignReadout();
   updateManualAlignReadout();
+  setBoxEditUI();
 }
 
 // ── ズーム & パン ──
@@ -1879,9 +1961,11 @@ wrap.addEventListener("wheel", e=>{
 
 // ドラッグでパン
 let panning=false, psx=0, psy=0, ptx=0, pty=0;
+let spaceHeld = false; // 枠編集モード中に Space を押している間はパンへ回す
 wrap.addEventListener("pointerdown", e=>{
   if(state.topMode!=="visual") return;
   if(!hasImage()) return;
+  if(state.boxEditMode && !spaceHeld && e.button!==1){ boxEditPointerDown(e); return; }
   panning=true; wrap.classList.add("panning"); wrap.setPointerCapture(e.pointerId);
   psx=e.clientX; psy=e.clientY; ptx=view.tx; pty=view.ty;
 });
@@ -1918,17 +2002,41 @@ $("modeToggle").addEventListener("click", async ()=>{
 });
 $("toggleFlip").addEventListener("click", flipSide);
 $("boxToggle").addEventListener("click", toggleBoxes);
+$("boxEdit").addEventListener("click", ()=>setBoxEditMode(!state.boxEditMode));
 
-// Space キーで新旧切替（トグルモード時のみ）
+// Space キーで新旧切替（トグルモード時のみ）。枠編集モード中はパンの修飾キーとして使う。
 document.addEventListener("keydown", e=>{
   if(state.topMode!=="visual") return;
   if(e.code!=="Space" || e.repeat) return;
   const tag = (e.target && e.target.tagName) || "";
   if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return;
   if(e.target && e.target.isContentEditable) return;
+  if(state.boxEditMode){ spaceHeld = true; e.preventDefault(); return; }
   if(state.mode==="toggle" && hasImage()){
     e.preventDefault();
     flipSide();
+  }
+});
+document.addEventListener("keyup", e=>{ if(e.code==="Space") spaceHeld = false; });
+window.addEventListener("blur", ()=>{ spaceHeld = false; }); // 押しっぱなし状態の取り残しを防ぐ
+
+// 枠編集モードのキー操作。E=モード切替、Esc=選択解除→モード終了。
+document.addEventListener("keydown", e=>{
+  if(state.topMode!=="visual") return;
+  const tag = (e.target && e.target.tagName) || "";
+  if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return;
+  if(e.target && e.target.isContentEditable) return;
+  if(e.key==="e" || e.key==="E"){
+    if(!state.rendered) return;
+    e.preventDefault();
+    setBoxEditMode(!state.boxEditMode);
+    return;
+  }
+  if(!state.boxEditMode) return;
+  if(e.key==="Escape"){
+    e.preventDefault();
+    if(state.boxSel>=0){ state.boxSel=-1; setBoxEditUI(); drawBoxLayer(); }
+    else setBoxEditMode(false);
   }
 });
 
@@ -2226,6 +2334,7 @@ $("dlPdf").addEventListener("click",async()=>{
 // ── トップモード切替（図面比較 / テキスト比較） ──
 function applyTopMode(){
   const visual = state.topMode==="visual";
+  if(!visual && state.boxEditMode) setBoxEditMode(false);
   $("topVisual").classList.toggle("active", visual);
   $("topText").classList.toggle("active", !visual);
   $("visualCtrl").style.display = visual ? "flex" : "none";
