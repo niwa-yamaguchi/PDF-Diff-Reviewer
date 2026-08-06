@@ -217,6 +217,10 @@
     background:#fff;box-shadow:0 8px 40px rgba(0,0,0,.55);
     image-rendering:crisp-edges;
   }
+  #boxLayer{
+    position:absolute;left:0;top:0;pointer-events:none;
+  }
+  .canvas-wrap.boxedit{cursor:crosshair}
   .placeholder{
     position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;
     text-align:center;font-family:var(--mono);color:var(--muted);
@@ -273,7 +277,7 @@
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
       <!-- ビルド工程が無い1ファイル運用のため、更新の都度ここを手動で書き換える -->
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-07-31</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-08-06</span>
     </div>
   </div>
   <div class="legend">
@@ -431,6 +435,7 @@
     </div>
     <div class="canvas-wrap">
       <canvas id="out" width="10" height="10" style="display:none"></canvas>
+      <canvas id="boxLayer" width="10" height="10"></canvas>
       <div class="placeholder" id="ph">
         <div class="mark">＋　＋<br>＋　＋</div>
         旧版と新版のPDFを読み込むと<br>変更箇所が赤（削除）と青（追加）で重なって表示されます
@@ -502,9 +507,13 @@ const state = {
   textToken:0, // 抽出処理の再入ガード（renderToken と同型）
   textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
   debugXYCut:false,  // trueでXY-cutのブロック構造をconsoleへ出力
-  showBoxes:true, // 変更箇所を四角枠で囲うか
-  cleanImage:null, // 枠なしの差分ImageData（枠のON/OFF切替用キャッシュ）
-  boxes:null, // computeBoxes の結果（現在ページ分）
+  showBoxes:true,    // 変更箇所を四角枠で囲うか（描くかどうかだけを制御する）
+  boxes:null,        // 現在ページの枠リスト（自動算出 or 手編集後）
+  boxAuto:{},        // pageIndex -> 自動算出の原本（「自動検出に戻す」用）
+  boxEdits:{},       // pageIndex -> 手編集後の枠リスト（あれば自動より優先）
+  boxUndo:{},        // pageIndex -> 取り消しスタック（枠リストの複製・深さ50）
+  boxEditMode:false, // 枠編集モードのON/OFF
+  boxSel:-1,         // 選択中の枠のstate.boxes内インデックス（-1=未選択）
   oldSeq:null, newSeq:null, // 旧/新のページ順（要素: 0基点ページ番号 or null=空白スペーサ）
   alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
   autoAlign:false, // 自動位置合わせ（フーリエ・メリン）のON/OFF
@@ -1046,6 +1055,7 @@ function bestQuadrant(O, Nw, th, opts={}){
 
 const $ = id => document.getElementById(id);
 const out = $("out"), octx = out.getContext("2d");
+const boxLayer = $("boxLayer"), bctx = boxLayer.getContext("2d");
 
 function setDrop(el, name){
   el.classList.add("set");
@@ -1465,31 +1475,66 @@ function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
   return clampBoxes(raw, width, height);
 }
 
-function drawBoxes(){
-  if(!state.boxes || !state.boxes.length) return;
-  const lw = Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
-  octx.save();
-  octx.fillStyle = BOX_FILL;
-  octx.strokeStyle = BOX_COLOR;
-  octx.lineWidth = lw;
-  for(const b of state.boxes){
-    octx.fillRect(b.x, b.y, b.w, b.h);
+// 枠をフレーム座標のまま ctx へ描く純粋な描画関数（書き出し用）。lw は線幅(px)。
+function drawBoxesTo(ctx, boxes, lw){
+  if(!boxes || !boxes.length) return;
+  ctx.save();
+  ctx.fillStyle = BOX_FILL;
+  ctx.strokeStyle = BOX_COLOR;
+  ctx.lineWidth = lw;
+  for(const b of boxes){
+    ctx.fillRect(b.x, b.y, b.w, b.h);
     // 枠線が範囲外に出ないよう半線幅内側に寄せる
     const h = lw/2;
-    octx.strokeRect(b.x+h, b.y+h, Math.max(0,b.w-lw), Math.max(0,b.h-lw));
+    ctx.strokeRect(b.x+h, b.y+h, Math.max(0,b.w-lw), Math.max(0,b.h-lw));
   }
-  octx.restore();
+  ctx.restore();
+}
+// 書き出し用の線幅。現行 drawBoxes と同じ式（DPIに比例）。
+const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
+
+// 画面解像度のオーバーレイへ枠を描く。CSS transform は掛けず view 変換を自前で適用するため、
+// 枠線は画面px固定になり拡大しても太らない。out の実データには一切触れない。
+function drawBoxLayer(){
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  if(boxLayer.width !== W || boxLayer.height !== H){ boxLayer.width = W; boxLayer.height = H; }
+  bctx.clearRect(0,0,W,H);
+  if(!state.rendered || out.style.display === "none") return;
+  if(!state.showBoxes || !state.boxes || !state.boxes.length) return;
+  const s = view.scale;
+  bctx.save();
+  bctx.fillStyle = BOX_FILL;
+  bctx.strokeStyle = BOX_COLOR;
+  bctx.lineWidth = 2;
+  for(const b of state.boxes){
+    const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
+    bctx.fillRect(x, y, w, h);
+    bctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
+  }
+  bctx.restore();
 }
 
-// 枠のON/OFF切替（PDF再レンダ・差分再計算なし。cleanImageから即座に復元）
+// 変更箇所の件数表示。新旧切替モードで枠OFFのときだけ従来どおり「—」を出す。
+function updateBoxStat(){
+  if(state.mode==="toggle" && !state.showBoxes){ $("statBox").textContent = "変更箇所 —"; return; }
+  const n = state.boxes ? state.boxes.length : 0;
+  const edited = !!state.boxEdits[state.cur];
+  $("statBox").textContent = "変更箇所 " + n.toLocaleString() + (edited ? "（手編集）" : "");
+}
+
+// 枠のON/OFF切替。Canvasへ焼かないためレイヤの描き直しだけで済む。
+// 新旧切替モードで枠OFFのまま構築されたページだけは枠が未算出なので、ONにするとき再構築する。
 function toggleBoxes(){
-  if(!state.rendered) return;              // 未描画なら何もしない
+  if(!state.rendered) return;
   state.showBoxes = !state.showBoxes;
   $("boxToggle").classList.toggle("active", state.showBoxes);
-  if(state.mode==="toggle"){ buildToggle(state.cur); return; } // 切替モードは再構築で枠を出し入れ（ON時に算出）
-  if(!state.cleanImage) return;            // 差分未描画なら何もしない
-  octx.putImageData(state.cleanImage,0,0); // 枠なし差分に復元
-  if(state.showBoxes) drawBoxes();         // ONなら枠を重ねる
+  if(state.showBoxes && !state.boxEdits[state.cur] && !state.boxAuto[state.cur]){
+    show(state.cur);   // 未算出のページのみ通常経路で算出させる
+    return;
+  }
+  if(!state.boxEdits[state.cur] && state.boxAuto[state.cur]) state.boxes = state.boxAuto[state.cur];
+  updateBoxStat();
+  drawBoxLayer();
 }
 
 async function buildDiff(idx){
@@ -1582,16 +1627,21 @@ async function buildDiff(idx){
     }
   }
   octx.putImageData(res,0,0);
-  state.cleanImage = res;
-  const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
-  state.boxes = clampBoxes(raw, width, height);
-  if(state.showBoxes) drawBoxes();
+  // 手編集済みページは自動算出の集約（computeBoxes / clampBoxes）を省く。
+  // bflags 自体は差分の画素ループ内で立つため、ここでの分岐が省けるコストのすべて。
+  if(state.boxEdits[idx]){
+    state.boxes = state.boxEdits[idx];
+  } else {
+    const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
+    state.boxes = clampBoxes(raw, width, height);
+    state.boxAuto[idx] = state.boxes;
+  }
   out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
-  const boxCount = state.boxes.length;
-  state.cache[idx] = {rm, ad, bx: boxCount};
+  drawBoxLayer();
+  state.cache[idx] = {rm, ad, bx: state.boxes.length};
   $("statRm").textContent = "削除 "+rm.toLocaleString();
   $("statAd").textContent = "追加 "+ad.toLocaleString();
-  $("statBox").textContent = "変更箇所 "+boxCount.toLocaleString();
+  updateBoxStat();
   $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
   $("pageLabel").textContent = pageLabelText(idx);
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
@@ -1645,14 +1695,21 @@ async function buildToggle(idx){
   const nAlignedImg = alignedNewC.getContext("2d").getImageData(0,0,width,height);
   state.toggleCache.alignedNewC = alignedNewC;
   // 枠算出: 旧版 ImageData と整列済み新版 ImageData を同座標で比較
-  state.boxes = state.showBoxes ? computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height) : [];
+  if(state.boxEdits[idx]){
+    state.boxes = state.boxEdits[idx];               // 手編集済み: 算出そのものを省く
+  } else if(state.showBoxes){
+    state.boxes = computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height);
+    state.boxAuto[idx] = state.boxes;
+  } else {
+    state.boxes = [];
+  }
 
   drawToggleSide();
 
   $("pageLabel").textContent = pageLabelText(idx);
   $("statRm").textContent = "削除 —";
   $("statAd").textContent = "追加 —";
-  $("statBox").textContent = state.showBoxes ? ("変更箇所 "+state.boxes.length.toLocaleString()) : "変更箇所 —";
+  updateBoxStat();
   $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
   $("boxToggle").disabled=false;
@@ -1669,7 +1726,6 @@ function drawToggleSide(){
   if(hasPage){
     if(side==="old") octx.drawImage(c.oldC,0,0);
     else octx.drawImage(c.alignedNewC,0,0); // 整列＋dx/dy 焼き込み済み
-    if(state.showBoxes) drawBoxes(); // 変更枠を重ねる（枠座標は旧/新どちらの表示にも整合）
   } else {
     octx.fillStyle = "#7f8f9e";
     octx.font = "20px sans-serif";
@@ -1677,6 +1733,7 @@ function drawToggleSide(){
     octx.fillText("この版にこのページはありません", out.width/2, out.height/2);
   }
   out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
+  drawBoxLayer(); // 枠座標は旧/新どちらの表示にも整合する
   updateToggleIndicator();
 }
 
@@ -1792,6 +1849,7 @@ const hasImage = () => out.style.display !== "none";
 function applyTransform(){
   out.style.transform = `translate(${view.tx}px,${view.ty}px) scale(${view.scale})`;
   $("zoomLabel").textContent = Math.round(view.scale*100)+"%";
+  drawBoxLayer();
 }
 // キャンバス全体が枠に収まる倍率で中央表示
 function fitView(){
@@ -1839,6 +1897,7 @@ function endPan(e){
 wrap.addEventListener("pointerup", endPan);
 wrap.addEventListener("pointercancel", endPan);
 wrap.addEventListener("dblclick", fitView); // ダブルクリックで全体表示に戻す
+window.addEventListener("resize", drawBoxLayer); // レイヤは画面解像度なので寸法追従が要る
 
 $("zoomIn").addEventListener("click", ()=>zoomCenter(1.25));
 $("zoomOut").addEventListener("click", ()=>zoomCenter(1/1.25));
@@ -2117,6 +2176,7 @@ function exportCanvasWithLegend(src, kind, dest){
   c.width = src.width; c.height = src.height;
   const ctx = c.getContext("2d");
   ctx.drawImage(src, 0, 0);
+  if(state.showBoxes) drawBoxesTo(ctx, state.boxes, exportBoxLineWidth());
   const unit = state.dpi / 72;
   const m = LG_MARGIN_PT * unit;
   drawLegend(ctx, diffLegendItems(kind), m, m, unit);
