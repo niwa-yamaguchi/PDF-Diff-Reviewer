@@ -1556,13 +1556,16 @@ function drawBoxLayer(){
   bctx.fillStyle = BOX_FILL;
   bctx.strokeStyle = BOX_COLOR;
   bctx.lineWidth = 2;
-  for(const b of (state.boxes||[])){
+  const prev = (boxDrag && boxDrag.preview) ? boxDrag.preview : null;
+  const boxes = state.boxes || [];
+  for(let i=0;i<boxes.length;i++){
+    const b = (prev && i===state.boxSel) ? prev : boxes[i];
     const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
     bctx.fillRect(x, y, w, h);
     bctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
   }
-  if(state.boxEditMode && state.boxSel>=0 && state.boxSel<state.boxes.length){
-    const b = state.boxes[state.boxSel];
+  if(state.boxEditMode && state.boxSel>=0 && state.boxSel<boxes.length){
+    const b = prev || boxes[state.boxSel];
     const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
     bctx.setLineDash([5,4]);
     bctx.strokeStyle = "#fff"; bctx.lineWidth = 1;
@@ -1622,6 +1625,7 @@ function setBoxEditUI(){
 function setBoxEditMode(on){
   if(on && !state.rendered) return;
   state.boxEditMode = on;
+  if(!on) wrap.style.cursor = "";
   state.boxSel = -1;
   if(on && !state.showBoxes){ toggleBoxes(); }
   setBoxEditUI();
@@ -1663,14 +1667,21 @@ function deleteSelectedBox(){
   updateBoxStat(); setBoxEditUI(); drawBoxLayer();
 }
 
-// 編集モード中の押下。枠に当たれば選択、外れれば新規作成ドラッグを開始する。
+// 編集モード中の押下。ハンドル→枠→背景の順に判定する。
 function boxEditPointerDown(e){
   e.preventDefault();
   wrap.setPointerCapture(e.pointerId);
   const p = toFrame(e);
+  const hs = hitHandle(p);
+  if(hs>=0){
+    boxDrag = {kind:"resize", h:hs, orig:{...state.boxes[state.boxSel]}, preview:null};
+    drawBoxLayer();
+    return;
+  }
   const hit = hitBox(p);
   if(hit>=0){
     state.boxSel = hit;
+    boxDrag = {kind:"move", ox:p.x, oy:p.y, orig:{...state.boxes[hit]}, preview:null};
   } else {
     state.boxSel = -1;
     boxDrag = {kind:"create", x0:p.x, y0:p.y, x1:p.x, y1:p.y};
@@ -1691,6 +1702,18 @@ function endBoxDrag(e){
     const list = ensureBoxEdits();
     list.push(clampBox(r, out.width, out.height));
     state.boxSel = list.length-1;
+  }
+  if(d.kind==="move" || d.kind==="resize"){
+    const nb = d.preview;
+    const changed = nb && (nb.x!==d.orig.x || nb.y!==d.orig.y || nb.w!==d.orig.w || nb.h!==d.orig.h);
+    const min = blockSize();
+    // 動いていない（＝ただのクリック）なら取り消しスタックを汚さない。
+    // リサイズで潰れた場合も確定せず元のまま残す。
+    if(changed && !(d.kind==="resize" && (nb.w<min || nb.h<min))){
+      pushBoxUndo();
+      const list = ensureBoxEdits();
+      list[state.boxSel] = nb;
+    }
   }
   updateBoxStat(); setBoxEditUI(); drawBoxLayer();
 }
@@ -2059,11 +2082,35 @@ function endPan(e){
 }
 wrap.addEventListener("pointerup", endPan);
 wrap.addEventListener("pointercancel", endPan);
-// 枠編集モードの作成ドラッグ。パン用ハンドラとは boxDrag/panning のフラグで排他になる。
+// 枠編集モードのドラッグ（作成/移動/リサイズ）。パン用ハンドラとは boxDrag/panning のフラグで排他になる。
 wrap.addEventListener("pointermove", e=>{
   if(!boxDrag) return;
   const p = toFrame(e);
-  if(boxDrag.kind==="create"){ boxDrag.x1=p.x; boxDrag.y1=p.y; drawBoxLayer(); }
+  if(boxDrag.kind==="create"){
+    boxDrag.x1=p.x; boxDrag.y1=p.y;
+  } else if(boxDrag.kind==="move"){
+    // 移動はサイズを変えない。枠ごとフレーム内へ収まるよう平行移動量の方をクランプする。
+    const o = boxDrag.orig;
+    const maxX = Math.max(0, out.width - o.w), maxY = Math.max(0, out.height - o.h);
+    const nx = Math.min(Math.max(0, o.x + (p.x-boxDrag.ox)), maxX);
+    const ny = Math.min(Math.max(0, o.y + (p.y-boxDrag.oy)), maxY);
+    boxDrag.preview = {x:nx, y:ny, w:o.w, h:o.h};
+  } else if(boxDrag.kind==="resize"){
+    const [sx,sy] = HANDLE_DIRS[boxDrag.h];
+    let {x,y,w,h} = boxDrag.orig;
+    if(sx<0){ const r=x+w; x=p.x; w=r-x; } else if(sx>0){ w=p.x-x; }
+    if(sy<0){ const b=y+h; y=p.y; h=b-y; } else if(sy>0){ h=p.y-y; }
+    boxDrag.preview = clampBox(normRect(x, y, x+w, y+h), out.width, out.height);
+  }
+  drawBoxLayer();
+});
+// ドラッグしていないときのカーソル表示（ハンドル＝リサイズ方向、枠内＝move）
+wrap.addEventListener("pointermove", e=>{
+  if(!state.boxEditMode || boxDrag) return;
+  const p = toFrame(e);
+  const hs = hitHandle(p);
+  if(hs>=0){ wrap.style.cursor = HANDLE_CURSORS[hs]; return; }
+  wrap.style.cursor = hitBox(p)>=0 ? "move" : "";
 });
 wrap.addEventListener("pointerup", endBoxDrag);
 wrap.addEventListener("pointercancel", endBoxDrag);
