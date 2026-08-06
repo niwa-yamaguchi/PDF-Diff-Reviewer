@@ -512,7 +512,9 @@ const state = {
   debugXYCut:false,  // trueでXY-cutのブロック構造をconsoleへ出力
   showBoxes:true,    // 変更箇所を四角枠で囲うか（描くかどうかだけを制御する）
   boxes:null,        // 現在ページの枠リスト（自動算出 or 手編集後）
-  boxAuto:{},        // pageIndex -> 自動算出の原本（「自動検出に戻す」用）
+  boxAuto:{},        // pageIndex -> 自動算出の原本（「自動検出に戻す」用）。
+                     // state.cache/alignCache/quadCache と同じく「現在のDPI・位置合わせ・モードの
+                     // もとでの算出結果」であり、前提が変わる操作では必ず捨てること。
   boxEdits:{},       // pageIndex -> 手編集後の枠リスト（あれば自動より優先）
   boxUndo:{},        // pageIndex -> 取り消しスタック（枠リストの複製・深さ50）
   boxEditMode:false, // 枠編集モードのON/OFF
@@ -1565,16 +1567,18 @@ function drawBoxLayer(){
   bctx.fillStyle = BOX_FILL;
   bctx.strokeStyle = BOX_COLOR;
   bctx.lineWidth = 2;
-  const prev = (boxDrag && boxDrag.preview) ? boxDrag.preview : null;
+  // プレビューはドラッグ対象（boxDrag.i/page）に紐づける。選択（state.boxSel）とは別物 —
+  // 非同期の再描画等で選択が変わってもドラッグ中のプレビュー位置がずれないようにするため。
+  const prev = (boxDrag && boxDrag.preview && boxDrag.page===state.cur) ? boxDrag.preview : null;
   const boxes = state.boxes || [];
   for(let i=0;i<boxes.length;i++){
-    const b = (prev && i===state.boxSel) ? prev : boxes[i];
+    const b = (prev && i===boxDrag.i) ? prev : boxes[i];
     const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
     bctx.fillRect(x, y, w, h);
     bctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
   }
   if(state.boxEditMode && state.boxSel>=0 && state.boxSel<boxes.length){
-    const b = prev || boxes[state.boxSel];
+    const b = (prev && boxDrag.i===state.boxSel) ? prev : boxes[state.boxSel];
     const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
     bctx.setLineDash([5,4]);
     bctx.strokeStyle = "#fff"; bctx.lineWidth = 1;
@@ -1619,15 +1623,24 @@ function toggleBoxes(){
   drawBoxLayer();
 }
 
-// 枠の手編集・原本・取り消し履歴をすべて捨てる
+// 枠の手編集・原本・取り消し履歴をすべて捨てる。state.boxes / 表示も合わせて同期する
+// （呼び出し直後に再描画経路を通らない場合でも、古い枠・古い「（手編集）」表示が残らないように）。
 function clearBoxEdits(){
   state.boxAuto = {}; state.boxEdits = {}; state.boxUndo = {}; state.boxSel = -1;
+  state.boxes = null;
+  updateBoxStat(); setBoxEditUI();
 }
 // 手編集した枠は差分の前提（DPI・しきい値・位置合わせ等）が変わると意味を失うため、
 // 前提を変える操作の直前に確認して破棄する。
 // 破棄を了承しなければ false を返し、呼び出し側は操作自体を中止すること。
 function confirmDiscardBoxEdits(){
-  if(!Object.keys(state.boxEdits).length) return true;
+  if(!Object.keys(state.boxEdits).length){
+    // 手編集がゼロでも state.boxAuto は「現在のDPI・位置合わせ・モードの下での算出結果」を
+    // 抱えたままなので、前提が変わる操作の直前は必ずここで捨てる（さもないと前提変更後に
+    // 古いboxAutoが復活し、座標系の合わない枠が描画・書き出しされる）。
+    clearBoxEdits();
+    return true;
+  }
   if(!confirm("手編集した変更枠があります。この操作で破棄されます。よろしいですか？")) return false;
   clearBoxEdits();
   return true;
@@ -1693,21 +1706,28 @@ function deleteSelectedBox(){
   updateBoxStat(); setBoxEditUI(); drawBoxLayer();
 }
 
+// 新規作成・move/resize確定の最小サイズは画面px基準（フレームpx固定だと拡大表示時に
+// 画面上は十分な大きさのドラッグでも「小さすぎ」判定で捨てられてしまうため）。
+// フレーム座標の幅・高さに view.scale を掛けて画面pxへ直してから比較する。
+const MIN_DRAG_SCREEN_PX = 4; // これ未満のドラッグ距離はクリック扱いで捨てる（画面px）。
+function isDragTooSmall(w, h){ return w*view.scale < MIN_DRAG_SCREEN_PX || h*view.scale < MIN_DRAG_SCREEN_PX; }
+
 // 編集モード中の押下。ハンドル→枠→背景の順に判定する。
 function boxEditPointerDown(e){
+  if(e.button===2) return; // 右クリック（コンテキストメニュー用）は枠編集の対象にしない
   e.preventDefault();
   wrap.setPointerCapture(e.pointerId);
   const p = toFrame(e);
   const hs = hitHandle(p);
   if(hs>=0){
-    boxDrag = {kind:"resize", h:hs, orig:{...state.boxes[state.boxSel]}, preview:null};
+    boxDrag = {kind:"resize", h:hs, i:state.boxSel, page:state.cur, orig:{...state.boxes[state.boxSel]}, preview:null};
     drawBoxLayer();
     return;
   }
   const hit = hitBox(p);
   if(hit>=0){
     state.boxSel = hit;
-    boxDrag = {kind:"move", ox:p.x, oy:p.y, orig:{...state.boxes[hit]}, preview:null};
+    boxDrag = {kind:"move", i:hit, page:state.cur, ox:p.x, oy:p.y, orig:{...state.boxes[hit]}, preview:null};
   } else {
     state.boxSel = -1;
     boxDrag = {kind:"create", x0:p.x, y0:p.y, x1:p.x, y1:p.y};
@@ -1716,29 +1736,32 @@ function boxEditPointerDown(e){
   drawBoxLayer();
 }
 // ドラッグ確定。小さすぎる作成はクリック扱いで捨てる。
+// move/resize は「押した時点のあの枠」（d.i, d.page）に対する操作。確定時点の state.boxSel
+// （非同期の show() やボタン操作で書き換わり得る）は見ない — cancelBoxDrag() で止めきれない
+// 割り込み経路（DPI変更再描画中のドラッグ確定など）に対する二重の保険。
 function endBoxDrag(e){
   if(!boxDrag) return;
   const d = boxDrag; boxDrag = null;
   try{ wrap.releasePointerCapture(e.pointerId); }catch(_){}
   if(d.kind==="create"){
     const r = normRect(d.x0, d.y0, d.x1, d.y1);
-    const min = blockSize();
-    if(r.w<min || r.h<min){ drawBoxLayer(); return; }
+    if(isDragTooSmall(r.w, r.h)){ drawBoxLayer(); return; }
     pushBoxUndo();
     const list = ensureBoxEdits();
     list.push(clampBox(r, out.width, out.height));
     state.boxSel = list.length-1;
   }
   if(d.kind==="move" || d.kind==="resize"){
+    // 対象ページが変わっている／対象indexがもう存在しないなら、このドラッグは確定させない。
+    if(d.page!==state.cur || d.i<0 || !state.boxes || d.i>=state.boxes.length){ drawBoxLayer(); return; }
     const nb = d.preview;
     const changed = nb && (nb.x!==d.orig.x || nb.y!==d.orig.y || nb.w!==d.orig.w || nb.h!==d.orig.h);
-    const min = blockSize();
     // 動いていない（＝ただのクリック）なら取り消しスタックを汚さない。
     // リサイズで潰れた場合も確定せず元のまま残す。
-    if(changed && !(d.kind==="resize" && (nb.w<min || nb.h<min))){
+    if(changed && !(d.kind==="resize" && isDragTooSmall(nb.w, nb.h))){
       pushBoxUndo();
       const list = ensureBoxEdits();
-      list[state.boxSel] = nb;
+      list[d.i] = nb;
     }
   }
   updateBoxStat(); setBoxEditUI(); drawBoxLayer();
@@ -2034,6 +2057,7 @@ async function refreshAfterAlign(){
   state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
   state.alignCache = {}; // スロット→ページ対応が変わるため自動整列も再推定させる
   state.quadCache = {}; state.quadManual = {}; state.quadGen++; // スロット→ページ対応が変わるため直角回転も破棄
+  state.boxAuto = {}; // スロット→ページ対応が変わるため自動枠の原本も破棄（ゲートは呼び出し側で通過済み）
   if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
   if(state.cur < 0) state.cur = 0;
   await show(state.cur);
@@ -2152,12 +2176,16 @@ $("zoom1").addEventListener("click", ()=>{ if(hasImage()) zoomCenter(1/view.scal
 $("modeDiff").addEventListener("click", async ()=>{
   if(state.mode==="diff" || !hasImage()) return;
   state.mode="diff"; setModeUI();
+  // boxAuto は算出モードごとに中身が別物（差分アルゴリズム由来 or 新旧切替の再構築由来）
+  // なので、モードが変わったら全ページ分を破棄する（さもないと切替後に別モードの枠が出る）。
+  state.boxAuto = {};
   $("status").innerHTML='<span class="busy">差分を再計算中…</span>';
   if(state.pages) await show(state.cur);
 });
 $("modeToggle").addEventListener("click", async ()=>{
   if(state.mode==="toggle" || !hasImage()) return;
   state.mode="toggle"; state.toggleCache=null; setModeUI();
+  state.boxAuto = {}; // 同上（差分モード由来のboxAutoを新旧切替に持ち越さない）
   if(state.pages) await show(state.cur);
 });
 $("toggleFlip").addEventListener("click", flipSide);
@@ -2209,6 +2237,8 @@ document.addEventListener("keydown", e=>{
   if(state.topMode!=="visual") return;
   if(isTypingTarget(e)) return;
   if(e.key==="e" || e.key==="E"){
+    // Ctrl+E・Alt+E等は別コマンド扱いにするため素通しする（Eは修飾キー無しの単独キー）。
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
     if(!state.rendered) return;
     e.preventDefault();
     setBoxEditMode(!state.boxEditMode);
@@ -2221,6 +2251,7 @@ document.addEventListener("keydown", e=>{
     // ドラッグ中に割り込んだ場合はここでもキャンセルしないと endBoxDrag が旧selで確定してしまう。
     if(state.boxSel>=0){ cancelBoxDrag(); state.boxSel=-1; setBoxEditUI(); drawBoxLayer(); }
     else setBoxEditMode(false);
+    return;
   }
   if(e.key==="Delete" || e.key==="Backspace"){
     e.preventDefault();
@@ -2570,8 +2601,12 @@ function applyTopMode(){
   $("viewbar").style.display = visual ? "flex" : "none";
   document.querySelector(".canvas-wrap").style.display = visual ? "" : "none";
   $("textPanel").style.display = visual ? "none" : "flex";
-  if(visual){ if(state.rendered) out.style.display = "block"; } // 描画済みならCanvas表示を復元
-  else { out.style.display = "none"; } // hasImage() 誤判定・パン/ズームの誤発火を防ぐ
+  if(visual){
+    if(state.rendered) out.style.display = "block"; // 描画済みならCanvas表示を復元
+    // テキストモード中は .canvas-wrap が display:none で幅0のため、resizeイベントで
+    // boxLayer が0×0に潰れている。visual復帰時にここで寸法を取り直して枠を出し直す。
+    drawBoxLayer();
+  } else { out.style.display = "none"; } // hasImage() 誤判定・パン/ズームの誤発火を防ぐ
   if(!visual && state.textHi){
     // テキスト側は描画済みハイライトがあれば現在ページを再描画（往復時の表示復元）
     const gen = ++state.textRenderToken; // 旧新2ペインへ同一世代を渡す
