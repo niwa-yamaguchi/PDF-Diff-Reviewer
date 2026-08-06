@@ -1066,6 +1066,7 @@ function setDrop(el, name){
 }
 
 async function loadPdf(file, which){
+  clearBoxEdits(); // 読み込み直しで枠は意味を失う（確認なしで破棄）
   const buf = await file.arrayBuffer();
   const doc = await pdfjsLib.getDocument({
     data:new Uint8Array(buf),
@@ -1616,6 +1617,20 @@ function toggleBoxes(){
   if(!state.boxEdits[state.cur] && state.boxAuto[state.cur]) state.boxes = state.boxAuto[state.cur];
   updateBoxStat();
   drawBoxLayer();
+}
+
+// 枠の手編集・原本・取り消し履歴をすべて捨てる
+function clearBoxEdits(){
+  state.boxAuto = {}; state.boxEdits = {}; state.boxUndo = {}; state.boxSel = -1;
+}
+// 手編集した枠は差分の前提（DPI・しきい値・位置合わせ等）が変わると意味を失うため、
+// 前提を変える操作の直前に確認して破棄する。
+// 破棄を了承しなければ false を返し、呼び出し側は操作自体を中止すること。
+function confirmDiscardBoxEdits(){
+  if(!Object.keys(state.boxEdits).length) return true;
+  if(!confirm("手編集した変更枠があります。この操作で破棄されます。よろしいですか？")) return false;
+  clearBoxEdits();
+  return true;
 }
 
 // 枠編集モードのボタン状態・カーソル・補助ボタンの出し入れ
@@ -2229,25 +2244,48 @@ $("fileNew").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.fi
     const f=e.dataTransfer.files[0]; if(f&&f.type==="application/pdf") loadPdf(f,which);});
 });
 
+// レンジ入力は input で state を先に書き換えるため、確定済みの値を要素に持たせておく。
+// 破棄を拒否したときはここから value / state / ラベルを戻す。
+["dpi","th","tolerance"].forEach(id=>{ $(id).dataset.committed = $(id).value; });
+
 $("dpi").addEventListener("input",e=>{state.dpi=+e.target.value;$("dpiVal").textContent=e.target.value;});
 $("dpi").addEventListener("change",async()=>{
+  const el = $("dpi");
+  if(!confirmDiscardBoxEdits()){
+    el.value = el.dataset.committed; state.dpi = +el.value; $("dpiVal").textContent = el.value;
+    return;
+  }
+  el.dataset.committed = el.value;
   state.cache={}; state.toggleCache=null;
   if(state.rendered){await show(state.cur); fitView();}
 });
 $("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
 $("th").addEventListener("change",()=>{
+  const el = $("th");
+  if(!confirmDiscardBoxEdits()){
+    el.value = el.dataset.committed; state.th = +el.value; $("thVal").textContent = el.value;
+    return;
+  }
+  el.dataset.committed = el.value;
   state.alignCache = {}; // 一致率スコアが th 依存のため再推定させる
   state.quadCache = {}; state.quadGen++; // 象限スコアも th 依存のため再推定させる
   if(state.mode==="diff" && state.rendered)show(state.cur);
 });
 $("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
 $("tolerance").addEventListener("change",()=>{
+  const el = $("tolerance");
+  if(!confirmDiscardBoxEdits()){
+    el.value = el.dataset.committed; state.tolerancePx = +el.value; $("toleranceVal").textContent = el.value;
+    return;
+  }
+  el.dataset.committed = el.value;
   if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
 
 document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
   b.addEventListener("click",()=>{
+    if(!confirmDiscardBoxEdits()) return;
     state.dx+=(+b.dataset.dx); state.dy+=(+b.dataset.dy);
     $("nudgeReset").textContent=state.dx+","+state.dy;
     if(!state.rendered) return;
@@ -2255,6 +2293,7 @@ document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
   });
 });
 $("nudgeReset").addEventListener("click",()=>{
+  if(!confirmDiscardBoxEdits()) return;
   state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
   if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
@@ -2268,6 +2307,7 @@ function invalidateForQuadChange(){
 }
 document.querySelectorAll("button[data-quad]").forEach(b=>{
   b.addEventListener("click", async ()=>{
+    if(!confirmDiscardBoxEdits()) return;
     const cur = effectiveQuad(state.cur);
     state.quadManual[state.cur] = ((cur + (+b.dataset.quad)) % 4 + 4) % 4;
     invalidateForQuadChange();
@@ -2281,6 +2321,7 @@ document.querySelectorAll("button[data-quad]").forEach(b=>{
 });
 $("quadReset").addEventListener("click", async ()=>{
   if(state.quadManual[state.cur] == null) return; // 既に自動
+  if(!confirmDiscardBoxEdits()) return;
   delete state.quadManual[state.cur];             // 自動判定へ戻す
   invalidateForQuadChange();
   updateManualAlignReadout();
@@ -2291,6 +2332,7 @@ $("quadReset").addEventListener("click", async ()=>{
 });
 document.querySelectorAll("button[data-rot]").forEach(b=>{
   b.addEventListener("click",()=>{
+    if(!confirmDiscardBoxEdits()) return;
     state.manualAngle += (+b.dataset.rot) * 0.1 * Math.PI/180;
     updateManualAlignReadout();
     if(!state.rendered) return;
@@ -2298,6 +2340,7 @@ document.querySelectorAll("button[data-rot]").forEach(b=>{
   });
 });
 $("rotReset").addEventListener("click",()=>{
+  if(!confirmDiscardBoxEdits()) return;
   state.manualAngle = 0;
   updateManualAlignReadout();
   if(!state.rendered) return;
@@ -2305,6 +2348,7 @@ $("rotReset").addEventListener("click",()=>{
 });
 document.querySelectorAll("button[data-scale]").forEach(b=>{
   b.addEventListener("click",()=>{
+    if(!confirmDiscardBoxEdits()) return;
     state.manualScale = Math.max(0.1, state.manualScale + (+b.dataset.scale) * 0.001);
     updateManualAlignReadout();
     if(!state.rendered) return;
@@ -2312,12 +2356,14 @@ document.querySelectorAll("button[data-scale]").forEach(b=>{
   });
 });
 $("scaleReset").addEventListener("click",()=>{
+  if(!confirmDiscardBoxEdits()) return;
   state.manualScale = 1;
   updateManualAlignReadout();
   if(!state.rendered) return;
   if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
 });
 $("autoAlign").addEventListener("change", async e=>{
+  if(!confirmDiscardBoxEdits()){ e.target.checked = !e.target.checked; return; }
   state.autoAlign = e.target.checked;
   if(!state.rendered){ updateAlignReadout(); return; }
   // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
@@ -2333,12 +2379,14 @@ $("run").addEventListener("click",async()=>{
 });
 $("alignAddNew").addEventListener("click", async ()=>{
   if(!state.rendered) return;
+  if(!confirmDiscardBoxEdits()) return;
   state.oldSeq.splice(state.cur, 0, null); // 旧側に空白 → 新ページが全面追加(青)に
   state.alignOps.push({side:"old", slot:state.cur});
   await refreshAfterAlign();
 });
 $("alignDelOld").addEventListener("click", async ()=>{
   if(!state.rendered) return;
+  if(!confirmDiscardBoxEdits()) return;
   state.newSeq.splice(state.cur, 0, null); // 新側に空白 → 旧ページが全面削除(赤)に
   state.alignOps.push({side:"new", slot:state.cur});
   await refreshAfterAlign();
@@ -2346,6 +2394,7 @@ $("alignDelOld").addEventListener("click", async ()=>{
 $("alignUndo").addEventListener("click", async ()=>{
   const op = state.alignOps.pop();
   if(!op) return;
+  if(!confirmDiscardBoxEdits()){ state.alignOps.push(op); return; } // pop を戻して未実行のままにする
   const seq = op.side === "old" ? state.oldSeq : state.newSeq;
   if(seq[op.slot] === null) seq.splice(op.slot, 1); // 念のため null を確認して除去
   await refreshAfterAlign();
