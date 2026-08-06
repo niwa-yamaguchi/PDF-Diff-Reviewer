@@ -1497,6 +1497,14 @@ function drawBoxesTo(ctx, boxes, lw){
 const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
 
 let boxDrag = null; // ドラッグ中の枠操作。{kind:"create"|"move"|"resize", ...} か null
+// マウスを押したままキー操作（取り消し/削除/モード終了）が割り込むと state.boxSel が
+// -1 や別indexへ変わり得る。endBoxDrag 側で state.boxSel の妥当性を見て確定するのではなく、
+// 割り込みが起きた時点でドラッグそのものを破棄する（原因側で止める）。
+function cancelBoxDrag(){
+  if(!boxDrag) return;
+  boxDrag = null;
+  drawBoxLayer(); // プレビューが残らないよう消す
+}
 const HANDLE = 5; // リサイズハンドルの半径（画面px固定。拡大率に依らず掴みやすさを一定にする）
 // 8ハンドルの伸縮方向。handlePoints の並びと1対1で対応させること。
 const HANDLE_DIRS = [[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0]];
@@ -1625,7 +1633,8 @@ function setBoxEditUI(){
 function setBoxEditMode(on){
   if(on && !state.rendered) return;
   state.boxEditMode = on;
-  if(!on) wrap.style.cursor = "";
+  // ONで入るときは進行中のドラッグは存在し得ないので、OFF時だけキャンセルすれば足りる。
+  if(!on){ cancelBoxDrag(); wrap.style.cursor = ""; }
   state.boxSel = -1;
   if(on && !state.showBoxes){ toggleBoxes(); }
   setBoxEditUI();
@@ -1650,6 +1659,7 @@ function pushBoxUndo(){
 // 直前の編集を取り消す。取り消しで自動算出と同じ内容へ戻っても boxEdits は残る
 // （＝「手編集」表示のまま）。完全に自動へ戻したいときは「自動検出に戻す」を使う。
 function undoBoxEdit(){
+  cancelBoxDrag(); // ドラッグ中に取り消しが割り込んだ場合、そのドラッグは無かったことにする
   const i = state.cur, st = state.boxUndo[i];
   if(!st || !st.length) return;
   state.boxEdits[i] = st.pop();
@@ -1659,6 +1669,7 @@ function undoBoxEdit(){
 }
 // 選択中の枠を削除する
 function deleteSelectedBox(){
+  cancelBoxDrag(); // ドラッグ中に削除が割り込んだ場合、そのドラッグは無かったことにする
   if(state.boxSel<0) return;
   pushBoxUndo();
   const list = ensureBoxEdits();
@@ -2191,7 +2202,9 @@ document.addEventListener("keydown", e=>{
   if(!state.boxEditMode) return;
   if(e.key==="Escape"){
     e.preventDefault();
-    if(state.boxSel>=0){ state.boxSel=-1; setBoxEditUI(); drawBoxLayer(); }
+    // 選択解除はここで直接 state.boxSel を変えるため、setBoxEditMode(false) を経由しない。
+    // ドラッグ中に割り込んだ場合はここでもキャンセルしないと endBoxDrag が旧selで確定してしまう。
+    if(state.boxSel>=0){ cancelBoxDrag(); state.boxSel=-1; setBoxEditUI(); drawBoxLayer(); }
     else setBoxEditMode(false);
   }
   if(e.key==="Delete" || e.key==="Backspace"){
