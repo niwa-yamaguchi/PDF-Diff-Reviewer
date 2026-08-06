@@ -2106,18 +2106,22 @@ $("boxReset").addEventListener("click", ()=>{
   }
 });
 
-// フォーム部品やcontenteditableにフォーカスがある間はショートカットキーを奪わないためのガード。複数のkeydownリスナーで共用する。
+// 文字入力中の要素にフォーカスがある間はショートカットキーを奪わないためのガード。複数のkeydownリスナーで共用する。
+// BUTTONは対象外（ボタンにフォーカスが残っていてもE/Esc/Delete等は効かせたい）。
+// ボタンの誤発火（Spaceキーでのクリック相当発火）はSpaceハンドラ側で個別にガードする。
 function isTypingTarget(e){
   const tag = (e.target && e.target.tagName) || "";
-  if(["INPUT","TEXTAREA","BUTTON","SELECT"].includes(tag)) return true;
+  if(["INPUT","TEXTAREA","SELECT"].includes(tag)) return true;
   return !!(e.target && e.target.isContentEditable);
 }
 
 // Space キーで新旧切替（トグルモード時のみ）。枠編集モード中はパンの修飾キーとして使う。
+// ボタンにフォーカスがある状態でSpaceを押すとボタンがクリック相当で発火してしまうため、ここだけ個別にBUTTONを除外する。
 document.addEventListener("keydown", e=>{
   if(state.topMode!=="visual") return;
   if(e.code!=="Space" || e.repeat) return;
   if(isTypingTarget(e)) return;
+  if(e.target && e.target.tagName==="BUTTON") return;
   if(state.boxEditMode){ spaceHeld = true; e.preventDefault(); return; }
   if(state.mode==="toggle" && hasImage()){
     e.preventDefault();
