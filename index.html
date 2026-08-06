@@ -1628,7 +1628,7 @@ function toggleBoxes(){
 function clearBoxEdits(){
   state.boxAuto = {}; state.boxEdits = {}; state.boxUndo = {}; state.boxSel = -1;
   state.boxes = null;
-  updateBoxStat(); setBoxEditUI();
+  updateBoxStat(); setBoxEditUI(); drawBoxLayer(); // 画面に残った旧枠のピクセルも消す（loadPdf直後はshow()を経由しないため）
 }
 // 手編集した枠は差分の前提（DPI・しきい値・位置合わせ等）が変わると意味を失うため、
 // 前提を変える操作の直前に確認して破棄する。
@@ -2067,6 +2067,11 @@ async function show(idx){
   if(idx<0||idx>=state.pages) return;
   state.cur=idx;
   state.boxSel=-1; // ページが変われば選択は無効
+  // 進行中のドラッグ（同一ページの再描画も含む）をここで確実に打ち切る。endBoxDrag側の
+  // ガード（page/i検証）だけだと、awaitの間にstate.boxesが同じページのまま「別の配列」へ
+  // 差し替わるケース（DPI変更等の再描画）を素通りしてしまい、古いorig座標が新しい配列の
+  // 同indexへ誤って書き込まれ得るため（原因側で止める＋確定側でも検証、の二重化）。
+  cancelBoxDrag();
   if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
   updateAlignButtons();
   updateAlignReadout();
@@ -2570,6 +2575,12 @@ $("dlPdf").addEventListener("click",async()=>{
   $("status").innerHTML='<span class="busy">PDF生成中…</span>';
   let pdf=null;
   const scratch=document.createElement("canvas"); // 全ページで使い回す複製先（毎ページ確保するとピークメモリが倍になる）
+  // dlPdf は state.mode に関わらず全ページを buildDiff で描くため、ループ内で書き込まれる
+  // state.boxAuto は差分アルゴリズム由来の値になる。これは書き出し専用の一時的な結果であり
+  // 画面表示（新旧切替モード等）の boxAuto を汚してはいけないため、ループの間だけ空の
+  // オブジェクトへ差し替え、終了後に元へ戻す（退避・復元）。
+  const savedBoxAuto = state.boxAuto;
+  state.boxAuto = {};
   for(let i=0;i<state.pages;i++){
     await buildDiff(i);
     // dlPdf は state.mode に関わらず buildDiff で差分を描くため、常に差分用の凡例を付ける
@@ -2585,6 +2596,7 @@ $("dlPdf").addEventListener("click",async()=>{
     else { pdf.addPage([wPt,hPt],orient); }
     pdf.addImage(img,"PNG",0,0,wPt,hPt);
   }
+  state.boxAuto = savedBoxAuto; // 書き出し用の一時算出結果は捨て、呼び出し前のboxAutoへ戻す
   pdf.save("diff.pdf");
   await show(state.cur);
   $("status").textContent="PDFを保存しました";
