@@ -2392,9 +2392,10 @@ $("alignDelOld").addEventListener("click", async ()=>{
   await refreshAfterAlign();
 });
 $("alignUndo").addEventListener("click", async ()=>{
-  const op = state.alignOps.pop();
+  const op = state.alignOps[state.alignOps.length-1]; // pop ではなく覗き見。ゲート拒否時に何も書き換えないため
   if(!op) return;
-  if(!confirmDiscardBoxEdits()){ state.alignOps.push(op); return; } // pop を戻して未実行のままにする
+  if(!confirmDiscardBoxEdits()) return;
+  state.alignOps.pop();
   const seq = op.side === "old" ? state.oldSeq : state.newSeq;
   if(seq[op.slot] === null) seq.splice(op.slot, 1); // 念のため null を確認して除去
   await refreshAfterAlign();
