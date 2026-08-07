@@ -66,6 +66,76 @@ test("keeps the committed threshold and edited boxes when discard is cancelled",
   await expect(page.locator("#statBox")).toHaveText(editedBoxStatus);
 });
 
+test("cancels PDF replacement before changing document state or edited boxes", async ({ page }) => {
+  await page.goto("/");
+  await page.setInputFiles("#fileOld", join(fixtures, "old.pdf"));
+  await page.setInputFiles("#fileNew", join(fixtures, "new.pdf"));
+  await page.locator("#run").click();
+  await expect(page.locator("#status")).toHaveText("差分を表示中");
+
+  await page.locator("#boxEdit").click();
+  const layer = await page.locator("#boxLayer").boundingBox();
+  expect(layer).not.toBeNull();
+  await page.mouse.move(layer.x + layer.width * 0.72, layer.y + layer.height * 0.72);
+  await page.mouse.down();
+  await page.mouse.move(layer.x + layer.width * 0.84, layer.y + layer.height * 0.82);
+  await page.mouse.up();
+  await expect(page.locator("#statBox")).toContainText("（手編集）");
+
+  const before = {
+    oldName: await page.locator("#dropOld .fname").textContent(),
+    pageLabel: await page.locator("#pageLabel").textContent(),
+    status: await page.locator("#status").textContent(),
+    threshold: await page.locator("#th").inputValue(),
+    boxes: await page.locator("#statBox").textContent(),
+  };
+  const dialogs = [];
+  async function dismissReplacement(file) {
+    const dialogPromise = page.waitForEvent("dialog");
+    const selectionPromise = page.setInputFiles("#fileOld", file);
+    const dialog = await dialogPromise;
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+    await selectionPromise;
+  }
+
+  const replacement = join(fixtures, "new.pdf");
+  await dismissReplacement(replacement);
+  await expect(page.locator("#fileOld")).toHaveValue("");
+  await expect(page.locator("#dropOld .fname")).toHaveText(before.oldName);
+  await expect(page.locator("#pageLabel")).toHaveText(before.pageLabel);
+  await expect(page.locator("#status")).toHaveText(before.status);
+  await expect(page.locator("#th")).toHaveValue(before.threshold);
+  await expect(page.locator("#statBox")).toHaveText(before.boxes);
+
+  await dismissReplacement(replacement);
+  expect(dialogs).toEqual([
+    "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
+    "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
+  ]);
+});
+
+test("renders both visual modes without changing the current box result", async ({ page }) => {
+  await page.goto("/");
+  await page.setInputFiles("#fileOld", join(fixtures, "old.pdf"));
+  await page.setInputFiles("#fileNew", join(fixtures, "new.pdf"));
+  await page.locator("#run").click();
+  await expect(page.locator("#status")).toHaveText("差分を表示中");
+  const boxStatus = await page.locator("#statBox").textContent();
+
+  await page.locator("#modeToggle").click();
+  await expect(page.locator("#modeToggle")).toHaveClass(/active/);
+  await expect(page.locator("#status")).toContainText("新旧切替");
+  await expect(page.locator("#out")).toBeVisible();
+  await expect(page.locator("#statBox")).toHaveText(boxStatus);
+
+  await page.locator("#modeDiff").click();
+  await expect(page.locator("#modeDiff")).toHaveClass(/active/);
+  await expect(page.locator("#status")).toHaveText("差分を表示中");
+  await expect(page.locator("#out")).toBeVisible();
+  await expect(page.locator("#statBox")).toHaveText(boxStatus);
+});
+
 test("preserves the empty-state appearance", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveScreenshot("empty-state.png", { maxDiffPixelRatio: 0.005 });

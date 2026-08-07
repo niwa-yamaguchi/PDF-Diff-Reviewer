@@ -40,6 +40,7 @@ function setDrop(el, name){
 }
 
 async function loadPdf(file, which){
+  if(!confirmDiscardBoxEdits()) return false;
   const doc = await pdfjsLib.getDocument({
     data: await file.arrayBuffer(),
     // CID方式（日本語等CJK）フォントのデコードにもローカルのCMap/標準フォントを使う。
@@ -62,6 +63,7 @@ async function loadPdf(file, which){
     $("status").textContent = "準備完了 — 「差分を表示」を押してください";
     $("textStatus").textContent = "準備完了 — 「テキスト差分を表示」を押してください";
   }
+  return true;
 }
 
 // ── 用紙サイズ正規化 ────────────────────────────────────────────
@@ -1028,16 +1030,12 @@ $("zoom1").addEventListener("click", ()=>{ if(hasImage()) zoomCenter(1/view.scal
 $("modeDiff").addEventListener("click", async ()=>{
   if(state.visual.mode==="diff" || !hasImage()) return;
   state.visual.mode="diff"; setModeUI();
-  // boxAuto は算出モードごとに中身が別物（差分アルゴリズム由来 or 新旧切替の再構築由来）
-  // なので、モードが変わったら全ページ分を破棄する（さもないと切替後に別モードの枠が出る）。
-  state.boxEditor.autoByPage.clear();
   $("status").innerHTML='<span class="busy">差分を再計算中…</span>';
   if(state.documents.pages) await show(state.documents.currentPage);
 });
 $("modeToggle").addEventListener("click", async ()=>{
   if(state.visual.mode==="toggle" || !hasImage()) return;
-  state.visual.mode="toggle"; state.visual.toggleCache=null; setModeUI();
-  state.boxEditor.autoByPage.clear(); // 同上（差分モード由来のboxAutoを新旧切替に持ち越さない）
+  state.visual.mode="toggle"; setModeUI();
   if(state.documents.pages) await show(state.documents.currentPage);
 });
 $("toggleFlip").addEventListener("click", flipSide);
@@ -1117,8 +1115,18 @@ document.addEventListener("keydown", e=>{
 });
 
 // ── イベント ──
-$("fileOld").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.files[0],"old"));
-$("fileNew").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.files[0],"new"));
+$("fileOld").addEventListener("change",async e=>{
+  const file=e.target.files[0];
+  if(!file) return;
+  try { await loadPdf(file,"old"); }
+  finally { e.target.value=""; }
+});
+$("fileNew").addEventListener("change",async e=>{
+  const file=e.target.files[0];
+  if(!file) return;
+  try { await loadPdf(file,"new"); }
+  finally { e.target.value=""; }
+});
 ["dropOld","dropNew"].forEach(id=>{
   const el=$(id), which=id==="dropOld"?"old":"new";
   el.addEventListener("dragover",e=>{e.preventDefault();el.style.borderColor="var(--signal)";});
@@ -1268,7 +1276,7 @@ $("autoAlign").addEventListener("change", async e=>{
   if(!state.visual.rendered){ updateAlignReadout(); return; }
   // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
   // トグルモードでも推定完了後に読み出しを更新できるよう await して同期させる。
-  if(state.visual.mode==="toggle"){ state.visual.toggleCache=null; await buildToggle(state.documents.currentPage); }
+  if(state.visual.mode==="toggle") await buildToggle(state.documents.currentPage);
   else await show(state.documents.currentPage);
   updateAlignReadout();
 });
