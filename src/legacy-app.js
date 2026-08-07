@@ -51,6 +51,8 @@ const documentController = createDocumentController({
     dropNew: $("dropNew"),
     run: $("run"),
     runText: $("runText"),
+    dlPng: $("dlPng"),
+    dlPdf: $("dlPdf"),
     dlTextPng: $("dlTextPng"),
     dlTextPdf: $("dlTextPdf"),
     status: $("status"),

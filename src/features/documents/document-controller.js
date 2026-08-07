@@ -27,12 +27,40 @@ function prepareSequences(state, dom) {
   dom.textStatus.textContent = "準備完了 — 「テキスト差分を表示」を押してください";
 }
 
+function setDisabled(control, disabled) {
+  if (control) control.disabled = disabled;
+}
+
 function closeReadyActions(state, dom) {
   state.visual.rendered = false;
   dom.run.disabled = true;
   dom.runText.disabled = true;
+  setDisabled(dom.dlPng, true);
+  setDisabled(dom.dlPdf, true);
   dom.dlTextPng.disabled = true;
   dom.dlTextPdf.disabled = true;
+}
+
+function captureReadyState(state, dom) {
+  return {
+    rendered: state.visual.rendered,
+    runDisabled: dom.run.disabled,
+    runTextDisabled: dom.runText.disabled,
+    dlPngDisabled: dom.dlPng?.disabled,
+    dlPdfDisabled: dom.dlPdf?.disabled,
+    dlTextPngDisabled: dom.dlTextPng.disabled,
+    dlTextPdfDisabled: dom.dlTextPdf.disabled,
+  };
+}
+
+function restoreReadyState(state, dom, snapshot) {
+  state.visual.rendered = snapshot.rendered;
+  dom.run.disabled = snapshot.runDisabled;
+  dom.runText.disabled = snapshot.runTextDisabled;
+  setDisabled(dom.dlPng, snapshot.dlPngDisabled);
+  setDisabled(dom.dlPdf, snapshot.dlPdfDisabled);
+  dom.dlTextPng.disabled = snapshot.dlTextPngDisabled;
+  dom.dlTextPdf.disabled = snapshot.dlTextPdfDisabled;
 }
 
 export function createDocumentController({
@@ -44,16 +72,58 @@ export function createDocumentController({
   confirmDiscard = () => true,
 }) {
   const pendingGeneration = { old: null, new: null };
+  const staged = { old: null, new: null };
   const failed = { old: false, new: false };
+  let readySnapshot = null;
   const hasPending = () => pendingGeneration.old != null || pendingGeneration.new != null;
+  const hasStaged = () => staged.old != null || staged.new != null;
   const hasFailure = () => failed.old || failed.new;
+
+  function clearBatch() {
+    staged.old = null;
+    staged.new = null;
+    failed.old = false;
+    failed.new = false;
+    readySnapshot = null;
+  }
+
+  function settleBatch() {
+    if (hasPending()) return;
+    if (hasFailure()) {
+      restoreReadyState(state, dom, readySnapshot);
+      if (!hasStaged()) clearBatch();
+      return;
+    }
+    if (!hasStaged()) {
+      restoreReadyState(state, dom, readySnapshot);
+      clearBatch();
+      return;
+    }
+
+    if (staged.old) {
+      state.documents.oldDoc = staged.old.doc;
+      setDrop(dom.dropOld, staged.old.fileName);
+    }
+    if (staged.new) {
+      state.documents.newDoc = staged.new.doc;
+      setDrop(dom.dropNew, staged.new.fileName);
+    }
+    invalidateDocuments(state, { advanceGeneration: false });
+    clearBatch();
+    if (state.documents.oldDoc && state.documents.newDoc) {
+      prepareSequences(state, dom);
+      onReady();
+    }
+  }
 
   async function load(side, file) {
     if (!confirmDiscard()) return false;
 
+    if (readySnapshot == null) readySnapshot = captureReadyState(state, dom);
     state.documents.generation += 1;
     const generation = state.documents.generation;
     pendingGeneration[side] = generation;
+    staged[side] = null;
     failed[side] = false;
     const isCurrent = () => pendingGeneration[side] === generation;
     closeReadyActions(state, dom);
@@ -67,25 +137,15 @@ export function createDocumentController({
         pendingGeneration[side] = null;
         failed[side] = true;
         errorReporter.report(error, "PDFの読み込みに失敗しました");
+        settleBatch();
       }
       return false;
     }
 
     if (!isCurrent()) return false;
-    if (side === "old") {
-      state.documents.oldDoc = doc;
-      setDrop(dom.dropOld, file.name);
-    } else {
-      state.documents.newDoc = doc;
-      setDrop(dom.dropNew, file.name);
-    }
-    invalidateDocuments(state, { advanceGeneration: false });
+    staged[side] = { doc, fileName: file.name };
     pendingGeneration[side] = null;
-
-    if (!hasPending() && !hasFailure() && state.documents.oldDoc && state.documents.newDoc) {
-      prepareSequences(state, dom);
-      onReady();
-    }
+    settleBatch();
     return true;
   }
 
