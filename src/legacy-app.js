@@ -1,4 +1,8 @@
-// pdf.js worker を blob 経由で同一オリジン化（CDNワーカーのCORS回避）
+// PDF.js、CMap、標準フォントはローカルバンドルを使用する。
+import { jsPDF } from "jspdf";
+import { createCanvas, createWhiteCanvas } from "./platform/canvas.js";
+import { downloadBlob } from "./platform/download.js";
+import { pdfjsLib, PDF_DOCUMENT_OPTIONS } from "./platform/pdfjs.js";
 import { clampBox, clampBoxes, normalizeRect as normRect } from "./core/geometry/rectangles.js";
 import { luminanceAt as lum } from "./core/image-diff/luminance.js";
 import { dilateMask, toleratedDiffMasks } from "./core/image-diff/masks.js";
@@ -13,12 +17,6 @@ import {
   legendLayout,
   LG_BORDER_PT,
 } from "./core/legend/layout.js";
-
-(function(){
-  const url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-  const blob = new Blob(["importScripts('"+url+"');"], {type:"application/javascript"});
-  pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
-})();
 
 const state = {
   oldDoc:null, newDoc:null, pages:0, cur:0,
@@ -71,14 +69,10 @@ function setDrop(el, name){
 
 async function loadPdf(file, which){
   clearBoxEdits(); // 読み込み直しで枠は意味を失う（確認なしで破棄）
-  const buf = await file.arrayBuffer();
   const doc = await pdfjsLib.getDocument({
-    data:new Uint8Array(buf),
-    // CID方式(日本語等CJK)フォントのデコードに必要なCMap/標準フォントデータ。
-    // cdnjsのpdf.jsにはcmaps/standard_fontsが無いためjsDelivrのpdfjs-distを参照（静的資産の取得のみ・PDFは外部送信しない）。
-    cMapUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/",
-    cMapPacked:true,
-    standardFontDataUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/"
+    data: await file.arrayBuffer(),
+    // CID方式（日本語等CJK）フォントのデコードにもローカルのCMap/標準フォントを使う。
+    ...PDF_DOCUMENT_OPTIONS,
   }).promise;
   if(which==="old"){ state.oldDoc = doc; setDrop($("dropOld"), file.name); }
   else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
@@ -153,10 +147,8 @@ async function renderPageCanvas(doc, idx, scale){
   if(!doc || idx == null || idx >= doc.numPages) return null;
   const page = await doc.getPage(idx+1);
   const vp = page.getViewport({scale});
-  const c = document.createElement("canvas");
-  c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+  const c = createWhiteCanvas(Math.ceil(vp.width), Math.ceil(vp.height));
   const ctx = c.getContext("2d");
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
   await page.render({canvasContext:ctx, viewport:vp}).promise;
   return c;
 }
@@ -182,14 +174,14 @@ const QUAD_PROBE_LONG = 512;
 function rotateCanvas90(c, k){
   const kk = ((k % 4) + 4) % 4;
   if(!c || kk === 0) return c;
-  const d = document.createElement("canvas");
-  d.width  = (kk === 2) ? c.width  : c.height;
-  d.height = (kk === 2) ? c.height : c.width;
+  const d = createWhiteCanvas(
+    (kk === 2) ? c.width : c.height,
+    (kk === 2) ? c.height : c.width,
+  );
   const ctx = d.getContext("2d");
   // 未描画領域は透明黒のまま残るが、lum()/canvasToGrayF() はアルファを見ないため
   // 透明画素は輝度0＝インクとして誤認される。renderPageCanvas 等の他のcanvas生成箇所と
   // 同様に白で下地を敷いてから描く（回転で全面が埋まる場合でも一貫させておく）。
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,d.width,d.height);
   ctx.imageSmoothingEnabled = false; // 直角回転の無損失性をブラウザ実装依存にしないため明示的に無効化
   if(kk === 1)      ctx.setTransform(0, 1, -1, 0, c.height, 0);          // 時計回り90°
   else if(kk === 2) ctx.setTransform(-1, 0, 0, -1, c.width, c.height);   // 180°
@@ -271,10 +263,8 @@ function alignMatrixFor(idx, oldW, oldH, newW, newH){
 // setTransform に自動行列を積み、その上に手動 dx/dy を平行移動として合成する。
 // 出力Canvas寸法は buildDiff/buildToggle 側で決めた width/height を使う。
 function renderAlignedNewCanvas(newC, m, width, height){
-  const c = document.createElement("canvas");
-  c.width = width; c.height = height;
+  const c = createWhiteCanvas(width, height);
   const ctx = c.getContext("2d");
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,width,height);
   if(!newC) return c;
   const ncx = newC.width/2, ncy = newC.height/2;
   if(m.applied){
@@ -1409,7 +1399,7 @@ function diffLegendItems(kind){
 // dest を渡すとそのCanvasを使い回す（全ページPDFで巨大なバッキングストアを毎ページ
 // 確保しないため）。width/height の再代入でCanvasは自動クリアされる。
 function exportCanvasWithLegend(src, kind, dest){
-  const c = dest || document.createElement("canvas");
+  const c = dest || createCanvas(0, 0);
   c.width = src.width; c.height = src.height;
   const ctx = c.getContext("2d");
   ctx.drawImage(src, 0, 0);
@@ -1426,20 +1416,17 @@ $("dlPng").addEventListener("click",()=>{
   const bare = state.mode==="toggle" && !state.showBoxes;
   const shot = bare ? out : exportCanvasWithLegend(out, state.mode);
   shot.toBlob(b=>{
-    const a=document.createElement("a");
-    a.href=URL.createObjectURL(b);
     const name = state.mode==="toggle"
       ? (state.toggleSide==="new" ? "new_p"+(state.cur+1)+".png" : "old_p"+(state.cur+1)+".png")
       : "diff_p"+(state.cur+1)+".png";
-    a.download=name; a.click();
+    downloadBlob(b, name);
   });
 });
 
 $("dlPdf").addEventListener("click",async()=>{
-  const {jsPDF}=window.jspdf;
   $("status").innerHTML='<span class="busy">PDF生成中…</span>';
   let pdf=null;
-  const scratch=document.createElement("canvas"); // 全ページで使い回す複製先（毎ページ確保するとピークメモリが倍になる）
+  const scratch=createCanvas(0, 0); // 全ページで使い回す複製先（毎ページ確保するとピークメモリが倍になる）
   // dlPdf は state.mode に関わらず全ページを buildDiff で描くため、ループ内で書き込まれる
   // state.boxAuto は差分アルゴリズム由来の値になる。これは書き出し専用の一時的な結果であり
   // 画面表示（新旧切替モード等）の boxAuto を汚してはいけないため、ループの間だけ空の
@@ -1639,10 +1626,8 @@ async function renderTextPageOffscreen(side, pageIndex){
   if(!doc || pageIndex>=doc.numPages) return null;
   const page = await doc.getPage(pageIndex+1);
   const vp = page.getViewport({scale: state.textScale});
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+  const canvas = createWhiteCanvas(Math.ceil(vp.width), Math.ceil(vp.height));
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
   await page.render({canvasContext:ctx, viewport:vp}).promise;
 
   const entries = state.textHi && state.textHi[side] ? state.textHi[side].get(pageIndex) : null;
@@ -1656,17 +1641,15 @@ const TEXT_LG_UNIT = 1.6;
 
 // 旧(上)・新(下)を各ラベル帯付きで縦積み合成（等倍・非伸縮、横中央寄せ）（ページ無し側は白Canvasで代替）
 function composeTextExport(oldC, newC, pageIndex, total){
-  const fallback = (w,h) => { const c=document.createElement("canvas"); c.width=w; c.height=h; c.getContext("2d").fillStyle="#fff"; c.getContext("2d").fillRect(0,0,w,h); return c; };
+  const fallback = (w,h) => createWhiteCanvas(w, h);
   if(!oldC) oldC = fallback(newC.width, newC.height);
   if(!newC) newC = fallback(oldC.width, oldC.height);
 
   const labelH = 28, gap = 24;
   const W = Math.max(oldC.width, newC.width);
   const H = labelH + oldC.height + gap + labelH + newC.height;
-  const canvas = document.createElement("canvas");
-  canvas.width = W; canvas.height = H;
+  const canvas = createWhiteCanvas(W, H);
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,W,H);
 
   ctx.font = "bold 16px sans-serif";
   ctx.textBaseline = "middle";
@@ -1844,17 +1827,13 @@ $("dlTextPng").addEventListener("click", async()=>{
   ]);
   const canvas = composeTextExport(oldC, newC, idx, total);
   canvas.toBlob(b=>{
-    const a=document.createElement("a");
-    a.href=URL.createObjectURL(b);
-    a.download = "textdiff_p"+(idx+1)+".png";
-    a.click();
+    downloadBlob(b, "textdiff_p"+(idx+1)+".png");
     $("textStatus").textContent = "テキスト差分を表示中";
   });
 });
 
 $("dlTextPdf").addEventListener("click", async()=>{
   if(state.topMode!=="text" || !state.textHi) return;
-  const {jsPDF}=window.jspdf;
   const total = textTotalPages();
   let pdf=null;
   for(let i=0;i<total;i++){

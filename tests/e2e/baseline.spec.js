@@ -27,6 +27,15 @@ test("renders added and removed diff pixels for different PDFs", async ({ page }
   expect(diffPixels.added).toBeGreaterThan(0);
 });
 
+test("renders with every external network request blocked", async ({ page }) => {
+  await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, (route) => route.abort());
+  await page.goto("/");
+  await page.setInputFiles("#fileOld", join(fixtures, "old.pdf"));
+  await page.setInputFiles("#fileNew", join(fixtures, "new.pdf"));
+  await page.locator("#run").click();
+  await expect(page.locator("#status")).toHaveText(/差分を表示中|差分がない/);
+});
+
 test("preserves the empty-state appearance", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveScreenshot("empty-state.png", { maxDiffPixelRatio: 0.005 });
