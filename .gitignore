@@ -3,4 +3,6 @@ docs/
 
 .claude/
 CLAUDE.md
+AGENTS.md
 .superpowers/
+.playwright-mcp/
