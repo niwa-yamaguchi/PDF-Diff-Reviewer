@@ -9,6 +9,10 @@ import { assembleFromLeaves, reconstructLinesInItemOrder } from "./core/text-dif
 import { xyCut } from "./core/text-diff/xy-cut.js";
 import { buildTextHighlights } from "./core/text-diff/highlights.js";
 import { applyTableHighlights } from "./core/text-diff/tables.js";
+import {
+  legendLayout,
+  LG_BORDER_PT,
+} from "./core/legend/layout.js";
 
 (function(){
   const url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -1327,28 +1331,6 @@ $("next").addEventListener("click",()=>show(state.cur+1));
 // 複製したCanvasへだけ重ねるため、パン/ズームやPDFの用紙寸法には影響しない。
 // レイアウト定数は全てpt。unit(=1ptあたりのpx数)を掛けてpxへ変換するので、DPIを
 // 上げても紙面上の凡例の大きさは変わらない。
-const LG_FONT_PT = 8, LG_SWATCH_PT = 8, LG_GAP_ITEM_PT = 10, LG_GAP_SW_PT = 4, LG_PAD_PT = 6, LG_BORDER_PT = 1;
-
-// 凡例の幾何だけを返す純関数。文字幅の実測は measureW で外から受け取る。
-// 返す座標は全て「凡例ボックスの左上を原点とした相対px」。
-function legendLayout(items, unit, opts, measureW){
-  const chrome = !(opts && opts.chrome === false);
-  const fontPx = LG_FONT_PT * unit;
-  const swPx   = LG_SWATCH_PT * unit;
-  const gapItem = LG_GAP_ITEM_PT * unit;
-  const gapSw   = LG_GAP_SW_PT * unit;
-  const pad = chrome ? LG_PAD_PT * unit : 0;
-  let cx = pad;
-  const parts = [];
-  items.forEach((it, i) => {
-    if(i) cx += gapItem;
-    const textW = measureW(it.label, fontPx);
-    parts.push({swX: cx, textX: cx + swPx + gapSw}); // 描画に要るのは色見本と文字の開始X座標だけ
-    cx += swPx + gapSw + textW;
-  });
-  return {w: cx + pad, h: swPx + pad * 2, fontPx, swPx, pad, chrome, parts};
-}
-
 // 実測用: 呼び出し側のctx状態を壊さないようsave/restoreで包む
 const ctxMeasurer = ctx => (label, fontPx) => {
   ctx.save();
