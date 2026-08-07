@@ -1,0 +1,2858 @@
+// pdf.js worker を blob 経由で同一オリジン化（CDNワーカーのCORS回避）
+(function(){
+  const url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const blob = new Blob(["importScripts('"+url+"');"], {type:"application/javascript"});
+  pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+})();
+
+const state = {
+  oldDoc:null, newDoc:null, pages:0, cur:0,
+  dpi:150, th:128, dx:0, dy:0,
+  tolerancePx:0, // 位置ズレ許容半径（基準DPI150でのpx数）。既定0=恒等（現行動作と同じ）
+  manualAngle:0, manualScale:1, // 手動 傾き補正(ラジアン)・拡大縮小(倍率)。既定で恒等
+  cache:{}, // pageIndex -> {rm, ad}
+  mode:"diff", toggleSide:"old", toggleCache:null, // 新旧切替モード用（現在ページ分のみ保持）
+  renderToken:0, // buildToggle の再入ガード（世代カウンタ）
+  rendered:false, // out に描画済みか（visual再切替時の表示復元用）
+  topMode:"visual", // "visual"(図面比較) | "text"(テキスト比較)
+  textScale:null, // ページ描画scale(=dpi/72)。抽出には使わない（描画直前に設定）
+  textCache:null, // {old:[pageLines...], new:[pageLines...]}（位置つき抽出結果。scale非依存）
+  textHi:null, // {old:Map<pageIdx,[{token,color}...]>, new:Map<...>}（ハイライト集約）
+  textPage:0, // テキストモードの現在ページ(0基点)
+  textView:{scale:1, tx:0, ty:0}, // 旧新共有ビュー状態
+  textToken:0, // 抽出処理の再入ガード（renderToken と同型）
+  textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
+  debugXYCut:false,  // trueでXY-cutのブロック構造をconsoleへ出力
+  showBoxes:true,    // 変更箇所を四角枠で囲うか（描くかどうかだけを制御する）
+  boxes:null,        // 現在ページの枠リスト（自動算出 or 手編集後）
+  boxAuto:{},        // pageIndex -> 自動算出の原本（「自動検出に戻す」用）。
+                     // state.cache/alignCache/quadCache と同じく「現在のDPI・位置合わせ・モードの
+                     // もとでの算出結果」であり、前提が変わる操作では必ず捨てること。
+  boxEdits:{},       // pageIndex -> 手編集後の枠リスト（あれば自動より優先）
+  boxUndo:{},        // pageIndex -> 取り消しスタック（枠リストの複製・深さ50）
+  boxEditMode:false, // 枠編集モードのON/OFF
+  boxSel:-1,         // 選択中の枠のstate.boxes内インデックス（-1=未選択）
+  oldSeq:null, newSeq:null, // 旧/新のページ順（要素: 0基点ページ番号 or null=空白スペーサ）
+  alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
+  autoAlign:false, // 自動位置合わせ（フーリエ・メリン）のON/OFF
+  alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, applied, method, scoreBase, scoreBest}（正規化・dpi非依存）
+  quadCache:{},    // pageIndex -> {k, scores:[4], applied, blank?}（直角回転の自動推定。dpi非依存）
+  quadManual:{},   // pageIndex -> 0..3（直角回転の手動上書き。未設定はキーなし＝自動に従う）
+  quadGen:0,       // quadCache破棄の世代カウンタ（renderTokenと同型）。ensureQuadEstimateはawaitで
+                   // プローブ描画を挟むため、その間にquadCacheが破棄されると古いスロット→ページ対応の
+                   // 結果を書き戻してしまう。quadCache={}にする箇所すべてでこれをインクリメントし、
+                   // await前後で値が変わっていたら書き込みを捨てる。
+  curPlan:null,    // 現在ページの framePlan 返り値（用紙合わせの読み出し表示に使う）
+};
+
+// ==== Fourier-Mellin 相似変換 推定コア（scratchpad/align-core.mjs より移植・挙動不変） ====
+
+// in-place 反復基数2 Cooley-Tukey FFT。長さは2の冪。inverse時は 1/n 正規化。
+function fft1d(re, im, inverse){
+  const n = re.length;
+  for(let i=1, j=0; i<n; i++){
+    let bit = n >> 1;
+    for(; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if(i < j){ const tr=re[i];re[i]=re[j];re[j]=tr; const ti=im[i];im[i]=im[j];im[j]=ti; }
+  }
+  for(let len=2; len<=n; len<<=1){
+    const ang = (inverse ? 2 : -2) * Math.PI / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    const half = len >> 1;
+    for(let i=0;i<n;i+=len){
+      let cwr=1, cwi=0;
+      for(let k=0;k<half;k++){
+        const a = i+k, b = i+k+half;
+        const vr = re[b]*cwr - im[b]*cwi;
+        const vi = re[b]*cwi + im[b]*cwr;
+        re[b]=re[a]-vr; im[b]=im[a]-vi;
+        re[a]+=vr; im[a]+=vi;
+        const ncwr = cwr*wr - cwi*wi; cwi = cwr*wi + cwi*wr; cwr = ncwr;
+      }
+    }
+  }
+  if(inverse){ for(let i=0;i<n;i++){ re[i]/=n; im[i]/=n; } }
+}
+
+// N×N in-place（行FFT → 列FFT）。re,im は長さ N*N の row-major。
+function fft2d(re, im, N, inverse){
+  const rr = new Float64Array(N), ri = new Float64Array(N);
+  for(let y=0;y<N;y++){
+    const off = y*N;
+    for(let x=0;x<N;x++){ rr[x]=re[off+x]; ri[x]=im[off+x]; }
+    fft1d(rr, ri, inverse);
+    for(let x=0;x<N;x++){ re[off+x]=rr[x]; im[off+x]=ri[x]; }
+  }
+  const cr = new Float64Array(N), ci = new Float64Array(N);
+  for(let x=0;x<N;x++){
+    for(let y=0;y<N;y++){ cr[y]=re[y*N+x]; ci[y]=im[y*N+x]; }
+    fft1d(cr, ci, inverse);
+    for(let y=0;y<N;y++){ re[y*N+x]=cr[y]; im[y*N+x]=ci[y]; }
+  }
+}
+
+function hannWindow(N){
+  const w1 = new Float64Array(N);
+  for(let i=0;i<N;i++) w1[i] = 0.5*(1 - Math.cos(2*Math.PI*i/(N-1)));
+  const w = new Float64Array(N*N);
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++) w[y*N+x] = w1[y]*w1[x];
+  return w;
+}
+
+// 双一次サンプル（範囲外は fill 値）
+function sampleBilinear(g, W, H, x, y, fill){
+  if(x<0 || y<0 || x>W-1 || y>H-1) return fill;
+  const x0=Math.floor(x), y0=Math.floor(y);
+  const x1=Math.min(x0+1,W-1), y1=Math.min(y0+1,H-1);
+  const fx=x-x0, fy=y-y0;
+  const a=g[y0*W+x0], b=g[y0*W+x1], c=g[y1*W+x0], d=g[y1*W+x1];
+  return a*(1-fx)*(1-fy) + b*fx*(1-fy) + c*(1-fx)*fy + d*fx*fy;
+}
+
+// 中心基準アフィン: dst = R(angle)·S(scale)·(src-center) + center + (tx,ty)。逆写像で埋める。背景=255。
+function warpAffine(src, N, angle, scale, tx, ty){
+  const dst = new Float64Array(N*N).fill(255);
+  const c = (N-1)/2;
+  const cos=Math.cos(angle), sin=Math.sin(angle);
+  // 逆変換: src = center + (1/scale)·R(-angle)·(dst - center - t)
+  const inv = 1/scale;
+  for(let y=0;y<N;y++){
+    for(let x=0;x<N;x++){
+      const px = x - c - tx, py = y - c - ty;
+      const sx = c + inv*( cos*px + sin*py);
+      const sy = c + inv*(-sin*px + cos*py);
+      dst[y*N+x] = sampleBilinear(src, N, N, sx, sy, 255);
+    }
+  }
+  return dst;
+}
+
+// 窓掛け → 2D-FFT → fftshift済 log振幅（DC中央）
+function magnitudeSpectrum(gray, N, win){
+  const re = new Float64Array(N*N), im = new Float64Array(N*N);
+  for(let i=0;i<N*N;i++) re[i] = gray[i]*win[i];
+  fft2d(re, im, N, false);
+  const mag = new Float64Array(N*N);
+  const h = N>>1;
+  for(let y=0;y<N;y++){
+    const sy = (y+h)%N;
+    for(let x=0;x<N;x++){
+      const sx = (x+h)%N;
+      mag[sy*N+sx] = Math.log(1 + Math.hypot(re[y*N+x], im[y*N+x]));
+    }
+  }
+  return mag;
+}
+
+// 振幅スペクトルを対数極座標へ再標本化。row=log-rho, col=theta(0..PI)。
+// 振幅スペクトルは原点対称のため theta は [0,PI) で十分（回転180°曖昧は estimateSimilarity で解消）。
+function logPolar(mag, N, nRho, nTheta){
+  const cx=N/2, cy=N/2;
+  const rhoMax = N/2;
+  const logBase = Math.exp(Math.log(rhoMax)/nRho);
+  const out = new Float64Array(nRho*nTheta);
+  for(let ri=0; ri<nRho; ri++){
+    const rho = Math.pow(logBase, ri);
+    for(let ti=0; ti<nTheta; ti++){
+      const theta = Math.PI*ti/nTheta;
+      const x = cx + rho*Math.cos(theta);
+      const y = cy + rho*Math.sin(theta);
+      out[ri*nTheta+ti] = sampleBilinear(mag, N, N, x, y, 0);
+    }
+  }
+  return out;
+}
+
+// 位相相関。a,b は N×N（同一スケール）。戻り (dx,dy) は b を動かして a に合わせるシフト。
+// psr = (peak - mean) / std （ピーク近傍5×5を除外して算出）。
+function phaseCorrelate(a, b, N){
+  const ar=new Float64Array(N*N), ai=new Float64Array(N*N);
+  const br=new Float64Array(N*N), bi=new Float64Array(N*N);
+  ar.set(a); br.set(b);
+  fft2d(ar, ai, N, false);
+  fft2d(br, bi, N, false);
+  const cr=new Float64Array(N*N), ci=new Float64Array(N*N);
+  for(let i=0;i<N*N;i++){
+    // A * conj(B)
+    const re = ar[i]*br[i] + ai[i]*bi[i];
+    const im = ai[i]*br[i] - ar[i]*bi[i];
+    const mag = Math.hypot(re, im) || 1e-12;
+    cr[i]=re/mag; ci[i]=im/mag;
+  }
+  fft2d(cr, ci, N, true); // 相関面（実部）
+  let peak=-Infinity, px=0, py=0;
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    const v=cr[y*N+x];
+    if(v>peak){ peak=v; px=x; py=y; }
+  }
+  // PSR（ピーク5×5近傍を除外）
+  let sum=0, sum2=0, cnt=0;
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    const ddx=Math.min(((x-px)%N+N)%N, ((px-x)%N+N)%N);
+    const ddy=Math.min(((y-py)%N+N)%N, ((py-y)%N+N)%N);
+    if(ddx<=2 && ddy<=2) continue;
+    const v=cr[y*N+x]; sum+=v; sum2+=v*v; cnt++;
+  }
+  const mean=sum/cnt;
+  const std=Math.sqrt(Math.max(sum2/cnt - mean*mean, 1e-12));
+  const psr=(peak-mean)/std;
+  // ピーク位置 → 符号付きシフト。相関面のピークはシフト量そのもの（wrapを [-N/2,N/2) へ）。
+  let sx=px, sy=py;
+  if(sx>=N/2) sx-=N;
+  if(sy>=N/2) sy-=N;
+  // ピーク近傍の放物線補間でサブセル位置を求める。サンプル a,b,c（b=ピーク）に対し
+  // 頂点オフセット = 0.5*(a-c)/(a-2b+c)。理論上 |δ|<=0.5 セルなので範囲外は安全側に丸める。
+  const at = (x,y) => cr[(((y%N)+N)%N)*N + (((x%N)+N)%N)];
+  const parab = (a,b,c) => {
+    const d = a - 2*b + c;
+    if(!(Math.abs(d) > 1e-12)) return 0;
+    return Math.max(-0.5, Math.min(0.5, 0.5*(a-c)/d));
+  };
+  const sdx = parab(at(px-1,py), at(px,py), at(px+1,py));
+  const sdy = parab(at(px,py-1), at(px,py), at(px,py+1));
+  // A*conj(B) のピークは「a に対する b のずれ」= b は (sx,sy) だけ a より進んでいる。
+  // b を (-sx,-sy) 動かすと a に一致。
+  // dx/dy は整数セル（既存の呼び出し元 estimateSimilarity 用に不変）、
+  // dxSub/dySub はサブセル精度（bestAlignment の平行移動候補が使う）。
+  return { dx:sx, dy:sy, dxSub:sx+sdx, dySub:sy+sdy, peak, psr };
+}
+
+// 共通フレーム Wc×Hc に原点配置した gray を N×N へ同一係数で縮小（背景255）。
+function resampleToN(gray, W, H, Wc, Hc, N){
+  const out = new Float64Array(N*N).fill(255);
+  for(let y=0;y<N;y++){
+    const sy = y * Hc / N;
+    for(let x=0;x<N;x++){
+      const sx = x * Wc / N;
+      out[y*N+x] = (sx <= W-1 && sy <= H-1) ? sampleBilinear(gray, W, H, sx, sy, 255) : 255;
+    }
+  }
+  return out;
+}
+
+// フーリエ・メリンで相似変換（new→old）を推定。
+// opts: { N=512, minPsr=30, maxAngleDeg=45, minScale=0.5, maxScale=2.0 }
+// minPsr は conf = min(rs.psr, tr.psr) に対する単一閾値のみで判定する
+// （候補間のピーク比較・分離度ゲートは導入しない — 過去に試したが、
+// 回転がほぼ0のときに複数候補が正しい同一解に収束して「僅差」になる
+// ケース（=一致の裏付け）と、範囲外スケールで誤って偽の一致に収束する
+// ケース（=曖昧さ）を区別できず、前者を誤って棄却する回帰を起こしたため
+// 撤回した）。
+// N は当初 128 で出荷したが、実PDF図面での信頼度が恒常的に低く（低信頼判定が
+// 頻発）、原因調査の結果 N=128 は設計書が想定した既定値 256（仕様§9）からの
+// 意図しない縮小であったと判明。N=256 へ戻す実測でも実PDF図面（自作の検証用
+// サンプル1組）は conf~10.8 と依然低信頼だったため、実運用での「低信頼」多発を
+// 避けるべくさらに N=512 まで引き上げる。
+// N=512・十字パターン(512×512)での実測（conf = min(rs.psr, tr.psr)、minPsr:0）:
+//   範囲外倍率スイープ 0.2〜8.0倍（角度0、19点）の最大値       : conf ~18.8  → 棄却したい群
+//     （内訳: 0.2→15.3 / 0.3→12.6 / 2.5→16.6 / 2.8→16.9 / 2.9→18.8 / 3.0→14.3 / 3.3→16.4 / 4→14.8 / 6→11.4 / 8→13.2、他は0）
+//   ノイズ同士（10試行）の最大値                              : conf ~5.2   → 棄却したい群
+//   範囲内の回転+倍率+平行移動の組合せ（7点、角度0〜40°）の最小値: conf ~42.0  → 採用したい群
+//     （内訳: 角0°/0.6倍→42.0 / 角10°/0.7倍→73.7 / 角20°/1.0倍→187.6 等、他は63〜188）
+//   既知の相似変換（6°/1.08倍/(4,-6)相当規模）                : conf ~62.0（N=256実測を参考値として記載）
+// 「棄却したい」群は最大でも ~18.8、「採用したい」群は最小でも ~42.0 と明確な
+// 間隙があるため、両側にマージンを残せる 30 を採用する（旧 minPsr=18 のままだと
+// scale=2.9倍のケースが conf~18.8 で閾値をわずかに超えてしまい誤検出が再発する
+// ため、N変更に伴い必須の再校正）。
+// 実PDF図面1組での実測: conf~6.9@N=128 → ~10.8@N=256 → ~53.5@N=512（採用域に到達）。
+// 1ページあたりの計算コストは実測 約23ms@N=128 / 約110ms@N=256 / 約460ms@N=512、
+// いずれもメインスレッド・ページ別キャッシュのため許容範囲。
+
+function estimateSimilarity(oldGray, oldW, oldH, newGray, newW, newH, opts={}){
+  const N = opts.N || 512;
+  const minPsr = opts.minPsr ?? 30;
+  const maxAngle = (opts.maxAngleDeg ?? 45) * Math.PI/180;
+  const minScale = opts.minScale ?? 0.5, maxScale = opts.maxScale ?? 2.0;
+  const NONE = { angle:0, scale:1, txFrac:0, tyFrac:0, conf:0, applied:false };
+
+  const Wc = Math.max(oldW, newW), Hc = Math.max(oldH, newH);
+  const oldN = resampleToN(oldGray, oldW, oldH, Wc, Hc, N);
+  const newN = resampleToN(newGray, newW, newH, Wc, Hc, N);
+  const win = hannWindow(N);
+
+  // 回転・拡縮: 振幅スペクトル → 対数極座標 → 位相相関
+  const magO = magnitudeSpectrum(oldN, N, win);
+  const magNw = magnitudeSpectrum(newN, N, win);
+  const lpO = logPolar(magO, N, N, N);
+  const lpN = logPolar(magNw, N, N, N);
+  const rs = phaseCorrelate(lpO, lpN, N); // dx=theta方向, dy=rho方向（b=lpN→a=lpO のシフト）
+  const rhoMax = N/2, logBase = Math.exp(Math.log(rhoMax)/N);
+  const angleStep = Math.PI / N;
+  const thetaBase = rs.dx * angleStep;   // lpN→lpO のθずれ
+  const scaleBase = Math.pow(logBase, rs.dy);
+
+  // 符号・180°曖昧を候補探索で解消: 各候補で new を補正し old と平行移動相関、ピーク最大を採用。
+  const candidates = [];
+  for(const th of [thetaBase, thetaBase + Math.PI, -thetaBase]){
+    for(const sc of [scaleBase, 1/scaleBase]){
+      candidates.push({ th, sc });
+    }
+  }
+  let best = null;
+  for(const {th, sc} of candidates){
+    if(!(sc >= minScale && sc <= maxScale)) continue;
+    if(Math.abs(((th+Math.PI)%(2*Math.PI)) - Math.PI) > maxAngle) continue; // |th| を [-PI,PI]で評価
+    // new を (-th, 1/sc) で補正して old に合わせにいく（new→old の逆補正）
+    const warped = warpAffine(newN, N, -th, 1/sc, 0, 0);
+    const tr = phaseCorrelate(oldN, warped, N);
+    const conf = Math.min(rs.psr, tr.psr);
+    if(!best || tr.peak > best.tr.peak){
+      best = { th, sc, tr, conf };
+    }
+  }
+  if(!best) return NONE;
+
+  // new→old 適用変換: 角 = -th, 倍率 = 1/sc, 平行移動 = tr.(dx,dy)（N画素）→ 共通フレーム比
+  const angle = -best.th;
+  const scale = 1/best.sc;
+  const txFrac = best.tr.dx / N;
+  const tyFrac = best.tr.dy / N;
+  const applied = best.conf >= minPsr
+    && scale >= minScale && scale <= maxScale
+    && Math.abs(angle) <= maxAngle;
+  return { angle, scale, txFrac, tyFrac, conf: best.conf, applied };
+}
+
+// ── 整列候補の実測検証（インク画素の一致率） ──────────────────────
+// 自動整列の採否を PSR（位相相関ピークの鋭さ＝間接指標）ではなく、
+// 「実際に重ねたときインクがどれだけ一致したか」で決めるための道具立て。
+
+// グレー配列を閾値でインクマスク化（1=インク）
+function inkMaskFromGray(gray, n, th){
+  const m = new Uint8Array(n);
+  for(let i=0;i<n;i++) m[i] = gray[i] < th ? 1 : 0;
+  return m;
+}
+
+// 共通フレーム Wc×Hc に左上原点で置いた W×H のマスクを tw×th へ縮小する。
+// ブロック内に1つでもインクがあれば1とする max-pooling。平均やバイリニアで
+// 縮小すると図面の細線が薄まって消え、一致率が測れなくなるため max を使う。
+function downsampleMaskMax(mask, W, H, Wc, Hc, tw, th){
+  const out = new Uint8Array(tw*th);
+  for(let ty=0; ty<th; ty++){
+    const y0 = Math.floor(ty*Hc/th);
+    const y1 = Math.min(H, Math.max(y0+1, Math.floor((ty+1)*Hc/th)));
+    for(let tx=0; tx<tw; tx++){
+      const x0 = Math.floor(tx*Wc/tw);
+      const x1 = Math.min(W, Math.max(x0+1, Math.floor((tx+1)*Wc/tw)));
+      let v = 0;
+      for(let y=y0; y<y1 && !v; y++){
+        if(y>=H) break;
+        const row = y*W;
+        for(let x=x0; x<x1; x++){
+          if(x>=W) break;
+          if(mask[row+x]){ v=1; break; }
+        }
+      }
+      out[ty*tw+tx] = v;
+    }
+  }
+  return out;
+}
+
+// インク画素の IoU（|O∩N| / |O∪N|）。両方インク0なら 1（＝完全一致）。
+function inkIoU(a, b, n){
+  let inter=0, uni=0;
+  for(let i=0;i<n;i++){
+    const x=a[i], y=b[i];
+    if(x|y){ uni++; if(x&y) inter++; }
+  }
+  return uni===0 ? 1 : inter/uni;
+}
+
+// マスクを中心基準の相似変換で写像（最近傍・範囲外は0）。
+// 符号規約は warpAffine / renderAlignedNewCanvas と同じ:
+//   dst = center + t + scale·R(angle)·(src - center)
+function warpMask(mask, W, H, angle, scale, tx, ty){
+  const out = new Uint8Array(W*H);
+  const cx=(W-1)/2, cy=(H-1)/2;
+  const cos=Math.cos(angle), sin=Math.sin(angle), inv=1/scale;
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const px = x - cx - tx, py = y - cy - ty;
+      const sx = Math.round(cx + inv*( cos*px + sin*py));
+      const sy = Math.round(cy + inv*(-sin*px + cos*py));
+      if(sx>=0 && sx<W && sy>=0 && sy<H) out[y*W+x] = mask[sy*W+sx];
+    }
+  }
+  return out;
+}
+
+const SCORE_N = 512;          // スコア計算グリッドの長辺（縮小空間で計算して安価にする）
+const SCORE_MIN_GAIN = 0.02;  // 恒等よりIoUがこれだけ上がること（絶対差）
+const SCORE_MIN_RATIO = 1.02; // 恒等よりIoUがこれだけ上がること（相対比）
+
+// 整列候補（恒等 / 平行移動± / FMT）を実際にインクマスクへ適用し、
+// IoU が最も高いものを選ぶ。恒等を実質的に上回らない限り恒等のままとする。
+//
+// 旧実装は estimateSimilarity の PSR 単一閾値(minPsr)で採否を決めていたが、PSRは
+// 「相関面がどれだけ尖っているか」であって「重ねた結果どれだけ一致したか」ではない。
+// そのためリサンプル解像度を変えるたびに閾値の再校正が必要で（N=128→256→512、
+// minPsr=18→30 の経緯を estimateSimilarity のコメント参照）、実PDF図面で
+// 「低信頼で不適用」が頻発していた。ここでは採否を実測のIoUに一本化する。
+//
+// 平行移動候補は phaseCorrelate の符号規約への依存を避けるため ± 両方を候補に入れる。
+// 正しい方はIoUで勝ち、誤った方は恒等より悪くなって落ちるので、検証が符号を決める。
+// 実測（合成図面 400×300・(+12,-5)ずれ）では +tr 側が IoU 0.851、-tr 側が 0.095（恒等の
+// 0.210 未満）と明確に決着した（＝phaseCorrelate の戻り値はそのまま new→old の補正量）。
+//
+// 閾値校正の実測値（th=128）:
+//   合成図面 400×300（1px幅の細線主体、スコアグリッド 512×384）
+//     完全に同じ2枚  : scoreBase 1.000 → scoreBest 1.000 → 恒等（改善余地なし・不適用）
+//     (+12,-5)のずれ : scoreBase 0.210 → scoreBest 0.851 → translate 採用（差 0.64 / 比 4.05）
+//     無関係な2枚    : scoreBase 0.000 → scoreBest 0.000 → 恒等（不適用）
+//   実寸 1240×1754（A4@150dpi相当・線幅3px、スコアグリッド 362×512）
+//     (+12,-5)のずれ : scoreBase 0.531 → scoreBest 0.857 → translate 採用（差 0.33 / 比 1.61）
+// 「採用したい」群は差 0.33 以上、「棄却したい」群は差 0.00 と間隙が大きいため、
+// SCORE_MIN_GAIN=0.02 / SCORE_MIN_RATIO=1.02 で十分に分離できる（校正の変更は不要だった）。
+//
+// 平行移動の精度: 候補は FN=512 の位相相関から作るため、整数セルのままだと平行移動の
+// 量子は「共通フレームの辺長 / FN」となり、用紙と解像度に比例して粗くなる。実測で
+// A4@150dpi(1240×1754) は縦 3.43px、A3@300dpi(3508×4961) では縦 9.69px に達する。
+// 手動微調整が1px刻みであることを考えると無視できない粗さで、実際 1240×1754 では真のずれ
+// (+12,-5) に対し整数セルの復元値が dy=+3.43（誤差 1.57px）だった。このため phaseCorrelate
+// 側にピークの放物線補間を入れ、候補は dxSub/dySub（サブセル値）から作っている。同じ
+// 1240×1754 の実測で誤差は dx 0.39px / dy 0.31px と、両軸とも1px未満まで縮んだ。
+//
+// なお正しく整列してもIoUは1.0にならない（上記 0.851 / 0.857）。これはスコアグリッドの
+// 最近傍丸めによる表現上の上限で、400×300 のケースは整数シフトを総当りした上限自体が
+// 0.851 だった（＝サブセル補間後はその上限に到達している）。SCORE_MIN_* は絶対値ではなく
+// 恒等との差／比で判定するため、この目減りの影響を受けない。
+function bestAlignment(O, Nw, th){
+  const Wc = Math.max(O.w, Nw.w), Hc = Math.max(O.h, Nw.h);
+  const long = Math.max(Wc, Hc);
+  const gw = Math.max(8, Math.round(SCORE_N * Wc / long));
+  const gh = Math.max(8, Math.round(SCORE_N * Hc / long));
+  const oM = downsampleMaskMax(inkMaskFromGray(O.g,  O.w*O.h,  th), O.w,  O.h,  Wc, Hc, gw, gh);
+  const nM = downsampleMaskMax(inkMaskFromGray(Nw.g, Nw.w*Nw.h, th), Nw.w, Nw.h, Wc, Hc, gw, gh);
+  const n = gw*gh;
+
+  const cands = [{ angle:0, scale:1, txFrac:0, tyFrac:0, method:"identity" }];
+
+  // 平行移動候補: 用紙正規化後は倍率が既知なので、平行移動だけを位相相関で求める
+  const FN = 512;
+  const oN = resampleToN(O.g,  O.w,  O.h,  Wc, Hc, FN);
+  const nN = resampleToN(Nw.g, Nw.w, Nw.h, Wc, Hc, FN);
+  const tr = phaseCorrelate(oN, nN, FN);
+  // dxSub/dySub（放物線補間のサブセル値）を使う。整数セルのままだと平行移動の量子は
+  // フレーム長辺/FN であり、A3@300dpi(3508×4961) では縦 9.69px にもなる（§下記の実測）。
+  cands.push({ angle:0, scale:1, txFrac: tr.dxSub/FN, tyFrac: tr.dySub/FN, method:"translate" });
+  cands.push({ angle:0, scale:1, txFrac:-tr.dxSub/FN, tyFrac:-tr.dySub/FN, method:"translate" });
+
+  // FMT候補: 既存の推定器をそのまま使うが、applied（PSRゲート）は見ない
+  const fmt = estimateSimilarity(O.g, O.w, O.h, Nw.g, Nw.w, Nw.h);
+  cands.push({ angle:fmt.angle, scale:fmt.scale, txFrac:fmt.txFrac, tyFrac:fmt.tyFrac, method:"fmt" });
+
+  let base = 0, best = null;
+  for(const c of cands){
+    const warped = warpMask(nM, gw, gh, c.angle, c.scale, c.txFrac*gw, c.tyFrac*gh);
+    const s = inkIoU(oM, warped, n);
+    if(c.method === "identity") base = s;
+    if(!best || s > best.score) best = { c, score:s };
+  }
+  const applied = best.c.method !== "identity"
+    && (best.score - base) >= SCORE_MIN_GAIN
+    && best.score >= base * SCORE_MIN_RATIO;
+  const chosen = applied ? best.c : cands[0];
+  return {
+    angle: chosen.angle, scale: chosen.scale, txFrac: chosen.txFrac, tyFrac: chosen.tyFrac,
+    applied, method: chosen.method, scoreBase: base, scoreBest: best.score
+  };
+}
+
+// ── 直角回転（0/90/180/270）の推定 ──────────────────────────────
+// 改訂前後で用紙の向きが変わっているページ（旧A1横 ↔ 新A1縦など）を扱うための段。
+//
+// 角度探索の上限 maxAngleDeg=45（estimateSimilarity）を90°超へ広げるのではなく、
+// 直角成分を相似変換から切り離して「新版キャンバスごと回す」方式を採る。理由は3つ:
+//   1. 残差が ±45° 未満に収まるため、estimateSimilarity の閾値校正
+//      （N=128→256→512 / minPsr=18→30、同関数のコメント参照）をやり直さずに済む。
+//   2. framePlan に回転後のページ寸法を渡せるため、A4縦↔A4横が「縦横比が違う用紙」
+//      として正規化を諦める問題（aspectMismatch）が関数を触らずに解ける。
+//   3. 直角回転は画素の並べ替えだけで補間が入らないため無損失。
+//
+// k は全経路で「新版を時計回りに k×90° 回す量」で統一する。既存の angle
+// （warpAffine / estimateSimilarity）は数学規約の反時計回り正で符号が逆だが、
+// k は描画前のキャンバスに、angle はその後の相似変換に、それぞれ独立に適用され
+// 合成されないため、符号を突き合わせる箇所は生じない。
+const QUAD_N = 256;           // 象限判定のリサンプル解像度。象限という粗い量を決めるだけなので
+                              // FMT側の512は要らない。実測で不足なら上げる。
+const QUAD_MIN_GAIN  = 0.15;  // k=0 より IoU がこれだけ上がること（絶対差）
+const QUAD_MIN_RATIO = 1.02;  // k=0 より IoU がこれだけ上がること（相対比）
+// QUAD_MIN_RATIO は bestAlignment の SCORE_MIN_RATIO と同値のまま。ただし本関数のスコアは
+// 「同一・無関係ペア」でベースライン(scores[0])自体が0.01〜0.03程度まで下がるため、
+// 1.02倍という相対ゲートはほぼ効かない（0.028 >= 0.015×1.02 は自明に真）。誤回転を
+// 実質的に食い止めているのは QUAD_MIN_GAIN（絶対差ゲート）のみと認識した上で、
+// 以下の実測に基づき単独で校正する（estimateSimilarity の minPsr 校正と同じ流儀）。
+//
+// 実測（合成図面 400×300、th=128、QUAD_N=256。scores は [k=0,1,2,3]、gain=scores[argmax]-scores[0]）:
+//   K=1（新版が時計回り90°）:  k=3 採用 / scores=[0.027, 0.024, 0.001, 1.000] gain=0.9733 → 採用したい群
+//   K=2（新版が時計回り180°）: k=2 採用 / scores=[0.024, 0.001, 1.000, 0.027] gain=0.9759 → 採用したい群
+//   K=3（新版が時計回り270°）: k=1 採用 / scores=[0.001, 1.000, 0.027, 0.024] gain=0.9993 → 採用したい群
+//   正方形寄り(320×300) K=1:   k=3 採用 / scores=[0.135, 0.001, 0.115, 1.000] gain=0.8647 → 採用したい群
+//   帯状(800×200) K=1:         k=3 採用 / scores=[0.090, 0.001, 0.123, 1.000] gain=0.9099 → 採用したい群
+//   同一の2枚:                 k=0 不採用 / scores=[1.000, 0.027, 0.024, 0.001] gain=0.0000 → 棄却したい群
+//   無関係な2枚:                k=0 不採用 / scores=[0.015, 0.028, 0.019, 0.013] gain=0.0134 → 棄却したい群
+// 「棄却したい」群は最大でも gain~0.0134、「採用したい」群は最小でも gain~0.8647 と
+// 二桁近く離れた間隙があるため、両側に十分なバッファを残せる 0.15 を採用する
+// （旧初期値 0.02 のままだと無関係ペアの gain~0.0134 との差が0.0066しかなく、
+// 実運用でわずかに相関の強い無関係ペアに遭遇した場合に誤って回転しかねないため、
+// 本タスクで再校正した）。0.15 の場合、棄却側バッファは 0.15-0.0134=0.1366、
+// 採用側バッファは 0.8647-0.15=0.7147 で、いずれも検証スクリプトで0.05以上を
+// 明示的にアサートして確認済み。
+//
+// 追試（疎インクの図面、外枠＋右下の表題欄＋短いストローク数本、600×400。密な合成図面7件
+// とは別サンプル）: 採用側の最小 gain は上記 0.7147 のバッファほど余裕が無く、以下まで縮む。
+//   sparse K=1: gain=0.9655  scores=[0.034, 0.615, 0.150, 1.000]
+//   sparse K=2: gain=0.3845  scores=[0.615, 0.150, 1.000, 0.034]
+//   sparse K=3: gain=0.8501  scores=[0.150, 1.000, 0.034, 0.615]
+// 最小 gain=0.3845 は閾値0.15の2.5倍あるため定数はこのままで妥当だが、密な合成図面での
+// バッファ0.7147は疎な実図面では半分以下に縮むと認識しておく（今後の再校正の参考値）。
+// また上下対称な枠のみのページ（真値K=2）は scores=[1.000, 0.001, 1.000, 0.001] のように
+// k=0とk=2が同点になり、strict '>' のargmaxはk=0側を残すため applied=false に倒れる
+// （誤って回転するのではなく、本来回すべき対称ページで回転しない側に外れる）。
+
+// グレー配列の直角回転。k=0..3 で「時計回りに k×90°」。添字の並べ替えのみで補間なし。
+// k=0 は入力配列をそのまま返す（コピーしない）— 呼び出し側は破壊しないこと。
+function rotateGray90(g, W, H, k){
+  const kk = ((k % 4) + 4) % 4;
+  if(kk === 0) return { g, w:W, h:H };
+  if(kk === 2){
+    const out = new Float64Array(W*H);
+    for(let y=0;y<H;y++) for(let x=0;x<W;x++) out[y*W+x] = g[(H-1-y)*W + (W-1-x)];
+    return { g:out, w:W, h:H };
+  }
+  const w = H, h = W;   // 90°/270° は縦横が入れ替わる
+  const out = new Float64Array(w*h);
+  if(kk === 1){
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++) out[y*w+x] = g[(H-1-x)*W + y];
+  } else {
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++) out[y*w+x] = g[x*W + (W-1-y)];
+  }
+  return { g:out, w, h };
+}
+
+// 2枚を「各自の実寸で N×N へ伸縮」してから比較したインクIoU。
+//
+// resampleToN を Wc=W, Hc=H で呼ぶと stretch-to-fill になる。これが要点で、
+// 用紙アスペクトの一致判定が伸縮そのものに吸収される: 旧A4縦に対し k=0（新A4横）を
+// 伸ばすと両者が逆方向に潰れて内容が合わずIoUが落ち、正しい象限では両者が同じ形に
+// 伸びて素直に合う。おかげで用紙寸法による事前分岐（縦横が入れ替わっていれば k∈{1,3}）
+// が不要になり、正方形に近い用紙も同じ経路で扱える。
+//
+// マスクは元解像度で2値化してから max-pooling で落とす（bilinear縮小だと図面の細線が
+// 薄まって消え、一致率が測れなくなる — downsampleMaskMax のコメント参照）。位相相関の
+// 側はグレーのまま bilinear で構わない。
+function quadrantScore(O, Nw, th, N){
+  const oN = resampleToN(O.g,  O.w,  O.h,  O.w,  O.h,  N);
+  const nN = resampleToN(Nw.g, Nw.w, Nw.h, Nw.w, Nw.h, N);
+  const tr = phaseCorrelate(oN, nN, N);
+  const oM = downsampleMaskMax(inkMaskFromGray(O.g,  O.w*O.h,  th), O.w,  O.h,  O.w,  O.h,  N, N);
+  const nM = downsampleMaskMax(inkMaskFromGray(Nw.g, Nw.w*Nw.h, th), Nw.w, Nw.h, Nw.w, Nw.h, N, N);
+  const warped = warpMask(nM, N, N, 0, 1, tr.dxSub, tr.dySub);
+  return inkIoU(oM, warped, N*N);
+}
+
+// k=0..3 を実測して最良を選ぶ。bestAlignment と同じく「恒等（k=0）を実質的に
+// 上回らない限り回さない」に倒す。僅差で誤って回るより、回らずに手動で直せる方がよい。
+function bestQuadrant(O, Nw, th, opts={}){
+  const N = opts.N || QUAD_N;
+  const scores = [0,0,0,0];
+  for(let k=0;k<4;k++){
+    const R = rotateGray90(Nw.g, Nw.w, Nw.h, k);
+    scores[k] = quadrantScore(O, R, th, N);
+  }
+  let bk = 0;
+  for(let k=1;k<4;k++) if(scores[k] > scores[bk]) bk = k;
+  const applied = bk !== 0
+    && (scores[bk] - scores[0]) >= (opts.minGain ?? QUAD_MIN_GAIN)
+    && scores[bk] >= scores[0] * (opts.minRatio ?? QUAD_MIN_RATIO);
+  return { k: applied ? bk : 0, scores, applied };
+}
+
+const $ = id => document.getElementById(id);
+const out = $("out"), octx = out.getContext("2d");
+const boxLayer = $("boxLayer"), bctx = boxLayer.getContext("2d");
+
+function setDrop(el, name){
+  el.classList.add("set");
+  el.querySelector(".fname").textContent = name;
+}
+
+async function loadPdf(file, which){
+  clearBoxEdits(); // 読み込み直しで枠は意味を失う（確認なしで破棄）
+  const buf = await file.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({
+    data:new Uint8Array(buf),
+    // CID方式(日本語等CJK)フォントのデコードに必要なCMap/標準フォントデータ。
+    // cdnjsのpdf.jsにはcmaps/standard_fontsが無いためjsDelivrのpdfjs-distを参照（静的資産の取得のみ・PDFは外部送信しない）。
+    cMapUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/",
+    cMapPacked:true,
+    standardFontDataUrl:"https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/"
+  }).promise;
+  if(which==="old"){ state.oldDoc = doc; setDrop($("dropOld"), file.name); }
+  else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
+  state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
+  state.textHi = null; state.textPage = 0;
+  state.alignCache = {}; // 自動整列の推定結果も破棄
+  state.quadCache = {}; state.quadManual = {}; state.quadGen++; // 直角回転の推定・手動上書きも破棄
+  state.curPlan = null;  // 用紙合わせの読み出しも破棄
+  state.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
+  $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
+  if(state.oldDoc && state.newDoc){
+    state.oldSeq = Array.from({length:state.oldDoc.numPages}, (_,i)=>i);
+    state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
+    state.alignOps = [];
+    state.alignCache = {}; // 明示的に再破棄（(a)で既に空だが両PDF読込時初期化として明示）
+    state.quadCache = {}; state.quadManual = {}; state.quadGen++; // 同上
+    state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
+    state.cur = 0; state.cache = {};
+    $("run").disabled = false;
+    $("runText").disabled = false;
+    $("status").textContent = "準備完了 — 「差分を表示」を押してください";
+    $("textStatus").textContent = "準備完了 — 「テキスト差分を表示」を押してください";
+  }
+}
+
+// ── 用紙サイズ正規化 ────────────────────────────────────────────
+// 用紙サイズ違い(A4版↔A3版)の倍率は推定不要で、PDFのページ実寸(pt)から確定する。
+// 大きい用紙を基準(dpi/72)にし、小さい用紙側だけを ratio 倍の高解像度で描くことで、
+// 両版を「同一ピクセル寸法」に揃える。ベクタPDFなら両版とも劣化ゼロ。
+// 用紙が同寸なら normalized=false で両方 dpi/72 となり、現行と完全一致する。
+const FRAME_RATIO_EPS = 0.002;   // 用紙同寸とみなす倍率の許容（丸め差で毎回ワープしないため）
+const FRAME_ASPECT_EPS = 0.01;   // 縦横比の不一致とみなす閾値
+
+// ページ実寸(pt)。ページが無いスロット(空白/範囲外)は null。
+// pdf.js はページオブジェクトを内部キャッシュするため、renderPageCanvas と
+// 二重に getPage しても実質的な再取得コストは生じない。
+async function pageSizePt(doc, idx){
+  if(!doc || idx == null || idx >= doc.numPages) return null;
+  const page = await doc.getPage(idx+1);
+  const vp = page.getViewport({scale:1});
+  return { w: vp.width, h: vp.height };
+}
+
+// 旧新のページ実寸から、両者が同一ピクセル寸法になる描画scaleを決める（純関数）。
+// 縦横比が違う組（A4縦↔A3横など）は相似でないため正規化せず、警告フラグだけ立てる。
+function framePlan(oldPt, newPt, dpi){
+  const base = dpi/72;
+  const none = { oldScale:base, newScale:base, frameScale:base, ratio:1,
+                 normalized:false, aspectMismatch:false, refSide:null };
+  if(!oldPt || !newPt) return none;
+  if(!(oldPt.w>0 && oldPt.h>0 && newPt.w>0 && newPt.h>0)) return none;
+  const refIsOld = (oldPt.w*oldPt.h) >= (newPt.w*newPt.h);
+  const ref   = refIsOld ? oldPt : newPt;
+  const other = refIsOld ? newPt : oldPt;
+  const rw = ref.w/other.w, rh = ref.h/other.h;
+  if(Math.abs(rw-rh)/Math.max(rw,rh) > FRAME_ASPECT_EPS){
+    return { ...none, aspectMismatch:true };
+  }
+  const ratio = Math.min(rw, rh);
+  if(Math.abs(ratio-1) <= FRAME_RATIO_EPS) return none;
+  return {
+    oldScale:  refIsOld ? base : base*ratio,
+    newScale:  refIsOld ? base*ratio : base,
+    frameScale: base,
+    ratio, normalized:true, aspectMismatch:false,
+    refSide: refIsOld ? "old" : "new"
+  };
+}
+
+// PDFページ → 白背景のカラーCanvas（無い場合は null）
+async function renderPageCanvas(doc, idx, scale){
+  if(!doc || idx == null || idx >= doc.numPages) return null;
+  const page = await doc.getPage(idx+1);
+  const vp = page.getViewport({scale});
+  const c = document.createElement("canvas");
+  c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
+  await page.render({canvasContext:ctx, viewport:vp}).promise;
+  return c;
+}
+
+// autoAlign ON かつ当ページ未推定なら、フーリエ・メリンで推定して alignCache に格納。
+// oldC/newC はカラーCanvas。グレースケールFloat配列へ変換して estimateSimilarity に渡す。
+function canvasToGrayF(c){
+  if(!c) return null;
+  const {width:w, height:h} = c;
+  const d = c.getContext("2d").getImageData(0,0,w,h).data;
+  const g = new Float64Array(w*h);
+  for(let i=0,p=0;i<g.length;i++,p+=4) g[i] = 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
+  return { g, w, h };
+}
+// 象限判定用のプローブ描画の長辺px。本描画(state.dpi)とは独立の固定解像度にしてあるため、
+// quadCache は dpi 非依存（＝dpi変更で破棄する必要がない。alignCache と同じ考え）。
+const QUAD_PROBE_LONG = 512;
+
+// キャンバスの直角回転。k=0 は入力をそのまま返す（新規canvasを作らない）。
+// これが「回転が絡まないペアでは現行と1画素も変わらない」ことの担保になっている。
+// 直角かつ整数オフセットの回転はサンプル点が元画素の中心に厳密一致するため、
+// setTransform 経由でも補間の影響を受けない（Task 4 のブラウザ実測で確認する）。
+function rotateCanvas90(c, k){
+  const kk = ((k % 4) + 4) % 4;
+  if(!c || kk === 0) return c;
+  const d = document.createElement("canvas");
+  d.width  = (kk === 2) ? c.width  : c.height;
+  d.height = (kk === 2) ? c.height : c.width;
+  const ctx = d.getContext("2d");
+  // 未描画領域は透明黒のまま残るが、lum()/canvasToGrayF() はアルファを見ないため
+  // 透明画素は輝度0＝インクとして誤認される。renderPageCanvas 等の他のcanvas生成箇所と
+  // 同様に白で下地を敷いてから描く（回転で全面が埋まる場合でも一貫させておく）。
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,d.width,d.height);
+  ctx.imageSmoothingEnabled = false; // 直角回転の無損失性をブラウザ実装依存にしないため明示的に無効化
+  if(kk === 1)      ctx.setTransform(0, 1, -1, 0, c.height, 0);          // 時計回り90°
+  else if(kk === 2) ctx.setTransform(-1, 0, 0, -1, c.width, c.height);   // 180°
+  else              ctx.setTransform(0, -1, 1, 0, 0, c.width);           // 時計回り270°
+  ctx.drawImage(c, 0, 0);
+  return d;
+}
+
+// autoAlign ON かつ当ページ未推定なら、低解像度プローブを描画して象限を推定しキャッシュする。
+// oldPt/newPt は呼び出し側が pageSizePt で既に得ているものを渡す（再取得しない）。
+async function ensureQuadEstimate(idx, oi, ni, oldPt, newPt){
+  if(!state.autoAlign) return;
+  if(state.quadCache[idx]) return; // ページ別キャッシュ
+  // 片側が空白スロットなら比較対象が無いので回さない（ensureAlignEstimate の blank 分岐と同じ扱い）
+  // ここは await をまたがない早期書き込みなので世代ガードは不要。
+  if(!oldPt || !newPt){
+    state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
+    return;
+  }
+  // 以降はプローブ描画で await をまたぐため、その間に loadPdf/refreshAfterAlign/th変更で
+  // quadCache が破棄される（＝スロット→ページ対応が変わる）と、古い対応で算出した k を
+  // 新しい対応のスロットへ書き戻してしまう。世代を捕捉し、書き込み直前に必ず照合する。
+  const gen = state.quadGen;
+  const probeScale = pt => QUAD_PROBE_LONG / Math.max(pt.w, pt.h);
+  const [oc, nc] = await Promise.all([
+    renderPageCanvas(state.oldDoc, oi, probeScale(oldPt)),
+    renderPageCanvas(state.newDoc, ni, probeScale(newPt))
+  ]);
+  if(gen !== state.quadGen) return; // await中に世代が進んだので破棄（stale-write防止）。
+  // これより下は同期処理のみなので再チェック不要。
+  const O = canvasToGrayF(oc), Nw = canvasToGrayF(nc);
+  if(!O || !Nw){
+    state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
+    return;
+  }
+  state.quadCache[idx] = bestQuadrant(O, Nw, state.th);
+}
+
+// 当ページに適用する直角回転量。手動上書きが最優先、次に自動推定、既定は0。
+// 同期関数なので、呼び出し側は先に await ensureQuadEstimate(...) を済ませること。
+function effectiveQuad(idx){
+  const m = state.quadManual[idx];
+  if(m != null) return m;
+  if(!state.autoAlign) return 0;
+  const q = state.quadCache[idx];
+  return (q && q.applied) ? q.k : 0;
+}
+
+function ensureAlignEstimate(idx, oldC, newC){
+  if(!state.autoAlign) return;
+  if(state.alignCache[idx]) return; // ページ別キャッシュ
+  const O = canvasToGrayF(oldC), Nw = canvasToGrayF(newC);
+  // 片側が空白スロットなら比較対象が無いので恒等。スコアは定義上1だが、全面が追加/削除
+  // として出るページで「一致率100%」と読ませないよう blank フラグで読み出しを分岐させる。
+  if(!O || !Nw){
+    state.alignCache[idx] = {angle:0,scale:1,txFrac:0,tyFrac:0,
+      applied:false,method:"identity",scoreBase:1,scoreBest:1,blank:true};
+    return;
+  }
+  state.alignCache[idx] = bestAlignment(O, Nw, state.th);
+}
+
+// alignCache の正規化パラメータ（new→old）から、現在Canvas寸法での適用可否と行列要素を返す。
+// 自動推定値（ONかつ適用時）に手動角度・倍率を合成する（角度=加算、倍率=乗算）。
+// 自動が無効/未適用のときは手動値のみが効く。手動値も既定(0/1)なら恒等（現行と完全一致）。
+function alignMatrixFor(idx, oldW, oldH, newW, newH){
+  const a = state.autoAlign ? state.alignCache[idx] : null;
+  const autoOn = !!(a && a.applied);
+  const angle = (autoOn ? a.angle : 0) + state.manualAngle;
+  const scale = (autoOn ? a.scale : 1) * state.manualScale;
+  const Wc = Math.max(oldW, newW), Hc = Math.max(oldH, newH);
+  const tx = autoOn ? a.txFrac*Wc : 0;
+  const ty = autoOn ? a.tyFrac*Hc : 0;
+  const applied = autoOn || state.manualAngle !== 0 || state.manualScale !== 1;
+  return { angle, scale, tx, ty, applied };
+}
+
+// 新版ページCanvas(newC)を旧版フレームへワープしたカラーCanvasを返す。
+// setTransform に自動行列を積み、その上に手動 dx/dy を平行移動として合成する。
+// 出力Canvas寸法は buildDiff/buildToggle 側で決めた width/height を使う。
+function renderAlignedNewCanvas(newC, m, width, height){
+  const c = document.createElement("canvas");
+  c.width = width; c.height = height;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,width,height);
+  if(!newC) return c;
+  const ncx = newC.width/2, ncy = newC.height/2;
+  if(m.applied){
+    // dest = center(=そのまま原点系) + t + scale·R(angle)·(src-newCenter)
+    // ここでは newCenter を回転中心にし、旧フレーム原点へ (ncx,ncy)+dx/dy でマップ
+    const cos=Math.cos(m.angle)*m.scale, sin=Math.sin(m.angle)*m.scale;
+    const e = ncx + m.tx + state.dx;
+    const f = ncy + m.ty + state.dy;
+    ctx.setTransform(cos, sin, -sin, cos, e - (cos*ncx - sin*ncy), f - (sin*ncx + cos*ncy));
+    ctx.drawImage(newC, 0, 0);
+    ctx.setTransform(1,0,0,1,0,0);
+  } else {
+    ctx.drawImage(newC, state.dx, state.dy); // 現行と同一（整数平行移動）
+  }
+  return c;
+}
+
+// applied=true 時、renderAlignedNewCanvas と同一の変換で newC の4隅を写像し、
+// 変換後の外接矩形（宛先フレーム座標系）を返す。W/H拡張の判定にのみ使う。
+function alignedNewBounds(newC, m){
+  if(!newC || !m.applied) return null;
+  const ncx = newC.width/2, ncy = newC.height/2;
+  const cos = Math.cos(m.angle)*m.scale, sin = Math.sin(m.angle)*m.scale;
+  const e = ncx + m.tx + state.dx - (cos*ncx - sin*ncy);
+  const f = ncy + m.ty + state.dy - (sin*ncx + cos*ncy);
+  const corners = [[0,0],[newC.width,0],[0,newC.height],[newC.width,newC.height]];
+  let x1 = -Infinity, y1 = -Infinity;
+  for(const [x,y] of corners){
+    const px = cos*x - sin*y + e, py = sin*x + cos*y + f;
+    if(px > x1) x1 = px;
+    if(py > y1) y1 = py;
+  }
+  return { x1, y1 };
+}
+
+// スロット s の実ページ番号（0基点）。スペーサ(null)・範囲外は null。
+function seqIdx(seq, s){ const v = seq ? seq[s] : undefined; return (v == null) ? null : v; }
+
+// ページャ表示: "3 / 12（旧P3 ↔ 新P4）"。スペーサ側は「空白」。
+function pageLabelText(idx){
+  const o = seqIdx(state.oldSeq, idx), n = seqIdx(state.newSeq, idx);
+  const os = (o == null) ? "旧 空白" : "旧P"+(o+1);
+  const ns = (n == null) ? "新 空白" : "新P"+(n+1);
+  return (idx+1)+" / "+state.pages+"（"+os+" ↔ "+ns+"）";
+}
+
+function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
+
+// 変更箇所の囲み枠（色・サイズ）に関する定数とヘルパ
+const BOX_COLOR = "#ff9500";
+const BOX_FILL  = "rgba(255,149,0,0.18)";
+// 差分の塗り色。buildDiff の画素ループと書き出し凡例が共有する唯一の定義。
+// CSS変数 --common / --removed / --added とも一致させること（片方だけ変えない）。
+const DIFF_RGB = {
+  common:  [60, 60, 60],   // 旧新どちらにもインクあり
+  removed: [255, 91, 87],  // 旧版のみ = 削除
+  added:   [77, 141, 255], // 新版のみ = 追加
+};
+const rgbCss = c => "rgb("+c[0]+","+c[1]+","+c[2]+")";
+const BOX_BASE_DPI = 150;
+const BOX_BASE = 16;
+const BOX_MIN_BLOCKS = 2;
+function blockSize(){ return Math.max(4, Math.round(BOX_BASE * state.dpi / BOX_BASE_DPI)); }
+function toleranceRadiusPx(){ return Math.round(state.tolerancePx * state.dpi / BOX_BASE_DPI); }
+
+// 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
+// 1ブロック膨張してからBFSで連結成分をラベリングする。
+function computeBoxes(flags, cols, rows, block, minBlocks){
+  const DIRS4 = [[-1,0],[1,0],[0,-1],[0,1]]; // 4近傍（BFS連結・膨張兼用）
+  // 1ブロック膨張したフラグ格子 dil を作る（4近傍＋自身を立てる。斜めは含めない）
+  const dil = new Uint8Array(cols*rows);
+  const offs = [[0,0],[-1,0],[1,0],[0,-1],[0,1]];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(!flags[r*cols+c]) continue;
+      for(const [dr,dc] of offs){
+        const nr=r+dr, nc=c+dc;
+        if(nr<0||nc<0||nr>=rows||nc>=cols) continue;
+        dil[nr*cols+nc]=1;
+      }
+    }
+  }
+  const seen = new Uint8Array(cols*rows);
+  const boxes = [];
+  const qx = new Int32Array(cols*rows), qy = new Int32Array(cols*rows);
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const i=r*cols+c;
+      if(!dil[i]||seen[i]) continue;
+      // BFS
+      let head=0, tail=0;
+      qx[tail]=c; qy[tail]=r; tail++; seen[i]=1;
+      let minC=c,maxC=c,minR=r,maxR=r, origCount=0;
+      while(head<tail){
+        const cx=qx[head], cy=qy[head]; head++;
+        if(flags[cy*cols+cx]) origCount++;
+        if(cx<minC)minC=cx; if(cx>maxC)maxC=cx;
+        if(cy<minR)minR=cy; if(cy>maxR)maxR=cy;
+        for(const [dx,dy] of DIRS4){
+          const nx=cx+dx, ny=cy+dy;
+          if(nx<0||ny<0||nx>=cols||ny>=rows) continue;
+          const ni=ny*cols+nx;
+          if(dil[ni]&&!seen[ni]){ seen[ni]=1; qx[tail]=nx; qy[tail]=ny; tail++; }
+        }
+      }
+      // ノイズ判定は膨張前の元ブロック数(origCount)で行う。
+      if(origCount < minBlocks) continue;
+      boxes.push({
+        x: minC*block,
+        y: minR*block,
+        w: (maxC-minC+1)*block,
+        h: (maxR-minR+1)*block,
+      });
+    }
+  }
+  return boxes;
+}
+
+// 外接矩形群をキャンバス範囲[0,width]/[0,height]にクランプ（端の枠切れ対策）。退化矩形は除外。
+function clampBoxes(raw, width, height){
+  return raw.map(b=>{
+    const x0 = Math.max(0, b.x), y0 = Math.max(0, b.y);
+    const x1 = Math.min(width,  b.x+b.w), y1 = Math.min(height, b.y+b.h);
+    return {x:x0, y:y0, w:x1-x0, h:y1-y0};
+  }).filter(b=>b.w>0 && b.h>0);
+}
+
+// 2値マスク(Uint8Array, width*height)を正方形(チェビシェフ距離<=radius)で膨張する純関数。
+// 半径Rに依らず横→縦の分離フィルタ(スライディングウィンドウ)でO(width*height)。radius<=0は恒等。
+function dilateMask(mask, width, height, radius){
+  if(radius<=0) return mask;
+  const tmp = new Uint8Array(width*height);
+  for(let y=0;y<height;y++){
+    const rowOff = y*width;
+    let cnt=0;
+    for(let x=-radius;x<width;x++){
+      const inX=x+radius;
+      if(inX<width && mask[rowOff+inX]) cnt++;
+      const outX=x-radius-1;
+      if(outX>=0 && mask[rowOff+outX]) cnt--;
+      if(x>=0) tmp[rowOff+x] = cnt>0 ? 1 : 0;
+    }
+  }
+  const out = new Uint8Array(width*height);
+  for(let x=0;x<width;x++){
+    let cnt=0;
+    for(let y=-radius;y<height;y++){
+      const inY=y+radius;
+      if(inY<height && tmp[inY*width+x]) cnt++;
+      const outY=y-radius-1;
+      if(outY>=0 && tmp[outY*width+x]) cnt--;
+      if(y>=0) out[y*width+x] = cnt>0 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+// 旧・新のインクマスクから「位置的許容つき」の削除/追加マスクを算出する純関数。
+// removed: 旧にインクがあり、かつ新側の許容範囲内(膨張後)にもインクが無い
+// added:   新にインクがあり、かつ旧側の許容範囲内にもインクが無い
+function toleratedDiffMasks(oMask, nMask, width, height, radius){
+  const oDil = dilateMask(oMask, width, height, radius);
+  const nDil = dilateMask(nMask, width, height, radius);
+  const n = width*height;
+  const removed = new Uint8Array(n), added = new Uint8Array(n);
+  for(let i=0;i<n;i++){
+    if(oMask[i] && !nDil[i]) removed[i]=1;
+    else if(nMask[i] && !oDil[i]) added[i]=1;
+  }
+  return {removed, added};
+}
+
+// 整列済み新版（作業フレームに配置済み）を旧版と同座標比較して変更枠を算出。
+function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
+  const th = state.th, block = blockSize();
+  const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
+  const bflags = new Uint8Array(cols*rows);
+  const radius = toleranceRadiusPx();
+  if(radius>0){
+    const oMask = new Uint8Array(width*height), nMask = new Uint8Array(width*height);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(oimg && x<ow && y<oh) oMask[i] = lum(oimg.data,(y*ow+x)*4) < th ? 1 : 0;
+        nMask[i] = lum(nAlignedImg.data,(y*width+x)*4) < th ? 1 : 0;
+      }
+    }
+    const {removed, added} = toleratedDiffMasks(oMask, nMask, width, height, radius);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(removed[i]||added[i]) bflags[((y/block)|0)*cols + ((x/block)|0)]=1;
+      }
+    }
+  } else {
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        let oInk=false;
+        if(oimg && x<ow && y<oh) oInk = lum(oimg.data,(y*ow+x)*4) < th;
+        const nInk = lum(nAlignedImg.data,(y*width+x)*4) < th;
+        if(oInk !== nInk) bflags[((y/block)|0)*cols + ((x/block)|0)]=1;
+      }
+    }
+  }
+  const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
+  return clampBoxes(raw, width, height);
+}
+
+// 枠をフレーム座標のまま ctx へ描く純粋な描画関数（書き出し用）。lw は線幅(px)。
+function drawBoxesTo(ctx, boxes, lw){
+  if(!boxes || !boxes.length) return;
+  ctx.save();
+  ctx.fillStyle = BOX_FILL;
+  ctx.strokeStyle = BOX_COLOR;
+  ctx.lineWidth = lw;
+  for(const b of boxes){
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    // 枠線が範囲外に出ないよう半線幅内側に寄せる
+    const h = lw/2;
+    ctx.strokeRect(b.x+h, b.y+h, Math.max(0,b.w-lw), Math.max(0,b.h-lw));
+  }
+  ctx.restore();
+}
+// 書き出し用の線幅。現行 drawBoxes と同じ式（DPIに比例）。
+const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
+
+let boxDrag = null; // ドラッグ中の枠操作。{kind:"create"|"move"|"resize", ...} か null
+// マウスを押したままキー操作（取り消し/削除/モード終了）が割り込むと state.boxSel が
+// -1 や別indexへ変わり得る。endBoxDrag 側で state.boxSel の妥当性を見て確定するのではなく、
+// 割り込みが起きた時点でドラッグそのものを破棄する（原因側で止める）。
+function cancelBoxDrag(){
+  if(!boxDrag) return;
+  boxDrag = null;
+  drawBoxLayer(); // プレビューが残らないよう消す
+}
+const HANDLE = 5; // リサイズハンドルの半径（画面px固定。拡大率に依らず掴みやすさを一定にする）
+// 8ハンドルの伸縮方向。handlePoints の並びと1対1で対応させること。
+const HANDLE_DIRS = [[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0]];
+const HANDLE_CURSORS = ["nwse-resize","ns-resize","nesw-resize","ew-resize","nwse-resize","ns-resize","nesw-resize","ew-resize"];
+// 8ハンドルの中心（画面座標）。左上から時計回り。
+function handlePoints(x,y,w,h){
+  return [[x,y],[x+w/2,y],[x+w,y],[x+w,y+h/2],[x+w,y+h],[x+w/2,y+h],[x,y+h],[x,y+h/2]];
+}
+// ポインタイベント→フレーム座標（out のピクセル座標）
+function toFrame(e){
+  const r = wrap.getBoundingClientRect();
+  return {x:(e.clientX-r.left-view.tx)/view.scale, y:(e.clientY-r.top-view.ty)/view.scale};
+}
+// 手前(リスト後方)から探して最初に当たった枠のindex。無ければ -1。
+function hitBox(p){
+  const bs = state.boxes || [];
+  for(let i=bs.length-1;i>=0;i--){
+    const b = bs[i];
+    if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h) return i;
+  }
+  return -1;
+}
+// 選択枠のハンドルに当たっていればそのindex、外れていれば -1。判定は画面px基準。
+function hitHandle(p){
+  if(state.boxSel<0 || !state.boxes || state.boxSel>=state.boxes.length) return -1;
+  const b = state.boxes[state.boxSel], s = view.scale;
+  const pts = handlePoints(b.x, b.y, b.w, b.h);
+  const r = HANDLE/s; // 画面px半径をフレーム座標へ換算
+  for(let i=0;i<pts.length;i++){
+    if(Math.abs(p.x-pts[i][0])<=r && Math.abs(p.y-pts[i][1])<=r) return i;
+  }
+  return -1;
+}
+// 反転ドラッグ（右下→左上）を正の w/h へ正規化する
+function normRect(x0,y0,x1,y1){
+  return {x:Math.min(x0,x1), y:Math.min(y0,y1), w:Math.abs(x1-x0), h:Math.abs(y1-y0)};
+}
+// 1個の矩形をフレーム内へクランプ（既存 clampBoxes と同じ規則の単体版）
+function clampBox(b, width, height){
+  const x0=Math.max(0,b.x), y0=Math.max(0,b.y);
+  const x1=Math.min(width,b.x+b.w), y1=Math.min(height,b.y+b.h);
+  return {x:x0, y:y0, w:Math.max(0,x1-x0), h:Math.max(0,y1-y0)};
+}
+
+// 画面解像度のオーバーレイへ枠を描く。CSS transform は掛けず view 変換を自前で適用するため、
+// 枠線は画面px固定になり拡大しても太らない。out の実データには一切触れない。
+function drawBoxLayer(){
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  if(boxLayer.width !== W || boxLayer.height !== H){ boxLayer.width = W; boxLayer.height = H; }
+  bctx.clearRect(0,0,W,H);
+  if(!state.rendered || out.style.display === "none") return;
+  if(!state.showBoxes) return;
+  const hasBoxes = state.boxes && state.boxes.length;
+  if(!hasBoxes && !boxDrag) return;
+  const s = view.scale;
+  bctx.save();
+  bctx.fillStyle = BOX_FILL;
+  bctx.strokeStyle = BOX_COLOR;
+  bctx.lineWidth = 2;
+  // プレビューはドラッグ対象（boxDrag.i/page）に紐づける。選択（state.boxSel）とは別物 —
+  // 非同期の再描画等で選択が変わってもドラッグ中のプレビュー位置がずれないようにするため。
+  const prev = (boxDrag && boxDrag.preview && boxDrag.page===state.cur) ? boxDrag.preview : null;
+  const boxes = state.boxes || [];
+  for(let i=0;i<boxes.length;i++){
+    const b = (prev && i===boxDrag.i) ? prev : boxes[i];
+    const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
+    bctx.fillRect(x, y, w, h);
+    bctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
+  }
+  if(state.boxEditMode && state.boxSel>=0 && state.boxSel<boxes.length){
+    const b = (prev && boxDrag.i===state.boxSel) ? prev : boxes[state.boxSel];
+    const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
+    bctx.setLineDash([5,4]);
+    bctx.strokeStyle = "#fff"; bctx.lineWidth = 1;
+    bctx.strokeRect(x, y, w, h);
+    bctx.setLineDash([]);
+    for(const [hx,hy] of handlePoints(x,y,w,h)){
+      bctx.fillStyle = "#fff"; bctx.fillRect(hx-HANDLE, hy-HANDLE, HANDLE*2, HANDLE*2);
+      bctx.strokeStyle = BOX_COLOR; bctx.strokeRect(hx-HANDLE, hy-HANDLE, HANDLE*2, HANDLE*2);
+    }
+  }
+  if(boxDrag && boxDrag.kind==="create"){
+    const r = normRect(boxDrag.x0, boxDrag.y0, boxDrag.x1, boxDrag.y1);
+    bctx.setLineDash([4,3]);
+    bctx.strokeStyle = BOX_COLOR; bctx.lineWidth = 2;
+    bctx.strokeRect(view.tx + r.x*s, view.ty + r.y*s, r.w*s, r.h*s);
+    bctx.setLineDash([]);
+  }
+  bctx.restore();
+}
+
+// 変更箇所の件数表示。新旧切替モードで枠OFFのときだけ従来どおり「—」を出す。
+function updateBoxStat(){
+  if(state.mode==="toggle" && !state.showBoxes){ $("statBox").textContent = "変更箇所 —"; return; }
+  const n = state.boxes ? state.boxes.length : 0;
+  const edited = !!state.boxEdits[state.cur];
+  $("statBox").textContent = "変更箇所 " + n.toLocaleString() + (edited ? "（手編集）" : "");
+}
+
+// 枠のON/OFF切替。Canvasへ焼かないためレイヤの描き直しだけで済む。
+// 新旧切替モードで枠OFFのまま構築されたページだけは枠が未算出なので、ONにするとき再構築する。
+function toggleBoxes(){
+  if(!state.rendered) return;
+  state.showBoxes = !state.showBoxes;
+  $("boxToggle").classList.toggle("active", state.showBoxes);
+  if(!state.showBoxes && state.boxEditMode) setBoxEditMode(false);
+  if(state.showBoxes && !state.boxEdits[state.cur] && !state.boxAuto[state.cur]){
+    show(state.cur);   // 未算出のページのみ通常経路で算出させる
+    return;
+  }
+  if(!state.boxEdits[state.cur] && state.boxAuto[state.cur]) state.boxes = state.boxAuto[state.cur];
+  updateBoxStat();
+  drawBoxLayer();
+}
+
+// 枠の手編集・原本・取り消し履歴をすべて捨てる。state.boxes / 表示も合わせて同期する
+// （呼び出し直後に再描画経路を通らない場合でも、古い枠・古い「（手編集）」表示が残らないように）。
+function clearBoxEdits(){
+  state.boxAuto = {}; state.boxEdits = {}; state.boxUndo = {}; state.boxSel = -1;
+  state.boxes = null;
+  updateBoxStat(); setBoxEditUI(); drawBoxLayer(); // 画面に残った旧枠のピクセルも消す（loadPdf直後はshow()を経由しないため）
+}
+// 手編集した枠は差分の前提（DPI・しきい値・位置合わせ等）が変わると意味を失うため、
+// 前提を変える操作の直前に確認して破棄する。
+// 破棄を了承しなければ false を返し、呼び出し側は操作自体を中止すること。
+function confirmDiscardBoxEdits(){
+  if(!Object.keys(state.boxEdits).length){
+    // 手編集がゼロでも state.boxAuto は「現在のDPI・位置合わせ・モードの下での算出結果」を
+    // 抱えたままなので、前提が変わる操作の直前は必ずここで捨てる（さもないと前提変更後に
+    // 古いboxAutoが復活し、座標系の合わない枠が描画・書き出しされる）。
+    clearBoxEdits();
+    return true;
+  }
+  if(!confirm("手編集した変更枠があります。この操作で破棄されます。よろしいですか？")) return false;
+  clearBoxEdits();
+  return true;
+}
+
+// 枠編集モードのボタン状態・カーソル・補助ボタンの出し入れ
+function setBoxEditUI(){
+  const on = state.boxEditMode;
+  $("boxEdit").disabled = !state.rendered;
+  $("boxEdit").classList.toggle("active", on);
+  wrap.classList.toggle("boxedit", on);
+  $("boxDel").style.display = on ? "" : "none";
+  $("boxReset").style.display = on ? "" : "none";
+  $("boxDel").disabled = state.boxSel < 0;
+  $("boxReset").disabled = !state.boxEdits[state.cur];
+}
+// 枠が見えないと編集できないため、ONにするとき強調がOFFなら自動でONにする。
+function setBoxEditMode(on){
+  if(on && !state.rendered) return;
+  state.boxEditMode = on;
+  // ONで入るときは進行中のドラッグは存在し得ないので、OFF時だけキャンセルすれば足りる。
+  if(!on){ cancelBoxDrag(); wrap.style.cursor = ""; }
+  state.boxSel = -1;
+  if(on && !state.showBoxes){ toggleBoxes(); }
+  setBoxEditUI();
+  drawBoxLayer();
+}
+
+// 手編集リストを確定させる。初回は自動算出の枠を複製して materialize する。
+// 以後 state.boxes は state.boxEdits[cur] と同一の配列を指す。
+function ensureBoxEdits(){
+  const i = state.cur;
+  if(!state.boxEdits[i]) state.boxEdits[i] = (state.boxes||[]).map(b=>({...b}));
+  state.boxes = state.boxEdits[i];
+  return state.boxes;
+}
+// 変更の直前に呼ぶ。現在の枠リストの複製を取り消しスタックへ積む（深さ50）。
+function pushBoxUndo(){
+  const i = state.cur;
+  const st = state.boxUndo[i] || (state.boxUndo[i] = []);
+  st.push((state.boxEdits[i] || state.boxes || []).map(b=>({...b})));
+  if(st.length>50) st.shift();
+}
+// 直前の編集を取り消す。取り消しで自動算出と同じ内容へ戻っても boxEdits は残る
+// （＝「手編集」表示のまま）。完全に自動へ戻したいときは「自動検出に戻す」を使う。
+function undoBoxEdit(){
+  cancelBoxDrag(); // ドラッグ中に取り消しが割り込んだ場合、そのドラッグは無かったことにする
+  const i = state.cur, st = state.boxUndo[i];
+  if(!st || !st.length) return;
+  state.boxEdits[i] = st.pop();
+  state.boxes = state.boxEdits[i];
+  state.boxSel = -1;
+  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
+}
+// 選択中の枠を削除する
+function deleteSelectedBox(){
+  cancelBoxDrag(); // ドラッグ中に削除が割り込んだ場合、そのドラッグは無かったことにする
+  if(state.boxSel<0) return;
+  pushBoxUndo();
+  const list = ensureBoxEdits();
+  list.splice(state.boxSel,1);
+  state.boxSel = -1;
+  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
+}
+
+// 新規作成・move/resize確定の最小サイズは画面px基準（フレームpx固定だと拡大表示時に
+// 画面上は十分な大きさのドラッグでも「小さすぎ」判定で捨てられてしまうため）。
+// フレーム座標の幅・高さに view.scale を掛けて画面pxへ直してから比較する。
+const MIN_DRAG_SCREEN_PX = 4; // これ未満のドラッグ距離はクリック扱いで捨てる（画面px）。
+function isDragTooSmall(w, h){ return w*view.scale < MIN_DRAG_SCREEN_PX || h*view.scale < MIN_DRAG_SCREEN_PX; }
+
+// 編集モード中の押下。ハンドル→枠→背景の順に判定する。
+function boxEditPointerDown(e){
+  if(e.button===2) return; // 右クリック（コンテキストメニュー用）は枠編集の対象にしない
+  e.preventDefault();
+  wrap.setPointerCapture(e.pointerId);
+  const p = toFrame(e);
+  const hs = hitHandle(p);
+  if(hs>=0){
+    boxDrag = {kind:"resize", h:hs, i:state.boxSel, page:state.cur, orig:{...state.boxes[state.boxSel]}, preview:null};
+    drawBoxLayer();
+    return;
+  }
+  const hit = hitBox(p);
+  if(hit>=0){
+    state.boxSel = hit;
+    boxDrag = {kind:"move", i:hit, page:state.cur, ox:p.x, oy:p.y, orig:{...state.boxes[hit]}, preview:null};
+  } else {
+    state.boxSel = -1;
+    boxDrag = {kind:"create", x0:p.x, y0:p.y, x1:p.x, y1:p.y};
+  }
+  setBoxEditUI();
+  drawBoxLayer();
+}
+// ドラッグ確定。小さすぎる作成はクリック扱いで捨てる。
+// move/resize は「押した時点のあの枠」（d.i, d.page）に対する操作。確定時点の state.boxSel
+// （非同期の show() やボタン操作で書き換わり得る）は見ない — cancelBoxDrag() で止めきれない
+// 割り込み経路（DPI変更再描画中のドラッグ確定など）に対する二重の保険。
+function endBoxDrag(e){
+  if(!boxDrag) return;
+  const d = boxDrag; boxDrag = null;
+  try{ wrap.releasePointerCapture(e.pointerId); }catch(_){}
+  if(d.kind==="create"){
+    const r = normRect(d.x0, d.y0, d.x1, d.y1);
+    if(isDragTooSmall(r.w, r.h)){ drawBoxLayer(); return; }
+    pushBoxUndo();
+    const list = ensureBoxEdits();
+    list.push(clampBox(r, out.width, out.height));
+    state.boxSel = list.length-1;
+  }
+  if(d.kind==="move" || d.kind==="resize"){
+    // 対象ページが変わっている／対象indexがもう存在しないなら、このドラッグは確定させない。
+    if(d.page!==state.cur || d.i<0 || !state.boxes || d.i>=state.boxes.length){ drawBoxLayer(); return; }
+    const nb = d.preview;
+    const changed = nb && (nb.x!==d.orig.x || nb.y!==d.orig.y || nb.w!==d.orig.w || nb.h!==d.orig.h);
+    // 動いていない（＝ただのクリック）なら取り消しスタックを汚さない。
+    // リサイズで潰れた場合も確定せず元のまま残す。
+    if(changed && !(d.kind==="resize" && isDragTooSmall(nb.w, nb.h))){
+      pushBoxUndo();
+      const list = ensureBoxEdits();
+      list[d.i] = nb;
+    }
+  }
+  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
+}
+
+async function buildDiff(idx){
+  $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
+  const oi = seqIdx(state.oldSeq, idx), ni = seqIdx(state.newSeq, idx);
+  // 用紙サイズが違う場合、大きい用紙を基準に「同一ピクセル寸法」となる描画scaleを求める。
+  // 同寸なら plan.oldScale === plan.newScale === dpi/72 で現行と完全一致。
+  const [oldPt, newPt] = await Promise.all([
+    pageSizePt(state.oldDoc, oi),
+    pageSizePt(state.newDoc, ni)
+  ]);
+  // 直角成分を先に確定し、回転後の寸法で用紙合わせを決める。
+  // これにより A4縦↔A4横 が framePlan の aspectMismatch に落ちなくなる。
+  await ensureQuadEstimate(idx, oi, ni, oldPt, newPt);
+  const quad = effectiveQuad(idx);
+  const newPtR = (newPt && (quad % 2)) ? {w:newPt.h, h:newPt.w} : newPt;
+  const plan = framePlan(oldPt, newPtR, state.dpi);
+  state.curPlan = plan;
+  const [oldC, newC0] = await Promise.all([
+    renderPageCanvas(state.oldDoc, oi, plan.oldScale),
+    renderPageCanvas(state.newDoc, ni, plan.newScale)
+  ]);
+  const newC = rotateCanvas90(newC0, quad); // quad=0 なら newC0 をそのまま返す（現行と同一）
+  const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
+  const nw = newC?newC.width:0, nh = newC?newC.height:0;
+  ensureAlignEstimate(idx, oldC, newC);
+  const m = alignMatrixFor(idx, ow, oh, nw, nh);
+  const warpedBounds = alignedNewBounds(newC, m);
+  // 作業フレーム: 旧版矩形 ∪ 新版矩形(恒等時はdx/dy平行移動を考慮) ∪ ワープ後新版の外接矩形(適用時)。
+  // 「正/遠い側だけ拡張」の既存規約は維持（負のdx/dyによる近い側のクリップは現行仕様のまま変更しない）。
+  let W = Math.max(ow, nw + Math.max(0,state.dx)) || Math.max(ow,nw);
+  let H = Math.max(oh, nh + Math.max(0,state.dy)) || Math.max(oh,nh);
+  if(warpedBounds){ W = Math.max(W, Math.ceil(warpedBounds.x1)); H = Math.max(H, Math.ceil(warpedBounds.y1)); }
+  const width  = Math.max(ow, nw, W, 1);
+  const height = Math.max(oh, nh, H, 1);
+
+  const alignedNewC = renderAlignedNewCanvas(newC, m, width, height);
+  const oimg = oldC ? oldC.getContext("2d").getImageData(0,0,ow,oh) : null;
+  const nAligned = alignedNewC.getContext("2d").getImageData(0,0,width,height);
+
+  out.width = width; out.height = height;
+  const res = octx.createImageData(width, height);
+  const R = res.data; R.fill(255);
+
+  const th = state.th;
+  let rm=0, ad=0;
+  // ループ内でプロパティ参照しないようローカルへ展開（DIFF_RGB が唯一の定義）
+  const [cR,cG,cB] = DIFF_RGB.common, [rR,rG,rB] = DIFF_RGB.removed, [aR,aG,aB] = DIFF_RGB.added;
+  const block = blockSize();
+  const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
+  const bflags = new Uint8Array(cols*rows);
+  const radius = toleranceRadiusPx();
+  if(radius>0){
+    // 位置ズレ許容あり: マスク構築 → 膨張 → 許容つき分類 の多段パス
+    const oMask = new Uint8Array(width*height), nMask = new Uint8Array(width*height);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(oimg && x<ow && y<oh) oMask[i] = lum(oimg.data,(y*ow+x)*4) < th ? 1 : 0;
+        nMask[i] = lum(nAligned.data,(y*width+x)*4) < th ? 1 : 0;
+      }
+    }
+    const {removed, added} = toleratedDiffMasks(oMask, nMask, width, height, radius);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        if(oMask[i]||nMask[i]){
+          const p=i*4;
+          if(removed[i]){ R[p]=rR;R[p+1]=rG;R[p+2]=rB; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+          else if(added[i]){ R[p]=aR;R[p+1]=aG;R[p+2]=aB; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+          else { R[p]=cR;R[p+1]=cG;R[p+2]=cB; }
+        }
+      }
+    }
+  } else {
+    // 位置ズレ許容なし(既定): 現行の単一ループ(後方互換・性能維持)
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        let oInk=false;
+        if(oimg && x<ow && y<oh){ oInk = lum(oimg.data,(y*ow+x)*4) < th; }
+        // 整列済み新版は既に作業フレーム(width×height)へ配置済み → 同座標参照
+        const nInk = lum(nAligned.data,(y*width+x)*4) < th;
+        if(oInk||nInk){
+          const p=(y*width+x)*4;
+          if(oInk&&nInk){ R[p]=cR;R[p+1]=cG;R[p+2]=cB; }
+          else if(oInk){ R[p]=rR;R[p+1]=rG;R[p+2]=rB; rm++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+          else { R[p]=aR;R[p+1]=aG;R[p+2]=aB; ad++; bflags[((y/block)|0)*cols + ((x/block)|0)]=1; }
+        }
+      }
+    }
+  }
+  octx.putImageData(res,0,0);
+  // 手編集済みページは自動算出の集約（computeBoxes / clampBoxes）を省く。
+  // bflags 自体は差分の画素ループ内で立つため、ここでの分岐が省けるコストのすべて。
+  if(state.boxEdits[idx]){
+    state.boxes = state.boxEdits[idx];
+  } else {
+    const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
+    state.boxes = clampBoxes(raw, width, height);
+    state.boxAuto[idx] = state.boxes;
+  }
+  out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
+  drawBoxLayer();
+  state.cache[idx] = {rm, ad, bx: state.boxes.length};
+  $("statRm").textContent = "削除 "+rm.toLocaleString();
+  $("statAd").textContent = "追加 "+ad.toLocaleString();
+  updateBoxStat();
+  $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
+  $("pageLabel").textContent = pageLabelText(idx);
+  $("dlPng").disabled=false; $("dlPdf").disabled=false;
+  $("boxToggle").disabled=false;
+}
+
+// 新旧切替モード：旧・新それぞれのページCanvasをキャッシュし、選択中の版だけを描画する
+async function buildToggle(idx){
+  const token = ++state.renderToken;
+  const oi = seqIdx(state.oldSeq, idx), ni = seqIdx(state.newSeq, idx);
+  // Canvasキャッシュにヒットしても読み出し表示に plan が要るため、キャッシュ判定より前に求める。
+  const [oldPt, newPt] = await Promise.all([
+    pageSizePt(state.oldDoc, oi),
+    pageSizePt(state.newDoc, ni)
+  ]);
+  if(token !== state.renderToken) return; // await を挟んだので割り込みチェック（stale-draw防止）
+  await ensureQuadEstimate(idx, oi, ni, oldPt, newPt);
+  if(token !== state.renderToken) return; // 象限推定でも await を挟むため再チェック
+  const quad = effectiveQuad(idx);
+  const newPtR = (newPt && (quad % 2)) ? {w:newPt.h, h:newPt.w} : newPt;
+  const plan = framePlan(oldPt, newPtR, state.dpi);
+  state.curPlan = plan;
+  if(!state.toggleCache || state.toggleCache.idx !== idx || state.toggleCache.quad !== quad){
+    $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
+    const [oldC, newC0] = await Promise.all([
+      renderPageCanvas(state.oldDoc, oi, plan.oldScale),
+      renderPageCanvas(state.newDoc, ni, plan.newScale)
+    ]);
+    if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
+    const newC = rotateCanvas90(newC0, quad); // staleチェックの後に回す（無駄な回転を避ける）
+    const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
+    const nw = newC?newC.width:0, nh = newC?newC.height:0;
+    // 枠算出用に旧版のImageDataも保持（再取得コストを避ける。新版は整列後にのみ使うため保持不要）
+    const oimg = oldC ? oldC.getContext("2d").getImageData(0,0,ow,oh) : null;
+    state.toggleCache = {idx, quad, oldC, newC, ow, oh, nw, nh, oimg};
+  }
+  const {ow, oh, nw, nh, oimg, oldC, newC} = state.toggleCache;
+  ensureAlignEstimate(idx, oldC, newC);
+  const m = alignMatrixFor(idx, ow, oh, nw, nh);
+  const warpedBounds = alignedNewBounds(newC, m);
+  // 作業フレーム: 旧版矩形 ∪ 新版矩形(恒等時はdx/dy平行移動を考慮) ∪ ワープ後新版の外接矩形(適用時)。
+  let W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
+  let H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
+  if(warpedBounds){ W = Math.max(W, Math.ceil(warpedBounds.x1)); H = Math.max(H, Math.ceil(warpedBounds.y1)); }
+  const width  = Math.max(ow, nw, W, 1);
+  const height = Math.max(oh, nh, H, 1);
+  out.width = width; out.height = height;
+
+  // 整列済み新版（枠算出・NEW表示の双方に使う）
+  const alignedNewC = renderAlignedNewCanvas(newC, m, width, height);
+  const nAlignedImg = alignedNewC.getContext("2d").getImageData(0,0,width,height);
+  state.toggleCache.alignedNewC = alignedNewC;
+  // 枠算出: 旧版 ImageData と整列済み新版 ImageData を同座標で比較
+  if(state.boxEdits[idx]){
+    state.boxes = state.boxEdits[idx];               // 手編集済み: 算出そのものを省く
+  } else if(state.showBoxes){
+    state.boxes = computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height);
+    state.boxAuto[idx] = state.boxes;
+  } else {
+    state.boxes = [];
+  }
+
+  drawToggleSide();
+
+  $("pageLabel").textContent = pageLabelText(idx);
+  $("statRm").textContent = "削除 —";
+  $("statAd").textContent = "追加 —";
+  updateBoxStat();
+  $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
+  $("dlPng").disabled=false; $("dlPdf").disabled=false;
+  $("boxToggle").disabled=false;
+}
+
+// 選択中の版だけを out に描画（PDF再レンダ無し・瞬時）
+function drawToggleSide(){
+  const c = state.toggleCache;
+  if(!c) return;
+  octx.clearRect(0,0,out.width,out.height);
+  octx.fillStyle = "#fff"; octx.fillRect(0,0,out.width,out.height);
+  const side = state.toggleSide;
+  const hasPage = side==="old" ? !!c.oldC : !!c.newC;
+  if(hasPage){
+    if(side==="old") octx.drawImage(c.oldC,0,0);
+    else octx.drawImage(c.alignedNewC,0,0); // 整列＋dx/dy 焼き込み済み
+  } else {
+    octx.fillStyle = "#7f8f9e";
+    octx.font = "20px sans-serif";
+    octx.textAlign = "center"; octx.textBaseline = "middle";
+    octx.fillText("この版にこのページはありません", out.width/2, out.height/2);
+  }
+  out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
+  drawBoxLayer(); // 枠座標は旧/新どちらの表示にも整合する
+  updateToggleIndicator();
+}
+
+function updateToggleIndicator(){
+  $("sideOld").classList.toggle("active", state.toggleSide==="old");
+  $("sideNew").classList.toggle("active", state.toggleSide==="new");
+}
+
+function flipSide(){
+  state.toggleSide = state.toggleSide==="old" ? "new" : "old";
+  drawToggleSide();
+  $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
+}
+
+function setModeUI(){
+  $("modeDiff").classList.toggle("active", state.mode==="diff");
+  $("modeToggle").classList.toggle("active", state.mode==="toggle");
+  $("toggleInd").style.display = state.mode==="toggle" ? "flex" : "none";
+  $("th").disabled = state.mode==="toggle";
+  $("boxToggle").disabled = !state.rendered;
+  setBoxEditUI();
+}
+
+function updateAlignButtons(){
+  const on = !!(state.oldDoc && state.newDoc) && state.rendered;
+  $("alignAddNew").disabled = !on;
+  $("alignDelOld").disabled = !on;
+  $("alignUndo").disabled  = !on || state.alignOps.length === 0;
+}
+
+// 用紙合わせ（自動・常時）と自動整列（トグル）の状態を、推定値ではなく実測値で表示する。
+function updateAlignReadout(){
+  const el = $("alignReadout");
+  const lines = [];
+  const p = state.curPlan;
+  if(p && p.normalized){
+    // refSide が "old" なら旧版が基準＝新版を拡大している
+    const grown = p.refSide === "old" ? "新版" : "旧版";
+    lines.push(`用紙合わせ: ${grown}を×${p.ratio.toFixed(3)}で描画（自動）`);
+  } else if(p && p.aspectMismatch){
+    lines.push("用紙合わせ: 用紙の縦横比が違うため未適用");
+  }
+  const qm = state.quadManual[state.cur];
+  if(qm != null){
+    lines.push(`向き: 手動 ${qm*90}°`);
+  } else if(state.autoAlign){
+    const qc = state.quadCache[state.cur];
+    // 未推定・片側空白のときは行を出さない（autoAlign OFF も同様。「自動整列: OFF」の行で足りる）
+    if(qc && !qc.blank){
+      const qpct = v => Math.round(v*100)+"%";
+      if(qc.applied) lines.push(`向き: 自動 ${qc.k*90}°（一致率 ${qpct(qc.scores[0])} → ${qpct(qc.scores[qc.k])}）`);
+      else lines.push("向き: 0°（回転なし）");
+    }
+  }
+  if(!state.autoAlign){
+    lines.push("自動整列: OFF");
+  } else {
+    const a = state.alignCache[state.cur];
+    if(!a){
+      lines.push("自動整列: 推定待ち");
+    } else if(a.blank){
+      lines.push("自動整列: 片側が空白のため対象外");
+    } else {
+      const pct = v => Math.round(v*100)+"%";
+      const sc = `一致率 ${pct(a.scoreBase)} → ${pct(a.scoreBest)}`;
+      if(!a.applied){
+        lines.push(`自動整列: ${sc}（改善せず・恒等のまま）`);
+      } else if(a.method === "translate"){
+        const sgn = v => (v>=0?"+":"")+v;
+        const dx = Math.round(a.txFrac*out.width), dy = Math.round(a.tyFrac*out.height);
+        lines.push(`自動整列: 平行移動 ${sgn(dx)},${sgn(dy)}px / ${sc}`);
+      } else {
+        const deg = (a.angle*180/Math.PI).toFixed(2);
+        lines.push(`自動整列: θ=${a.angle>=0?"+":""}${deg}° ×${a.scale.toFixed(3)} / ${sc}`);
+      }
+    }
+  }
+  el.textContent = lines.join(" ／ ");
+}
+
+function updateManualAlignReadout(){
+  const deg = state.manualAngle*180/Math.PI;
+  $("rotReset").textContent = (deg>=0?"+":"")+deg.toFixed(1)+"°";
+  $("scaleReset").textContent = (state.manualScale*100).toFixed(1)+"%";
+  const manual = state.quadManual[state.cur] != null;
+  $("quadReset").textContent = (effectiveQuad(state.cur)*90)+"°" + (manual ? "（手動）" : "");
+}
+
+async function refreshAfterAlign(){
+  state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
+  state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
+  state.alignCache = {}; // スロット→ページ対応が変わるため自動整列も再推定させる
+  state.quadCache = {}; state.quadManual = {}; state.quadGen++; // スロット→ページ対応が変わるため直角回転も破棄
+  state.boxAuto = {}; // スロット→ページ対応が変わるため自動枠の原本も破棄（ゲートは呼び出し側で通過済み）
+  if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
+  if(state.cur < 0) state.cur = 0;
+  await show(state.cur);
+}
+
+async function show(idx){
+  if(idx<0||idx>=state.pages) return;
+  state.cur=idx;
+  state.boxSel=-1; // ページが変われば選択は無効
+  // 進行中のドラッグ（同一ページの再描画も含む）をここで確実に打ち切る。endBoxDrag側の
+  // ガード（page/i検証）だけだと、awaitの間にstate.boxesが同じページのまま「別の配列」へ
+  // 差し替わるケース（DPI変更等の再描画）を素通りしてしまい、古いorig座標が新しい配列の
+  // 同indexへ誤って書き込まれ得るため（原因側で止める＋確定側でも検証、の二重化）。
+  cancelBoxDrag();
+  if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
+  updateAlignButtons();
+  updateAlignReadout();
+  updateManualAlignReadout();
+  setBoxEditUI();
+}
+
+// ── ズーム & パン ──
+const wrap = document.querySelector(".canvas-wrap");
+const view = {scale:1, tx:0, ty:0};
+const clampScale = s => Math.min(Math.max(s, 0.05), 40);
+const hasImage = () => out.style.display !== "none";
+
+function applyTransform(){
+  out.style.transform = `translate(${view.tx}px,${view.ty}px) scale(${view.scale})`;
+  $("zoomLabel").textContent = Math.round(view.scale*100)+"%";
+  drawBoxLayer();
+}
+// キャンバス全体が枠に収まる倍率で中央表示
+function fitView(){
+  const W=wrap.clientWidth, H=wrap.clientHeight, cw=out.width, ch=out.height;
+  if(!cw||!ch) return;
+  const s = Math.min(W/cw, H/ch) * 0.92;
+  view.scale=s; view.tx=(W-cw*s)/2; view.ty=(H-ch*s)/2;
+  applyTransform();
+}
+// (cx,cy)=枠内座標 を固定点にしてズーム
+function zoomAt(factor, cx, cy){
+  const ns = clampScale(view.scale*factor), k = ns/view.scale;
+  view.tx = cx-(cx-view.tx)*k;
+  view.ty = cy-(cy-view.ty)*k;
+  view.scale = ns; applyTransform();
+}
+const zoomCenter = f => zoomAt(f, wrap.clientWidth/2, wrap.clientHeight/2);
+
+// ホイールで拡大縮小（ポインタ位置中心）
+wrap.addEventListener("wheel", e=>{
+  if(state.topMode!=="visual") return;
+  if(!hasImage()) return;
+  e.preventDefault();
+  const r = wrap.getBoundingClientRect();
+  zoomAt(e.deltaY<0 ? 1.12 : 1/1.12, e.clientX-r.left, e.clientY-r.top);
+}, {passive:false});
+
+// ドラッグでパン
+let panning=false, psx=0, psy=0, ptx=0, pty=0;
+let spaceHeld = false; // 枠編集モード中に Space を押している間はパンへ回す
+wrap.addEventListener("pointerdown", e=>{
+  if(state.topMode!=="visual") return;
+  if(!hasImage()) return;
+  if(state.boxEditMode && !spaceHeld && e.button!==1){ boxEditPointerDown(e); return; }
+  panning=true; wrap.classList.add("panning"); wrap.setPointerCapture(e.pointerId);
+  psx=e.clientX; psy=e.clientY; ptx=view.tx; pty=view.ty;
+});
+wrap.addEventListener("pointermove", e=>{
+  if(!panning) return;
+  view.tx = ptx+(e.clientX-psx); view.ty = pty+(e.clientY-psy); applyTransform();
+});
+function endPan(e){
+  if(!panning) return;
+  panning=false; wrap.classList.remove("panning");
+  try{ wrap.releasePointerCapture(e.pointerId); }catch(_){}
+}
+wrap.addEventListener("pointerup", endPan);
+wrap.addEventListener("pointercancel", endPan);
+// 枠編集モードのドラッグ（作成/移動/リサイズ）。パン用ハンドラとは boxDrag/panning のフラグで排他になる。
+wrap.addEventListener("pointermove", e=>{
+  if(!boxDrag) return;
+  const p = toFrame(e);
+  if(boxDrag.kind==="create"){
+    boxDrag.x1=p.x; boxDrag.y1=p.y;
+  } else if(boxDrag.kind==="move"){
+    // 移動はサイズを変えない。枠ごとフレーム内へ収まるよう平行移動量の方をクランプする。
+    const o = boxDrag.orig;
+    const maxX = Math.max(0, out.width - o.w), maxY = Math.max(0, out.height - o.h);
+    const nx = Math.min(Math.max(0, o.x + (p.x-boxDrag.ox)), maxX);
+    const ny = Math.min(Math.max(0, o.y + (p.y-boxDrag.oy)), maxY);
+    boxDrag.preview = {x:nx, y:ny, w:o.w, h:o.h};
+  } else if(boxDrag.kind==="resize"){
+    const [sx,sy] = HANDLE_DIRS[boxDrag.h];
+    let {x,y,w,h} = boxDrag.orig;
+    if(sx<0){ const r=x+w; x=p.x; w=r-x; } else if(sx>0){ w=p.x-x; }
+    if(sy<0){ const b=y+h; y=p.y; h=b-y; } else if(sy>0){ h=p.y-y; }
+    boxDrag.preview = clampBox(normRect(x, y, x+w, y+h), out.width, out.height);
+  }
+  drawBoxLayer();
+});
+// ドラッグしていないときのカーソル表示（ハンドル＝リサイズ方向、枠内＝move）
+wrap.addEventListener("pointermove", e=>{
+  if(!state.boxEditMode || boxDrag) return;
+  const p = toFrame(e);
+  const hs = hitHandle(p);
+  if(hs>=0){ wrap.style.cursor = HANDLE_CURSORS[hs]; return; }
+  wrap.style.cursor = hitBox(p)>=0 ? "move" : "";
+});
+wrap.addEventListener("pointerup", endBoxDrag);
+wrap.addEventListener("pointercancel", endBoxDrag);
+wrap.addEventListener("dblclick", fitView); // ダブルクリックで全体表示に戻す
+window.addEventListener("resize", drawBoxLayer); // レイヤは画面解像度なので寸法追従が要る
+
+$("zoomIn").addEventListener("click", ()=>zoomCenter(1.25));
+$("zoomOut").addEventListener("click", ()=>zoomCenter(1/1.25));
+$("zoomFit").addEventListener("click", fitView);
+$("zoom1").addEventListener("click", ()=>{ if(hasImage()) zoomCenter(1/view.scale); });
+
+// ── モード切替（差分 / 新旧切替） ──
+$("modeDiff").addEventListener("click", async ()=>{
+  if(state.mode==="diff" || !hasImage()) return;
+  state.mode="diff"; setModeUI();
+  // boxAuto は算出モードごとに中身が別物（差分アルゴリズム由来 or 新旧切替の再構築由来）
+  // なので、モードが変わったら全ページ分を破棄する（さもないと切替後に別モードの枠が出る）。
+  state.boxAuto = {};
+  $("status").innerHTML='<span class="busy">差分を再計算中…</span>';
+  if(state.pages) await show(state.cur);
+});
+$("modeToggle").addEventListener("click", async ()=>{
+  if(state.mode==="toggle" || !hasImage()) return;
+  state.mode="toggle"; state.toggleCache=null; setModeUI();
+  state.boxAuto = {}; // 同上（差分モード由来のboxAutoを新旧切替に持ち越さない）
+  if(state.pages) await show(state.cur);
+});
+$("toggleFlip").addEventListener("click", flipSide);
+$("boxToggle").addEventListener("click", toggleBoxes);
+$("boxEdit").addEventListener("click", ()=>setBoxEditMode(!state.boxEditMode));
+$("boxDel").addEventListener("click", deleteSelectedBox);
+// このページの手編集を破棄して自動算出の原本へ戻す。原本があるため差分の再計算は要らない。
+$("boxReset").addEventListener("click", ()=>{
+  const i = state.cur;
+  if(!state.boxEdits[i]) return;
+  delete state.boxEdits[i];
+  delete state.boxUndo[i];
+  state.boxSel = -1;
+  if(state.boxAuto[i]){
+    state.boxes = state.boxAuto[i];
+    updateBoxStat(); setBoxEditUI(); drawBoxLayer();
+  } else {
+    show(state.cur); // 原本が無い場合だけ算出し直す
+  }
+});
+
+// 文字入力中の要素にフォーカスがある間はショートカットキーを奪わないためのガード。複数のkeydownリスナーで共用する。
+// BUTTONは対象外（ボタンにフォーカスが残っていてもE/Esc/Delete等は効かせたい）。
+// ボタンの誤発火（Spaceキーでのクリック相当発火）はSpaceハンドラ側で個別にガードする。
+function isTypingTarget(e){
+  const tag = (e.target && e.target.tagName) || "";
+  if(["INPUT","TEXTAREA","SELECT"].includes(tag)) return true;
+  return !!(e.target && e.target.isContentEditable);
+}
+
+// Space キーで新旧切替（トグルモード時のみ）。枠編集モード中はパンの修飾キーとして使う。
+// ボタンにフォーカスがある状態でSpaceを押すとボタンがクリック相当で発火してしまうため、ここだけ個別にBUTTONを除外する。
+document.addEventListener("keydown", e=>{
+  if(state.topMode!=="visual") return;
+  if(e.code!=="Space" || e.repeat) return;
+  if(isTypingTarget(e)) return;
+  if(e.target && e.target.tagName==="BUTTON") return;
+  if(state.boxEditMode){ spaceHeld = true; e.preventDefault(); return; }
+  if(state.mode==="toggle" && hasImage()){
+    e.preventDefault();
+    flipSide();
+  }
+});
+document.addEventListener("keyup", e=>{ if(e.code==="Space") spaceHeld = false; });
+window.addEventListener("blur", ()=>{ spaceHeld = false; }); // 押しっぱなし状態の取り残しを防ぐ
+
+// 枠編集モードのキー操作。E=モード切替、Esc=選択解除→モード終了。
+document.addEventListener("keydown", e=>{
+  if(state.topMode!=="visual") return;
+  if(isTypingTarget(e)) return;
+  if(e.key==="e" || e.key==="E"){
+    // Ctrl+E・Alt+E等は別コマンド扱いにするため素通しする（Eは修飾キー無しの単独キー）。
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    if(!state.rendered) return;
+    e.preventDefault();
+    setBoxEditMode(!state.boxEditMode);
+    return;
+  }
+  if(!state.boxEditMode) return;
+  if(e.key==="Escape"){
+    e.preventDefault();
+    // 選択解除はここで直接 state.boxSel を変えるため、setBoxEditMode(false) を経由しない。
+    // ドラッグ中に割り込んだ場合はここでもキャンセルしないと endBoxDrag が旧selで確定してしまう。
+    if(state.boxSel>=0){ cancelBoxDrag(); state.boxSel=-1; setBoxEditUI(); drawBoxLayer(); }
+    else setBoxEditMode(false);
+    return;
+  }
+  if(e.key==="Delete" || e.key==="Backspace"){
+    e.preventDefault();
+    deleteSelectedBox();
+    return;
+  }
+  if((e.ctrlKey||e.metaKey) && (e.key==="z"||e.key==="Z")){
+    e.preventDefault();
+    undoBoxEdit();
+  }
+});
+
+// ── イベント ──
+$("fileOld").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.files[0],"old"));
+$("fileNew").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.files[0],"new"));
+["dropOld","dropNew"].forEach(id=>{
+  const el=$(id), which=id==="dropOld"?"old":"new";
+  el.addEventListener("dragover",e=>{e.preventDefault();el.style.borderColor="var(--signal)";});
+  el.addEventListener("dragleave",()=>el.style.borderColor="");
+  el.addEventListener("drop",e=>{e.preventDefault();el.style.borderColor="";
+    const f=e.dataTransfer.files[0]; if(f&&f.type==="application/pdf") loadPdf(f,which);});
+});
+
+// レンジ入力は input で state を先に書き換えるため、確定済みの値を要素に持たせておく。
+// 破棄を拒否したときはここから value / state / ラベルを戻す。
+["dpi","th","tolerance"].forEach(id=>{ $(id).dataset.committed = $(id).value; });
+
+$("dpi").addEventListener("input",e=>{state.dpi=+e.target.value;$("dpiVal").textContent=e.target.value;});
+$("dpi").addEventListener("change",async()=>{
+  const el = $("dpi");
+  if(!confirmDiscardBoxEdits()){
+    el.value = el.dataset.committed; state.dpi = +el.value; $("dpiVal").textContent = el.value;
+    return;
+  }
+  el.dataset.committed = el.value;
+  state.cache={}; state.toggleCache=null;
+  if(state.rendered){await show(state.cur); fitView();}
+});
+$("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
+$("th").addEventListener("change",()=>{
+  const el = $("th");
+  if(!confirmDiscardBoxEdits()){
+    el.value = el.dataset.committed; state.th = +el.value; $("thVal").textContent = el.value;
+    return;
+  }
+  el.dataset.committed = el.value;
+  state.alignCache = {}; // 一致率スコアが th 依存のため再推定させる
+  state.quadCache = {}; state.quadGen++; // 象限スコアも th 依存のため再推定させる
+  if(state.mode==="diff" && state.rendered)show(state.cur);
+});
+$("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
+$("tolerance").addEventListener("change",()=>{
+  const el = $("tolerance");
+  if(!confirmDiscardBoxEdits()){
+    el.value = el.dataset.committed; state.tolerancePx = +el.value; $("toleranceVal").textContent = el.value;
+    return;
+  }
+  el.dataset.committed = el.value;
+  if(!state.rendered) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+
+document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    if(!confirmDiscardBoxEdits()) return;
+    state.dx+=(+b.dataset.dx); state.dy+=(+b.dataset.dy);
+    $("nudgeReset").textContent=state.dx+","+state.dy;
+    if(!state.rendered) return;
+    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  });
+});
+$("nudgeReset").addEventListener("click",()=>{
+  if(!confirmDiscardBoxEdits()) return;
+  state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
+  if(!state.rendered) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+// 向き（直角回転）。押した時点で手動上書きが確定し、当ページの自動推定より優先される。
+// k が変わると絵が丸ごと変わるため、当ページの整列推定と差分集計キャッシュを破棄する。
+function invalidateForQuadChange(){
+  delete state.alignCache[state.cur];
+  delete state.cache[state.cur];
+  state.toggleCache = null;
+}
+document.querySelectorAll("button[data-quad]").forEach(b=>{
+  b.addEventListener("click", async ()=>{
+    if(!confirmDiscardBoxEdits()) return;
+    const cur = effectiveQuad(state.cur);
+    state.quadManual[state.cur] = ((cur + (+b.dataset.quad)) % 4 + 4) % 4;
+    invalidateForQuadChange();
+    updateManualAlignReadout();
+    if(!state.rendered) return;
+    // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
+    // トグルモードでも「向き」表示を更新できるよう await して同期させる（autoAlign の change ハンドラと同じ対処）。
+    if(state.mode==="toggle"){ await buildToggle(state.cur); updateAlignReadout(); }
+    else await show(state.cur);
+  });
+});
+$("quadReset").addEventListener("click", async ()=>{
+  if(state.quadManual[state.cur] == null) return; // 既に自動
+  if(!confirmDiscardBoxEdits()) return;
+  delete state.quadManual[state.cur];             // 自動判定へ戻す
+  invalidateForQuadChange();
+  updateManualAlignReadout();
+  if(!state.rendered) return;
+  // 同上（data-quad ハンドラと同じ理由でトグルモードのみ明示的に読み出しを更新する）。
+  if(state.mode==="toggle"){ await buildToggle(state.cur); updateAlignReadout(); }
+  else await show(state.cur);
+});
+document.querySelectorAll("button[data-rot]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    if(!confirmDiscardBoxEdits()) return;
+    state.manualAngle += (+b.dataset.rot) * 0.1 * Math.PI/180;
+    updateManualAlignReadout();
+    if(!state.rendered) return;
+    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  });
+});
+$("rotReset").addEventListener("click",()=>{
+  if(!confirmDiscardBoxEdits()) return;
+  state.manualAngle = 0;
+  updateManualAlignReadout();
+  if(!state.rendered) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+document.querySelectorAll("button[data-scale]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    if(!confirmDiscardBoxEdits()) return;
+    state.manualScale = Math.max(0.1, state.manualScale + (+b.dataset.scale) * 0.001);
+    updateManualAlignReadout();
+    if(!state.rendered) return;
+    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  });
+});
+$("scaleReset").addEventListener("click",()=>{
+  if(!confirmDiscardBoxEdits()) return;
+  state.manualScale = 1;
+  updateManualAlignReadout();
+  if(!state.rendered) return;
+  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+});
+$("autoAlign").addEventListener("change", async e=>{
+  if(!confirmDiscardBoxEdits()){ e.target.checked = !e.target.checked; return; }
+  state.autoAlign = e.target.checked;
+  if(!state.rendered){ updateAlignReadout(); return; }
+  // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
+  // トグルモードでも推定完了後に読み出しを更新できるよう await して同期させる。
+  if(state.mode==="toggle"){ state.toggleCache=null; await buildToggle(state.cur); }
+  else await show(state.cur);
+  updateAlignReadout();
+});
+
+$("run").addEventListener("click",async()=>{
+  $("modeDiff").disabled=false; $("modeToggle").disabled=false;
+  await show(0); fitView();
+});
+$("alignAddNew").addEventListener("click", async ()=>{
+  if(!state.rendered) return;
+  if(!confirmDiscardBoxEdits()) return;
+  state.oldSeq.splice(state.cur, 0, null); // 旧側に空白 → 新ページが全面追加(青)に
+  state.alignOps.push({side:"old", slot:state.cur});
+  await refreshAfterAlign();
+});
+$("alignDelOld").addEventListener("click", async ()=>{
+  if(!state.rendered) return;
+  if(!confirmDiscardBoxEdits()) return;
+  state.newSeq.splice(state.cur, 0, null); // 新側に空白 → 旧ページが全面削除(赤)に
+  state.alignOps.push({side:"new", slot:state.cur});
+  await refreshAfterAlign();
+});
+$("alignUndo").addEventListener("click", async ()=>{
+  const op = state.alignOps[state.alignOps.length-1]; // pop ではなく覗き見。ゲート拒否時に何も書き換えないため
+  if(!op) return;
+  if(!confirmDiscardBoxEdits()) return;
+  state.alignOps.pop();
+  const seq = op.side === "old" ? state.oldSeq : state.newSeq;
+  if(seq[op.slot] === null) seq.splice(op.slot, 1); // 念のため null を確認して除去
+  await refreshAfterAlign();
+});
+$("prev").addEventListener("click",()=>show(state.cur-1));
+$("next").addEventListener("click",()=>show(state.cur+1));
+
+// ── 書き出し用の凡例 ──
+// 画面表示のCanvas(out)には描かない（画面はヘッダーのHTML凡例が担う）。書き出し時に
+// 複製したCanvasへだけ重ねるため、パン/ズームやPDFの用紙寸法には影響しない。
+// レイアウト定数は全てpt。unit(=1ptあたりのpx数)を掛けてpxへ変換するので、DPIを
+// 上げても紙面上の凡例の大きさは変わらない。
+const LG_FONT_PT = 8, LG_SWATCH_PT = 8, LG_GAP_ITEM_PT = 10, LG_GAP_SW_PT = 4, LG_PAD_PT = 6, LG_BORDER_PT = 1;
+
+// 凡例の幾何だけを返す純関数。文字幅の実測は measureW で外から受け取る。
+// 返す座標は全て「凡例ボックスの左上を原点とした相対px」。
+function legendLayout(items, unit, opts, measureW){
+  const chrome = !(opts && opts.chrome === false);
+  const fontPx = LG_FONT_PT * unit;
+  const swPx   = LG_SWATCH_PT * unit;
+  const gapItem = LG_GAP_ITEM_PT * unit;
+  const gapSw   = LG_GAP_SW_PT * unit;
+  const pad = chrome ? LG_PAD_PT * unit : 0;
+  let cx = pad;
+  const parts = [];
+  items.forEach((it, i) => {
+    if(i) cx += gapItem;
+    const textW = measureW(it.label, fontPx);
+    parts.push({swX: cx, textX: cx + swPx + gapSw}); // 描画に要るのは色見本と文字の開始X座標だけ
+    cx += swPx + gapSw + textW;
+  });
+  return {w: cx + pad, h: swPx + pad * 2, fontPx, swPx, pad, chrome, parts};
+}
+
+// 実測用: 呼び出し側のctx状態を壊さないようsave/restoreで包む
+const ctxMeasurer = ctx => (label, fontPx) => {
+  ctx.save();
+  ctx.font = "bold " + fontPx + "px sans-serif";
+  const w = ctx.measureText(label).width;
+  ctx.restore();
+  return w;
+};
+
+// 描画せずレイアウト一式を返す（配置の衝突判定用）。返り値はそのまま drawLegend の
+// pre 引数へ渡せる。こうしないと「幅ガードで測った寸法」と「実際に描く寸法」が
+// 別計算になり、将来 legendLayout に状態依存が入ったとき両者がズレる。
+function measureLegend(ctx, items, unit, opts){
+  return legendLayout(items, unit, opts, ctxMeasurer(ctx));
+}
+
+// (x,y)を凡例ボックスの左上として描画する。
+// pre に measureLegend の返り値を渡すとレイアウト計算と文字幅実測を再利用する。
+function drawLegend(ctx, items, x, y, unit, opts, pre){
+  const L = pre || legendLayout(items, unit, opts, ctxMeasurer(ctx));
+  // DPI下限72(=unit 1.0)では常に1px以上になるため現状は発火しないが、
+  // 将来DPI下限を下げたときに枠線が消えるのを防ぐ保険
+  const bw = Math.max(1, LG_BORDER_PT * unit);
+  ctx.save();
+  if(L.chrome){
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillRect(x, y, L.w, L.h);
+    ctx.strokeStyle = "#999";
+    ctx.lineWidth = bw;
+    ctx.strokeRect(x + bw/2, y + bw/2, L.w - bw, L.h - bw); // 枠線を内側へ寄せる
+  }
+  ctx.font = "bold " + L.fontPx + "px sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  const top = y + L.pad;
+  L.parts.forEach((p, i) => {
+    const it = items[i];
+    if(it.color){
+      ctx.fillStyle = it.color;
+      ctx.fillRect(x + p.swX, top, L.swPx, L.swPx);
+    } else {
+      ctx.fillStyle = it.fill;
+      ctx.fillRect(x + p.swX, top, L.swPx, L.swPx);
+      ctx.strokeStyle = it.stroke;
+      ctx.lineWidth = bw;
+      ctx.strokeRect(x + p.swX + bw/2, top + bw/2, L.swPx - bw, L.swPx - bw);
+    }
+    ctx.fillStyle = "#222";
+    ctx.fillText(it.label, x + p.textX, top + L.swPx/2);
+  });
+  ctx.restore();
+  return L;
+}
+
+const LG_MARGIN_PT = 10; // 凡例ボックスの左上マージン
+
+// 図面比較の凡例項目。色は buildDiff が実際に塗る DIFF_RGB と同じ定義から作る。
+// 引数 kind は「書き出す画像の中身」であって state.mode ではない。dlPdf は切替モード中に
+// 押されてもループ内で buildDiff を呼ぶため中身は差分画像であり "diff" を渡す。
+// state.mode を関数内で直接読むと、この経路で凡例が「変更枠」だけになり誤りになる。
+function diffLegendItems(kind){
+  const items = [];
+  // 切替モードの画像は旧版/新版そのもの。共通/削除/追加の3色は実在しないので出さない。
+  if(kind !== "toggle") items.push(
+    {color: rgbCss(DIFF_RGB.common),  label: "共通"},
+    {color: rgbCss(DIFF_RGB.removed), label: "削除（旧版のみ）"},
+    {color: rgbCss(DIFF_RGB.added),   label: "追加（新版のみ）"},
+  );
+  // 枠を出していないときに「変更枠」だけ凡例に残ると誤解を招くので連動させる
+  if(state.showBoxes) items.push({stroke: BOX_COLOR, fill: BOX_FILL, label: "変更枠"});
+  return items;
+}
+
+// src と同寸のCanvasへ複製し、複製側にだけ凡例を重ねて返す。src は変更しない。
+// 寸法を変えないので、PDFの用紙寸法(wPt/hPt)は従来と一致する。
+// dest を渡すとそのCanvasを使い回す（全ページPDFで巨大なバッキングストアを毎ページ
+// 確保しないため）。width/height の再代入でCanvasは自動クリアされる。
+function exportCanvasWithLegend(src, kind, dest){
+  const c = dest || document.createElement("canvas");
+  c.width = src.width; c.height = src.height;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(src, 0, 0);
+  if(state.showBoxes) drawBoxesTo(ctx, state.boxes, exportBoxLineWidth());
+  const unit = state.dpi / 72;
+  const m = LG_MARGIN_PT * unit;
+  drawLegend(ctx, diffLegendItems(kind), m, m, unit);
+  return c;
+}
+
+$("dlPng").addEventListener("click",()=>{
+  // 切替モードの画像で説明を要する色はオレンジの変更枠だけ。枠OFFなら凡例は不要なので
+  // out をそのまま出す。それ以外（差分モード全般／切替モードで枠ON）は凡例を重ねる。
+  const bare = state.mode==="toggle" && !state.showBoxes;
+  const shot = bare ? out : exportCanvasWithLegend(out, state.mode);
+  shot.toBlob(b=>{
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(b);
+    const name = state.mode==="toggle"
+      ? (state.toggleSide==="new" ? "new_p"+(state.cur+1)+".png" : "old_p"+(state.cur+1)+".png")
+      : "diff_p"+(state.cur+1)+".png";
+    a.download=name; a.click();
+  });
+});
+
+$("dlPdf").addEventListener("click",async()=>{
+  const {jsPDF}=window.jspdf;
+  $("status").innerHTML='<span class="busy">PDF生成中…</span>';
+  let pdf=null;
+  const scratch=document.createElement("canvas"); // 全ページで使い回す複製先（毎ページ確保するとピークメモリが倍になる）
+  // dlPdf は state.mode に関わらず全ページを buildDiff で描くため、ループ内で書き込まれる
+  // state.boxAuto は差分アルゴリズム由来の値になる。これは書き出し専用の一時的な結果であり
+  // 画面表示（新旧切替モード等）の boxAuto を汚してはいけないため、ループの間だけ空の
+  // オブジェクトへ差し替え、終了後に元へ戻す（退避・復元）。
+  const savedBoxAuto = state.boxAuto;
+  state.boxAuto = {};
+  for(let i=0;i<state.pages;i++){
+    await buildDiff(i);
+    // dlPdf は state.mode に関わらず buildDiff で差分を描くため、常に差分用の凡例を付ける
+    const shot=exportCanvasWithLegend(out, "diff", scratch);
+    const img=shot.toDataURL("image/png");
+    const w=shot.width, h=shot.height;
+    // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す。
+    // 用紙サイズ正規化時も「基準ページ(大きい用紙)は必ず dpi/72 で描画する」(framePlan の
+    // frameScale)ため、フレーム寸法を dpi/72 で割ると基準ページのpt実寸が得られる。式は不変。
+    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale;
+    const orient = w>h ? "l":"p";
+    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
+    else { pdf.addPage([wPt,hPt],orient); }
+    pdf.addImage(img,"PNG",0,0,wPt,hPt);
+  }
+  state.boxAuto = savedBoxAuto; // 書き出し用の一時算出結果は捨て、呼び出し前のboxAutoへ戻す
+  pdf.save("diff.pdf");
+  await show(state.cur);
+  $("status").textContent="PDFを保存しました";
+});
+
+// ── トップモード切替（図面比較 / テキスト比較） ──
+function applyTopMode(){
+  const visual = state.topMode==="visual";
+  if(!visual && state.boxEditMode) setBoxEditMode(false);
+  $("topVisual").classList.toggle("active", visual);
+  $("topText").classList.toggle("active", !visual);
+  $("visualCtrl").style.display = visual ? "flex" : "none";
+  $("textCtrl").style.display = visual ? "none" : "flex";
+  $("viewbar").style.display = visual ? "flex" : "none";
+  document.querySelector(".canvas-wrap").style.display = visual ? "" : "none";
+  $("textPanel").style.display = visual ? "none" : "flex";
+  if(visual){
+    if(state.rendered) out.style.display = "block"; // 描画済みならCanvas表示を復元
+    // テキストモード中は .canvas-wrap が display:none で幅0のため、resizeイベントで
+    // boxLayer が0×0に潰れている。visual復帰時にここで寸法を取り直して枠を出し直す。
+    drawBoxLayer();
+  } else { out.style.display = "none"; } // hasImage() 誤判定・パン/ズームの誤発火を防ぐ
+  if(!visual && state.textHi){
+    // テキスト側は描画済みハイライトがあれば現在ページを再描画（往復時の表示復元）
+    const gen = ++state.textRenderToken; // 旧新2ペインへ同一世代を渡す
+    Promise.all([renderTextPage("old", state.textPage, gen), renderTextPage("new", state.textPage, gen)])
+      .then(applyTextTransform);
+  }
+}
+$("topVisual").addEventListener("click", ()=>{
+  if(state.topMode==="visual") return;
+  state.topMode="visual"; applyTopMode();
+});
+$("topText").addEventListener("click", ()=>{
+  if(state.topMode==="text") return;
+  state.topMode="text"; applyTopMode();
+});
+
+// ── テキスト差分モード（ページ上ハイライト方式） ──
+
+// ハイライト色（CSS変数から取得。--removed は図面モードと共用、他はテキスト専用変数）
+const TEXT_HI_COLORS = (() => {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    removed: cs.getPropertyValue("--removed").trim(),
+    added:   cs.getPropertyValue("--added-text").trim(),
+    changed: cs.getPropertyValue("--changed").trim(),
+  };
+})();
+
+// 1ページ分のテキストを行単位に再構成（Y座標でグルーピング→X座標順に連結）。
+// トークンは box化せず item.transform（6要素）と item.width を保持（scale/viewport非依存）。
+// content.items 相当の配列を現行ロジックで行再構成（空str/hasEOL/TOL/末尾トリムを現行同様に処理）
+function reconstructLinesInItemOrder(items){
+  const lines = [];
+  const TOL = 2.5; // 同一行とみなすY座標の許容差
+  let cur = null;  // {y, parts:[{x,str,transform,w}]}
+  const flush = () => {
+    if(cur && cur.parts.length){
+      const sorted = cur.parts.slice().sort((a,b)=>a.x-b.x);
+      let text = "";
+      const tokens = [];
+      for(const p of sorted){
+        tokens.push({str:p.str, off:text.length, transform:p.transform.slice(), w:p.w});
+        text += p.str;
+      }
+      lines.push({text:text.replace(/\s+$/,""), tokens});
+    }
+    cur = null;
+  };
+  for(const it of items){
+    const y = it.transform[5];
+    if(cur===null || Math.abs(cur.y-y) > TOL){ flush(); cur = {y, parts:[]}; }
+    if(it.str) cur.parts.push({x:it.transform[4], str:it.str, transform:it.transform, w:it.width});
+    if(it.hasEOL){ flush(); cur = null; }
+  }
+  flush();
+  return lines;
+}
+
+// 区間[lo,hi]の和集合の隙間
+function unionGaps(intervals){
+  if(intervals.length < 2) return [];
+  const sorted = intervals.slice().sort((a,b)=>a[0]-b[0]);
+  const gaps = [];
+  let curEnd = sorted[0][1];
+  for(let i=1;i<sorted.length;i++){
+    const lo = sorted[i][0], hi = sorted[i][1];
+    if(lo > curEnd){ gaps.push({lo:curEnd, hi:lo, size:lo-curEnd}); curEnd = hi; }
+    else if(hi > curEnd){ curEnd = hi; }
+  }
+  return gaps;
+}
+function medianFh(tokens){
+  const fhs = tokens.map(t=>t.fh).filter(v=>v>0).sort((a,b)=>a-b);
+  if(!fhs.length) return 0;
+  const m = fhs.length >> 1;
+  return fhs.length % 2 ? fhs[m] : (fhs[m-1]+fhs[m]) / 2;
+}
+function distinctRowCount(tokens, q){
+  if(q <= 0) return tokens.length;
+  const s = new Set();
+  for(const t of tokens) s.add(Math.round(t.y0 / q));
+  return s.size;
+}
+function minOrd(leafList){
+  let m = Infinity;
+  for(const leaf of leafList) for(const t of leaf) if(t.ord < m) m = t.ord;
+  return m;
+}
+function orderByMinOrd(groups){
+  return groups.map(g=>({g,key:minOrd(g)})).sort((a,b)=>a.key-b.key).flatMap(x=>x.g);
+}
+function xyCut(tokens, depth, ctx){
+  if(tokens.length < XYCUT_MIN_BLOCK_TOKENS || depth >= XYCUT_MAX_DEPTH) return [tokens];
+  const fh = medianFh(tokens);
+  if(fh <= 0) return [tokens];
+  const q = fh / 2;
+  let bestCol = null;
+  for(const g of unionGaps(tokens.map(t=>[t.x0, t.x1]))){
+    if(g.size < COL_GAP_EM * fh) continue;
+    const mid = (g.lo + g.hi) / 2;
+    const left  = tokens.filter(t => t.x0 <  mid);
+    const right = tokens.filter(t => t.x0 >= mid);
+    if(distinctRowCount(left, q)  < COL_MIN_SIDE_LINES) continue;
+    if(distinctRowCount(right, q) < COL_MIN_SIDE_LINES) continue;
+    if(!bestCol || g.size > bestCol.size) bestCol = {size:g.size, left, right};
+  }
+  let bestRow = null;
+  for(const g of unionGaps(tokens.map(t=>[t.y0, t.y1]))){
+    if(g.size < ROW_GAP_EM * fh) continue;
+    if(!bestRow || g.size > bestRow.size) bestRow = {size:g.size, mid:(g.lo+g.hi)/2};
+  }
+  const colScore = bestCol ? bestCol.size / fh : -1;
+  const rowScore = bestRow ? bestRow.size / fh : -1;
+  if(colScore < 0 && rowScore < 0) return [tokens];
+  if(rowScore >= colScore && bestRow){
+    const top = tokens.filter(t => t.y0 >= bestRow.mid);
+    const bot = tokens.filter(t => t.y0 <  bestRow.mid);
+    return orderByMinOrd([ xyCut(top, depth+1, ctx), xyCut(bot, depth+1, ctx) ]);
+  }
+  ctx.hadVerticalCut = true;
+  const childL = xyCut(bestCol.left,  depth+1, ctx);
+  const childR = xyCut(bestCol.right, depth+1, ctx);
+  return [...childL, ...childR];
+}
+
+// 全item(空str含む)を葉bboxへ点割当し、葉ごとに現行ロジックで再構成→読み順連結
+function assembleFromLeaves(items, leaves){
+  const boxes = leaves.map(leaf => {
+    let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+    for(const t of leaf){ if(t.x0<x0)x0=t.x0; if(t.x1>x1)x1=t.x1; if(t.y0<y0)y0=t.y0; if(t.y1>y1)y1=t.y1; }
+    return {x0,x1,y0,y1};
+  });
+  const buckets = leaves.map(()=>[]);
+  for(const it of items){
+    const px = it.transform[4], py = it.transform[5];
+    let bi = -1;
+    for(let i=0;i<boxes.length;i++){
+      const b = boxes[i];
+      if(px>=b.x0 && px<=b.x1 && py>=b.y0 && py<=b.y1){ bi=i; break; }
+    }
+    if(bi < 0){
+      let bd = Infinity;
+      for(let i=0;i<boxes.length;i++){
+        const b = boxes[i];
+        const dx = Math.max(b.x0-px, 0, px-b.x1), dy = Math.max(b.y0-py, 0, py-b.y1);
+        const d = dx*dx + dy*dy;
+        if(d < bd){ bd = d; bi = i; }
+      }
+    }
+    buckets[bi < 0 ? 0 : bi].push(it);
+  }
+  const lines = [];
+  for(const bucket of buckets){
+    for(const ln of reconstructLinesInItemOrder(bucket)) lines.push(ln);
+  }
+  return lines;
+}
+function logXYCutBlocks(idx, leaves, hadVerticalCut){
+  console.log(`[XYCut] page ${idx+1}: leaves=${leaves.length} hadVerticalCut=${hadVerticalCut}`,
+    leaves.map(l => l.length));
+}
+
+async function extractPageTokenLines(doc, idx){
+  const page = await doc.getPage(idx+1);
+  const content = await page.getTextContent();
+
+  // 前処理ゲート: 回転ページは現行動作（横書き前提が崩れるため）
+  if(page.rotate % 180 !== 0) return reconstructLinesInItemOrder(content.items);
+
+  // 非空トークン化（ord=content.items内の添字を保持）
+  // 空白のみitem（pdf.jsが段間ギャップを表す" "等）は幾何解析から除外。これを含めると
+  // ガターが空白itemで橋渡しされ和集合ギャップが消え、縦カット(段分割)を取りこぼす。
+  // 行の再構成(reconstructLinesInItemOrder)は全item(空白含む)を使うため出力・非回帰には不影響。
+  const toks = [];
+  let vcount = 0;
+  content.items.forEach((it, ord) => {
+    if(!it.str || !it.str.trim()) return;
+    const x0 = it.transform[4], y0 = it.transform[5];
+    const fh = Math.hypot(it.transform[2], it.transform[3]);
+    if(Math.abs(it.transform[1]) > Math.abs(it.transform[0])) vcount++;
+    toks.push({ord, x0, x1:x0 + it.width, y0, y1:y0 + fh, fh});
+  });
+
+  // 縦書き主体ページは現行動作
+  if(toks.length && vcount * 2 > toks.length) return reconstructLinesInItemOrder(content.items);
+  if(toks.length < XYCUT_MIN_BLOCK_TOKENS) return reconstructLinesInItemOrder(content.items);
+
+  const ctx = {hadVerticalCut:false};
+  const leaves = xyCut(toks, 0, ctx);
+
+  // 列存在ゲート: 縦カット無しは現行動作（バイト一致・非回帰）。有りは葉ごと再構成。
+  const result = ctx.hadVerticalCut
+    ? assembleFromLeaves(content.items, leaves)
+    : reconstructLinesInItemOrder(content.items);
+
+  if(state.debugXYCut) logXYCutBlocks(idx, leaves, ctx.hadVerticalCut);
+  return result;
+}
+
+// 文書全体を位置つきでページ配列として取得（[pageLines, ...]）
+async function extractDocTokens(doc, label){
+  if(!doc) return [];
+  const pages = [];
+  for(let i=0;i<doc.numPages;i++){
+    pages.push(await extractPageTokenLines(doc, i));
+    $("textStatus").textContent = label+"抽出中…（"+(i+1)+"/"+doc.numPages+"）";
+  }
+  return pages;
+}
+
+// [pageLines...] を {text, pageIndex, tokens} のグローバル行配列へ平坦化
+function flattenLines(pages){
+  const flat = [];
+  pages.forEach((pageLines, pageIndex) => {
+    pageLines.forEach(line => flat.push({text:line.text, pageIndex, tokens:line.tokens}));
+  });
+  return flat;
+}
+
+function pushHiEntry(map, pageIndex, token, color){
+  if(!map.has(pageIndex)) map.set(pageIndex, []);
+  map.get(pageIndex).push({token, color});
+}
+
+// diff-match-patch の行差分エントリ（複数行が1つに連結された文字列）の行数
+function diffChunkLineCount(text){
+  const n = text.split("\n").length;
+  return text.endsWith("\n") ? n-1 : n;
+}
+
+// 文字範囲[start,end)とトークン[off,off+len)が重なるか（半開区間・境界一致は除外）
+function rangeOverlapsToken(tok, start, end){
+  return tok.off < end && (tok.off + tok.str.length) > start;
+}
+
+// 行diff＋行内文字diffからページ×side別のハイライトを集約
+function buildTextHighlights(){
+  const oldFlat = flattenLines(state.textCache.old);
+  const newFlat = flattenLines(state.textCache.new);
+  const oldText = oldFlat.map(l=>l.text).join("\n");
+  const newText = newFlat.map(l=>l.text).join("\n");
+
+  const hi = { old:new Map(), new:new Map() };
+  const dmp = new diff_match_patch();
+  const a = dmp.diff_linesToChars_(oldText, newText);
+  const diffs = dmp.diff_main(a.chars1, a.chars2, false);
+  dmp.diff_charsToLines_(diffs, a.lineArray);
+
+  const highlightLine = (flat, side, idx, color, rangeStart, rangeEnd) => {
+    const line = flat[idx];
+    for(const tok of line.tokens){
+      if(rangeStart==null || rangeOverlapsToken(tok, rangeStart, rangeEnd)){
+        pushHiEntry(hi[side], line.pageIndex, tok, color);
+      }
+    }
+  };
+
+  let oldIdx = 0, newIdx = 0;
+  for(let i=0;i<diffs.length;i++){
+    const op = diffs[i][0], text = diffs[i][1];
+    const cnt = diffChunkLineCount(text);
+    if(op===0){ oldIdx += cnt; newIdx += cnt; continue; }
+    if(op===-1){
+      const next = diffs[i+1];
+      if(next && next[0]===1){
+        const addCnt = diffChunkLineCount(next[1]);
+        const n = Math.min(cnt, addCnt);
+        for(let k=0;k<n;k++){
+          const oldLine = oldFlat[oldIdx+k], newLine = newFlat[newIdx+k];
+          const cdiffs = dmp.diff_main(oldLine.text, newLine.text);
+          dmp.diff_cleanupSemantic(cdiffs);
+          let oldPos=0, newPos=0;
+          for(const part of cdiffs){
+            const pop = part[0], ptext = part[1];
+            if(pop===0){ oldPos+=ptext.length; newPos+=ptext.length; }
+            else if(pop===-1){
+              highlightLine(oldFlat, "old", oldIdx+k, "changed", oldPos, oldPos+ptext.length);
+              oldPos += ptext.length;
+            } else {
+              highlightLine(newFlat, "new", newIdx+k, "changed", newPos, newPos+ptext.length);
+              newPos += ptext.length;
+            }
+          }
+        }
+        for(let k=n;k<cnt;k++)    highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
+        for(let k=n;k<addCnt;k++) highlightLine(newFlat, "new", newIdx+k, "added",   null);
+        oldIdx += cnt; newIdx += addCnt;
+        i++; // 対にした追加ブロックを消費済みとしてスキップ
+        continue;
+      }
+      for(let k=0;k<cnt;k++) highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
+      oldIdx += cnt;
+      continue;
+    }
+    if(op===1){
+      for(let k=0;k<cnt;k++) highlightLine(newFlat, "new", newIdx+k, "added", null);
+      newIdx += cnt;
+    }
+  }
+  return hi;
+}
+
+// ── XY-cut 多段組み読み順復元（フェーズ3）定数 ──
+const XYCUT_MAX_DEPTH        = 6;   // 再帰深度上限
+const XYCUT_MIN_BLOCK_TOKENS = 2;   // これ未満は分割せず葉に
+const COL_GAP_EM             = 2.5; // 縦カット(段)最小ガター幅 ÷ フォント高
+const ROW_GAP_EM             = 1.6; // 横カット最小空白高 ÷ フォント高
+const COL_MIN_SIDE_LINES     = 3;   // 段分割は両側に≥3行(量子化Y種類)を要求
+
+// ── 表領域のセル格子diff（フェーズ2） ──
+const TABLE_ROWS_MIN = 3;   // 表と判定する最小行数
+const TABLE_COLS_MIN = 2;   // 表と判定する最小列数
+const TABLE_XQ = 8;         // 列クラスタリングのX許容差（PDFユーザ空間単位）
+
+// X座標配列を近接クラスタへグルーピングし、各クラスタの代表X値を返す
+function clusterColumns(xs, tol){
+  const sorted = xs.slice().sort((a,b)=>a-b);
+  const clusters = [];
+  for(const x of sorted){
+    const last = clusters[clusters.length-1];
+    if(last && x - last.max <= tol){ last.max=x; last.sum+=x; last.n++; }
+    else clusters.push({max:x, sum:x, n:1});
+  }
+  return clusters.map(c=>c.sum/c.n);
+}
+
+// ページ内トークンのX/Y位置から表候補領域を検出（罫線は使わずテキスト位置のみ）
+function detectTables(pageLines){
+  if(!pageLines || pageLines.length < TABLE_ROWS_MIN) return [];
+  const allX = [];
+  for(const line of pageLines) for(const tok of line.tokens) allX.push(tok.transform[4]);
+  if(!allX.length) return [];
+  const cols = clusterColumns(allX, TABLE_XQ);
+  if(cols.length < TABLE_COLS_MIN) return [];
+
+  const nearestCol = x => {
+    let best=0, bd=Infinity;
+    for(let i=0;i<cols.length;i++){ const d=Math.abs(cols[i]-x); if(d<bd){ bd=d; best=i; } }
+    return best;
+  };
+  const lineColSets = pageLines.map(line => {
+    const set = new Set();
+    for(const tok of line.tokens) set.add(nearestCol(tok.transform[4]));
+    return set;
+  });
+
+  const tables = [];
+  let runStart = -1, unionCols = new Set();
+  const flushRun = end => {
+    if(runStart>=0 && (end-runStart)>=TABLE_ROWS_MIN && unionCols.size>=TABLE_COLS_MIN){
+      tables.push(buildTableFromRun(pageLines, runStart, end, [...unionCols].sort((x,y)=>x-y), nearestCol));
+    }
+    runStart = -1; unionCols = new Set();
+  };
+  for(let i=0;i<pageLines.length;i++){
+    if(lineColSets[i].size >= TABLE_COLS_MIN){
+      if(runStart<0) runStart = i;
+      for(const c of lineColSets[i]) unionCols.add(c);
+    } else flushRun(i);
+  }
+  flushRun(pageLines.length);
+  return tables;
+}
+
+function buildTableFromRun(pageLines, rowStart, rowEnd, colIdxs, nearestCol){
+  const colIndexMap = new Map(colIdxs.map((c,i)=>[c,i]));
+  const rows = [];
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+  for(let r=rowStart;r<rowEnd;r++){
+    const cells = colIdxs.map(()=>[]);
+    for(const tok of pageLines[r].tokens){
+      const ci = nearestCol(tok.transform[4]);
+      if(colIndexMap.has(ci)) cells[colIndexMap.get(ci)].push(tok);
+      const x = tok.transform[4], y = tok.transform[5];
+      if(x<minX) minX=x; if(x>maxX) maxX=x;
+      if(y<minY) minY=y; if(y>maxY) maxY=y;
+    }
+    rows.push(cells);
+  }
+  return { rows, rowCount:rows.length, colCount:colIdxs.length, box:{x0:minX,y0:minY,x1:maxX,y1:maxY} };
+}
+
+function tableCellText(cell){
+  return cell.slice().sort((a,b)=>a.transform[4]-b.transform[4]).map(t=>t.str).join("").trim();
+}
+
+// トークンのベースライン原点が矩形内にあるものを textHi[side] から除去（行diff由来との二重着色回避）
+function removeHighlightsInBox(map, pageIndex, box){
+  const arr = map.get(pageIndex);
+  if(!arr) return;
+  map.set(pageIndex, arr.filter(({token}) => {
+    const x = token.transform[4], y = token.transform[5];
+    const inside = x>=box.x0-1e-6 && x<=box.x1+1e-6 && y>=box.y0-1e-6 && y<=box.y1+1e-6;
+    return !inside;
+  }));
+}
+
+// 旧新の行数・列数が一致する場合のみ格子diffを適用（不一致時は行diff着色へフォールバック）
+function applyTableDiff(oldTable, newTable, pageIndex, hi){
+  if(oldTable.rowCount !== newTable.rowCount || oldTable.colCount !== newTable.colCount) return;
+  removeHighlightsInBox(hi.old, pageIndex, oldTable.box);
+  removeHighlightsInBox(hi.new, pageIndex, newTable.box);
+  for(let r=0;r<oldTable.rowCount;r++){
+    for(let c=0;c<oldTable.colCount;c++){
+      const oldCell = oldTable.rows[r][c], newCell = newTable.rows[r][c];
+      const oldStr = tableCellText(oldCell), newStr = tableCellText(newCell);
+      if(oldStr === newStr) continue; // 共通セルは無着色
+      if(oldStr && !newStr){
+        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "removed");
+      } else if(!oldStr && newStr){
+        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "added");
+      } else {
+        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "changed");
+        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "changed");
+      }
+    }
+  }
+}
+
+// ページ単位で旧新の表を出現順に対応づけ、格子diffで上書き
+function applyTableHighlights(hi){
+  const oldPages = state.textCache.old, newPages = state.textCache.new;
+  const maxPages = Math.max(oldPages.length, newPages.length);
+  for(let p=0;p<maxPages;p++){
+    const oldTables = detectTables(oldPages[p] || []);
+    const newTables = detectTables(newPages[p] || []);
+    const n = Math.min(oldTables.length, newTables.length);
+    for(let i=0;i<n;i++) applyTableDiff(oldTables[i], newTables[i], p, hi);
+  }
+}
+
+// ── 描画 ──
+
+// pdf.js textlayer と同じ単位分離でトークンのAABBを求め、色枠を焼き込む
+function drawTokenHighlight(ctx, vp, token, colorKey){
+  const tx = pdfjsLib.Util.transform(vp.transform, token.transform);
+  const advLen = Math.hypot(tx[0], tx[1]) || 1;
+  const ux = tx[0]/advLen, uy = tx[1]/advLen; // 送り方向単位ベクトル
+  const wid = token.w * vp.scale;             // 幅は item.width×scale（token.transformには掛けない）
+  const descFrac = 0.2;                       // ディセント分の余白
+  const p0x = tx[4] - tx[2]*descFrac, p0y = tx[5] - tx[3]*descFrac;
+  const vx = tx[2]*(1+descFrac), vy = tx[3]*(1+descFrac); // 縦方向ベクトル（アセント方向、高さ=hypot(tx[2],tx[3])基準）
+  const p1x = p0x + ux*wid, p1y = p0y + uy*wid;
+  const p2x = p0x + vx, p2y = p0y + vy;
+  const p3x = p1x + vx, p3y = p1y + vy;
+  const xs=[p0x,p1x,p2x,p3x], ys=[p0y,p1y,p2y,p3y];
+  const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+  const color = TEXT_HI_COLORS[colorKey] || "#fff";
+  ctx.save();
+  ctx.globalAlpha = 0.28;
+  ctx.fillStyle = color;
+  ctx.fillRect(minX, minY, maxX-minX, maxY-minY);
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(minX+0.5, minY+0.5, Math.max(maxX-minX-1,0), Math.max(maxY-minY-1,0));
+  ctx.restore();
+}
+
+// 指定側・ページを描画し、ハイライトを焼き込む（再入ガードでstale-draw防止）
+// gen は呼び出し側が採番する世代トークン（旧新2ペインへ同一世代を渡し、互いを無効化しないようにする）
+async function renderTextPage(side, pageIndex, gen){
+  const doc = side==="old" ? state.oldDoc : state.newDoc;
+  const canvas = side==="old" ? $("oldTextCanvas") : $("newTextCanvas");
+  const ctx = canvas.getContext("2d");
+  if(!doc || pageIndex>=doc.numPages){
+    canvas.width = 10; canvas.height = 10;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    return;
+  }
+  const page = await doc.getPage(pageIndex+1);
+  const vp = page.getViewport({scale: state.textScale});
+  if(gen !== state.textRenderToken) return;
+  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  await page.render({canvasContext:ctx, viewport:vp}).promise;
+  if(gen !== state.textRenderToken) return; // 別世代の描画が割り込んだので着色せず終了
+
+  const entries = state.textHi && state.textHi[side] ? state.textHi[side].get(pageIndex) : null;
+  if(entries) for(const {token:tok, color} of entries) drawTokenHighlight(ctx, vp, tok, color);
+}
+
+// 出力用：オンスクリーンCanvas/再入ガードに触れず、指定ページを別Canvasへ描画（無ければnull）
+async function renderTextPageOffscreen(side, pageIndex){
+  const doc = side==="old" ? state.oldDoc : state.newDoc;
+  if(!doc || pageIndex>=doc.numPages) return null;
+  const page = await doc.getPage(pageIndex+1);
+  const vp = page.getViewport({scale: state.textScale});
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  await page.render({canvasContext:ctx, viewport:vp}).promise;
+
+  const entries = state.textHi && state.textHi[side] ? state.textHi[side].get(pageIndex) : null;
+  if(entries) for(const {token:tok, color} of entries) drawTokenHighlight(ctx, vp, tok, color);
+  return canvas;
+}
+
+// テキスト比較のラベル帯(高さ28px・フォント16px固定)に収まる凡例のスケール。
+// 図面側の state.dpi/72 とは別系統の固定値（帯もフォントもDPIに依存しないため）。
+const TEXT_LG_UNIT = 1.6;
+
+// 旧(上)・新(下)を各ラベル帯付きで縦積み合成（等倍・非伸縮、横中央寄せ）（ページ無し側は白Canvasで代替）
+function composeTextExport(oldC, newC, pageIndex, total){
+  const fallback = (w,h) => { const c=document.createElement("canvas"); c.width=w; c.height=h; c.getContext("2d").fillStyle="#fff"; c.getContext("2d").fillRect(0,0,w,h); return c; };
+  if(!oldC) oldC = fallback(newC.width, newC.height);
+  if(!newC) newC = fallback(oldC.width, oldC.height);
+
+  const labelH = 28, gap = 24;
+  const W = Math.max(oldC.width, newC.width);
+  const H = labelH + oldC.height + gap + labelH + newC.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,W,H);
+
+  ctx.font = "bold 16px sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = TEXT_HI_COLORS.removed;
+  ctx.textAlign = "left";
+  ctx.fillText("OLD", 4, labelH/2);
+  ctx.fillStyle = "#333";
+  ctx.textAlign = "right";
+  const pageText = "p "+(pageIndex+1)+" / "+total;
+  ctx.fillText(pageText, W-4, labelH/2);
+
+  // 凡例は最上部の帯にのみ。帯は既に白地なので下地・枠(chrome)は描かない。
+  // OLDラベルの右に置き、ページ番号と重なるほど幅が無ければ描画を諦める。
+  const lgItems = [
+    {color: TEXT_HI_COLORS.removed, label: "削除"},
+    {color: TEXT_HI_COLORS.added,   label: "追加"},
+    {color: TEXT_HI_COLORS.changed, label: "変更"},
+  ];
+  const lgOpts = {chrome: false};
+  const lg = measureLegend(ctx, lgItems, TEXT_LG_UNIT, lgOpts);
+  const lgX = 4 + ctx.measureText("OLD").width + 16;
+  const lgLimit = W - 4 - ctx.measureText(pageText).width - 16;
+  if(lgX + lg.w <= lgLimit){
+    // 幅ガードで使った lg をそのまま渡し、描画側で同じレイアウトを再計算させない
+    drawLegend(ctx, lgItems, lgX, labelH/2 - lg.h/2, TEXT_LG_UNIT, lgOpts, lg);
+  }
+
+  ctx.drawImage(oldC, (W-oldC.width)/2, labelH);
+
+  const newLabelY = labelH + oldC.height + gap;
+  ctx.fillStyle = TEXT_HI_COLORS.added;
+  ctx.textAlign = "left";
+  ctx.fillText("NEW", 4, newLabelY + labelH/2);
+  ctx.drawImage(newC, (W-newC.width)/2, newLabelY + labelH);
+  return canvas;
+}
+
+// ── ズーム/パン/ページング（旧新共有ビュー・topMode==="text"限定） ──
+
+function textTotalPages(){
+  return Math.max(state.oldDoc?state.oldDoc.numPages:0, state.newDoc?state.newDoc.numPages:0);
+}
+
+// 両ペイン共通のワールド寸法（旧新のCanvas実寸の最大値。寸法差は中央寄せで吸収）
+function textWorldSize(){
+  const oldC = $("oldTextCanvas"), newC = $("newTextCanvas");
+  return { W: Math.max(oldC.width||0, newC.width||0, 1), H: Math.max(oldC.height||0, newC.height||0, 1) };
+}
+
+function applyTextTransform(){
+  const {W,H} = textWorldSize();
+  const v = state.textView;
+  [$("oldTextCanvas"), $("newTextCanvas")].forEach(c=>{
+    const offX = (W-c.width)/2, offY = (H-c.height)/2;
+    c.style.transform = `translate(${v.tx+offX*v.scale}px, ${v.ty+offY*v.scale}px) scale(${v.scale})`;
+  });
+}
+
+function fitTextView(){
+  const {W,H} = textWorldSize();
+  const wrapEl = document.querySelector(".text-pane.old .text-canvas-wrap");
+  const Ww = wrapEl.clientWidth, Wh = wrapEl.clientHeight;
+  if(!W || !H || !Ww || !Wh) return;
+  const s = Math.min(Ww/W, Wh/H) * 0.92;
+  state.textView.scale = s;
+  state.textView.tx = (Ww-W*s)/2;
+  state.textView.ty = (Wh-H*s)/2;
+  applyTextTransform();
+}
+
+const clampTextScale = s => Math.min(Math.max(s, 0.05), 40);
+function textZoomAt(factor, cx, cy){
+  const v = state.textView;
+  const ns = clampTextScale(v.scale*factor), k = ns/v.scale;
+  v.tx = cx-(cx-v.tx)*k; v.ty = cy-(cy-v.ty)*k; v.scale = ns;
+  applyTextTransform();
+}
+function textZoomCenter(factor){
+  const wrapEl = document.querySelector(".text-pane.old .text-canvas-wrap");
+  textZoomAt(factor, wrapEl.clientWidth/2, wrapEl.clientHeight/2);
+}
+
+async function showTextPage(idx){
+  const total = textTotalPages();
+  if(!total || idx<0 || idx>=total) return;
+  state.textPage = idx;
+  $("textPageInd").textContent = (idx+1)+" / "+total;
+  const gen = ++state.textRenderToken; // 旧新2ペインへ同一世代を渡し、互いのstale-drawガードで潰し合わないようにする
+  await Promise.all([renderTextPage("old", idx, gen), renderTextPage("new", idx, gen)]);
+  applyTextTransform();
+}
+
+document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
+  wrapEl.addEventListener("wheel", e=>{
+    if(state.topMode!=="text") return;
+    if(!state.textHi) return;
+    e.preventDefault();
+    const r = wrapEl.getBoundingClientRect();
+    textZoomAt(e.deltaY<0 ? 1.12 : 1/1.12, e.clientX-r.left, e.clientY-r.top);
+  }, {passive:false});
+});
+
+let textPanning=false, tpsx=0, tpsy=0, tptx=0, tpty=0;
+document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
+  wrapEl.addEventListener("pointerdown", e=>{
+    if(state.topMode!=="text") return;
+    if(!state.textHi) return;
+    textPanning=true; wrapEl.classList.add("panning"); wrapEl.setPointerCapture(e.pointerId);
+    tpsx=e.clientX; tpsy=e.clientY; tptx=state.textView.tx; tpty=state.textView.ty;
+  });
+  wrapEl.addEventListener("pointermove", e=>{
+    if(state.topMode!=="text") return;
+    if(!textPanning) return;
+    state.textView.tx = tptx+(e.clientX-tpsx); state.textView.ty = tpty+(e.clientY-tpsy);
+    applyTextTransform();
+  });
+  const endTextPan = e=>{
+    if(!textPanning) return;
+    textPanning=false; wrapEl.classList.remove("panning");
+    try{ wrapEl.releasePointerCapture(e.pointerId); }catch(_){}
+  };
+  wrapEl.addEventListener("pointerup", endTextPan);
+  wrapEl.addEventListener("pointercancel", endTextPan);
+});
+
+$("textPrev").addEventListener("click", ()=>{ if(state.topMode!=="text") return; showTextPage(state.textPage-1); });
+$("textNext").addEventListener("click", ()=>{ if(state.topMode!=="text") return; showTextPage(state.textPage+1); });
+$("textZoomIn").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1.25); });
+$("textZoomOut").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1/1.25); });
+$("textZoomFit").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) fitTextView(); });
+$("textZoom1").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1/state.textView.scale); });
+
+async function runTextDiff(){
+  const token = ++state.textToken;
+  $("textStatus").classList.add("busy");
+  $("textStatus").textContent = "抽出中…";
+
+  if(!state.textCache){
+    const oldPages = await extractDocTokens(state.oldDoc, "旧版: ");
+    if(token !== state.textToken) return; // 別の抽出が割り込んだので破棄
+    const newPages = await extractDocTokens(state.newDoc, "新版: ");
+    if(token !== state.textToken) return;
+    state.textCache = {old:oldPages, new:newPages};
+  }
+  $("textStatus").classList.remove("busy");
+
+  const hasText = state.textCache.old.some(p=>p.some(l=>l.text.trim())) ||
+                  state.textCache.new.some(p=>p.some(l=>l.text.trim()));
+  if(!hasText){
+    $("textStatus").textContent = "テキストレイヤがありません。図面比較で確認してください";
+    return;
+  }
+
+  const hi = buildTextHighlights();
+  applyTableHighlights(hi);
+  state.textHi = hi;
+  state.textScale = state.dpi/72;
+  state.textPage = 0;
+
+  await showTextPage(0);
+  fitTextView();
+  $("dlTextPng").disabled = false; $("dlTextPdf").disabled = false;
+  $("textStatus").textContent = "テキスト差分を表示中";
+}
+
+$("runText").addEventListener("click", runTextDiff);
+
+$("dlTextPng").addEventListener("click", async()=>{
+  if(state.topMode!=="text" || !state.textHi) return;
+  $("textStatus").textContent = "PNG生成中…";
+  const idx = state.textPage, total = textTotalPages();
+  const [oldC, newC] = await Promise.all([
+    renderTextPageOffscreen("old", idx),
+    renderTextPageOffscreen("new", idx),
+  ]);
+  const canvas = composeTextExport(oldC, newC, idx, total);
+  canvas.toBlob(b=>{
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(b);
+    a.download = "textdiff_p"+(idx+1)+".png";
+    a.click();
+    $("textStatus").textContent = "テキスト差分を表示中";
+  });
+});
+
+$("dlTextPdf").addEventListener("click", async()=>{
+  if(state.topMode!=="text" || !state.textHi) return;
+  const {jsPDF}=window.jspdf;
+  const total = textTotalPages();
+  let pdf=null;
+  for(let i=0;i<total;i++){
+    $("textStatus").innerHTML = '<span class="busy">PDF生成中…（'+(i+1)+"/"+total+"）</span>";
+    const [oldC, newC] = await Promise.all([
+      renderTextPageOffscreen("old", i),
+      renderTextPageOffscreen("new", i),
+    ]);
+    const canvas = composeTextExport(oldC, newC, i, total);
+    const img = canvas.toDataURL("image/png");
+    const w = canvas.width, h = canvas.height;
+    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale; // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す
+    const orient = w>h ? "l":"p";
+    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
+    else { pdf.addPage([wPt,hPt],orient); }
+    pdf.addImage(img,"PNG",0,0,wPt,hPt);
+  }
+  pdf.save("textdiff.pdf");
+  $("textStatus").textContent = "PDFを保存しました";
+});

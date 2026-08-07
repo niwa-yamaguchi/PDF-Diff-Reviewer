@@ -1,0 +1,126 @@
+  .topmode{display:flex;gap:6px}
+  .topmode button{
+    flex:1;font-family:var(--mono);font-size:11px;padding:8px;border-radius:5px;
+    border:1px solid var(--line-bright);background:var(--panel-2);color:var(--fg);
+    cursor:pointer;transition:border-color .12s,background .12s;
+  }
+  .topmode button:hover{border-color:var(--signal)}
+  .topmode button.active{
+    background:var(--signal);color:#1a1206;border-color:var(--signal);font-weight:600;
+  }
+  #visualCtrl,#textCtrl{display:flex;flex-direction:column;gap:20px}
+
+  .field{display:flex;flex-direction:column;gap:8px}
+  .field > .label{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--muted);
+    display:flex;justify-content:space-between;align-items:baseline;
+  }
+  .drop{
+    border:1px dashed var(--line-bright);border-radius:6px;
+    padding:16px 12px;text-align:center;cursor:pointer;
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    transition:border-color .15s,color .15s,background .15s;
+    background:var(--panel-2);
+  }
+  .drop:hover{border-color:var(--signal);color:var(--fg)}
+  .drop.set{border-style:solid;color:var(--fg)}
+  .drop.old.set{border-color:var(--removed)}
+  .drop.new.set{border-color:var(--added)}
+  .drop .fname{display:block;margin-top:4px;color:var(--fg);word-break:break-all}
+  .drop .tag{font-size:9.5px;letter-spacing:.14em}
+  .drop.old .tag{color:var(--removed)}
+  .drop.new .tag{color:var(--added)}
+
+  .ctrl{display:flex;flex-direction:column;gap:6px}
+  .ctrl .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px}
+  .ctrl .row .val{color:var(--signal)}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:2px;
+    background:var(--line-bright);border-radius:2px;outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+    background:var(--signal);cursor:pointer;border:2px solid var(--ink);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border-radius:50%;background:var(--signal);
+    cursor:pointer;border:2px solid var(--ink);
+  }
+  input[type=range]:disabled{opacity:.4;cursor:not-allowed}
+  .nudge{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .nudge button, .btn{
+    font-family:var(--mono);font-size:11px;padding:8px;border-radius:5px;
+    border:1px solid var(--line-bright);background:var(--panel-2);
+    color:var(--fg);cursor:pointer;transition:border-color .12s,background .12s;
+  }
+  .nudge button:hover,.btn:hover{border-color:var(--signal)}
+  .nudge .c{color:var(--muted)}
+  .btn.primary{
+    background:var(--signal);color:#1a1206;border-color:var(--signal);font-weight:600;
+    letter-spacing:.04em;
+  }
+  .btn.primary:hover{background:var(--signal-dim)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btns{display:flex;flex-direction:column;gap:8px}
+  .alignpad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .alignpad button{
+    font:inherit;font-size:12px;padding:8px 6px;border-radius:6px;
+    border:1px solid var(--line-bright);background:var(--panel-2);color:var(--fg);cursor:pointer;
+  }
+  .alignpad button:hover{border-color:var(--signal)}
+  .alignpad button:disabled{opacity:.4;cursor:not-allowed}
+  .alignpad .full{grid-column:1 / -1}
+  .autoalign{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg)}
+  .autoalign input{width:14px;height:14px;accent-color:var(--signal);cursor:pointer}
+  .alignreadout{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px;min-height:13px}
+
+  /* ── ビューア ── */
+  .viewbar{
+    display:flex;align-items:center;gap:14px;padding:10px 16px;
+    border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;
+    color:var(--muted);
+  }
+  .viewbar .pager{display:flex;align-items:center;gap:8px}
+  .viewbar .pager button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    width:26px;height:24px;border-radius:4px;cursor:pointer;font-family:var(--mono);
+  }
+  .viewbar .pager button:hover{border-color:var(--signal)}
+  .viewbar .zoomctl{display:flex;align-items:center;gap:6px;
+    padding-left:14px;border-left:1px solid var(--line)}
+  .viewbar .zoomctl button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    height:24px;min-width:26px;padding:0 8px;border-radius:4px;cursor:pointer;
+    font-family:var(--mono);font-size:11px;
+  }
+  .viewbar .zoomctl button:hover{border-color:var(--signal)}
+  .viewbar .zoomctl #zoomLabel{min-width:44px;text-align:center;color:var(--fg)}
+  .viewbar .modectl{display:flex;align-items:center;gap:6px;
+    padding-left:14px;border-left:1px solid var(--line)}
+  .viewbar .modectl button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    height:24px;padding:0 10px;border-radius:4px;cursor:pointer;
+    font-family:var(--mono);font-size:11px;
+  }
+  .viewbar .modectl button:hover{border-color:var(--signal)}
+  .viewbar .modectl button.active{
+    background:var(--signal);color:#1a1206;border-color:var(--signal);font-weight:600;
+  }
+  .viewbar .toggleind{display:flex;align-items:center;gap:6px;
+    padding-left:14px;border-left:1px solid var(--line)}
+  .viewbar .toggleind .side{
+    font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;
+    border:1px solid var(--line-bright);color:var(--muted);
+  }
+  .viewbar .toggleind .side.old.active{border-color:var(--removed);color:var(--removed)}
+  .viewbar .toggleind .side.new.active{border-color:var(--added);color:var(--added)}
+  .viewbar .toggleind button{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    width:26px;height:24px;border-radius:4px;cursor:pointer;font-family:var(--mono);
+  }
+  .viewbar .toggleind button:hover{border-color:var(--signal)}
+  .viewbar .stat{margin-left:auto;display:flex;gap:16px}
+  .viewbar .stat .rm{color:var(--removed)}
+  .viewbar .stat .ad{color:var(--added)}
+  .viewbar .stat .bx{color:var(--box)}

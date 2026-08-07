@@ -1,0 +1,28 @@
+  :root{
+    --ink:#0e151d;          /* 作業面（製図インク地） */
+    --panel:#151f2a;
+    --panel-2:#1b2836;
+    --line:#2a3947;
+    --line-bright:#3a4c5e;
+    --fg:#e8eef4;
+    --muted:#7f8f9e;
+    --common:#3c3c3c;       /* 旧新どちらにもインクあり = 共通 */
+    --removed:#ff5b57;      /* 旧版のみ = 削除 */
+    --added:#4d8dff;        /* 新版のみ = 追加 */
+    --added-text:#2fa84f;   /* テキスト差分モードの追加（緑） */
+    --changed:#e8b500;      /* テキスト差分モードの変更（黄） */
+    --box:#ff9500;          /* 変更箇所の囲み枠 */
+    --box-fill:rgba(255,149,0,0.18); /* 変更枠の面塗り（枠色の薄塗り） */
+    --signal:#f4b942;       /* 操作系 = 見当色（計器の琥珀） */
+    --signal-dim:#c8952a;
+    --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans: system-ui,-apple-system,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--ink);color:var(--fg);font-family:var(--sans);
+    display:flex;flex-direction:column;min-height:100%;
+  }
+  /* ── ヘッダ（タイトルブロック風） ── */
+  .busy{color:var(--signal)}
