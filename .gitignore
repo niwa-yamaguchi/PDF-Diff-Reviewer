@@ -7,3 +7,10 @@ AGENTS.md
 .superpowers/
 .playwright-mcp/
 .worktrees/
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+tests/fixtures/old.pdf
+tests/fixtures/new.pdf
