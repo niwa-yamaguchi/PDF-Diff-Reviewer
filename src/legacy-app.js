@@ -1,4 +1,9 @@
 // pdf.js worker を blob 経由で同一オリジン化（CDNワーカーのCORS回避）
+import { clampBox, clampBoxes, normalizeRect as normRect } from "./core/geometry/rectangles.js";
+import { luminanceAt as lum } from "./core/image-diff/luminance.js";
+import { dilateMask, toleratedDiffMasks } from "./core/image-diff/masks.js";
+import { computeBoxes } from "./core/change-boxes/detect.js";
+
 (function(){
   const url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   const blob = new Blob(["importScripts('"+url+"');"], {type:"application/javascript"});
@@ -832,8 +837,6 @@ function pageLabelText(idx){
   return (idx+1)+" / "+state.pages+"（"+os+" ↔ "+ns+"）";
 }
 
-function lum(d,i){ return (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114); }
-
 // 変更箇所の囲み枠（色・サイズ）に関する定数とヘルパ
 const BOX_COLOR = "#ff9500";
 const BOX_FILL  = "rgba(255,149,0,0.18)";
@@ -853,110 +856,6 @@ function toleranceRadiusPx(){ return Math.round(state.tolerancePx * state.dpi / 
 
 // 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
 // 1ブロック膨張してからBFSで連結成分をラベリングする。
-function computeBoxes(flags, cols, rows, block, minBlocks){
-  const DIRS4 = [[-1,0],[1,0],[0,-1],[0,1]]; // 4近傍（BFS連結・膨張兼用）
-  // 1ブロック膨張したフラグ格子 dil を作る（4近傍＋自身を立てる。斜めは含めない）
-  const dil = new Uint8Array(cols*rows);
-  const offs = [[0,0],[-1,0],[1,0],[0,-1],[0,1]];
-  for(let r=0;r<rows;r++){
-    for(let c=0;c<cols;c++){
-      if(!flags[r*cols+c]) continue;
-      for(const [dr,dc] of offs){
-        const nr=r+dr, nc=c+dc;
-        if(nr<0||nc<0||nr>=rows||nc>=cols) continue;
-        dil[nr*cols+nc]=1;
-      }
-    }
-  }
-  const seen = new Uint8Array(cols*rows);
-  const boxes = [];
-  const qx = new Int32Array(cols*rows), qy = new Int32Array(cols*rows);
-  for(let r=0;r<rows;r++){
-    for(let c=0;c<cols;c++){
-      const i=r*cols+c;
-      if(!dil[i]||seen[i]) continue;
-      // BFS
-      let head=0, tail=0;
-      qx[tail]=c; qy[tail]=r; tail++; seen[i]=1;
-      let minC=c,maxC=c,minR=r,maxR=r, origCount=0;
-      while(head<tail){
-        const cx=qx[head], cy=qy[head]; head++;
-        if(flags[cy*cols+cx]) origCount++;
-        if(cx<minC)minC=cx; if(cx>maxC)maxC=cx;
-        if(cy<minR)minR=cy; if(cy>maxR)maxR=cy;
-        for(const [dx,dy] of DIRS4){
-          const nx=cx+dx, ny=cy+dy;
-          if(nx<0||ny<0||nx>=cols||ny>=rows) continue;
-          const ni=ny*cols+nx;
-          if(dil[ni]&&!seen[ni]){ seen[ni]=1; qx[tail]=nx; qy[tail]=ny; tail++; }
-        }
-      }
-      // ノイズ判定は膨張前の元ブロック数(origCount)で行う。
-      if(origCount < minBlocks) continue;
-      boxes.push({
-        x: minC*block,
-        y: minR*block,
-        w: (maxC-minC+1)*block,
-        h: (maxR-minR+1)*block,
-      });
-    }
-  }
-  return boxes;
-}
-
-// 外接矩形群をキャンバス範囲[0,width]/[0,height]にクランプ（端の枠切れ対策）。退化矩形は除外。
-function clampBoxes(raw, width, height){
-  return raw.map(b=>{
-    const x0 = Math.max(0, b.x), y0 = Math.max(0, b.y);
-    const x1 = Math.min(width,  b.x+b.w), y1 = Math.min(height, b.y+b.h);
-    return {x:x0, y:y0, w:x1-x0, h:y1-y0};
-  }).filter(b=>b.w>0 && b.h>0);
-}
-
-// 2値マスク(Uint8Array, width*height)を正方形(チェビシェフ距離<=radius)で膨張する純関数。
-// 半径Rに依らず横→縦の分離フィルタ(スライディングウィンドウ)でO(width*height)。radius<=0は恒等。
-function dilateMask(mask, width, height, radius){
-  if(radius<=0) return mask;
-  const tmp = new Uint8Array(width*height);
-  for(let y=0;y<height;y++){
-    const rowOff = y*width;
-    let cnt=0;
-    for(let x=-radius;x<width;x++){
-      const inX=x+radius;
-      if(inX<width && mask[rowOff+inX]) cnt++;
-      const outX=x-radius-1;
-      if(outX>=0 && mask[rowOff+outX]) cnt--;
-      if(x>=0) tmp[rowOff+x] = cnt>0 ? 1 : 0;
-    }
-  }
-  const out = new Uint8Array(width*height);
-  for(let x=0;x<width;x++){
-    let cnt=0;
-    for(let y=-radius;y<height;y++){
-      const inY=y+radius;
-      if(inY<height && tmp[inY*width+x]) cnt++;
-      const outY=y-radius-1;
-      if(outY>=0 && tmp[outY*width+x]) cnt--;
-      if(y>=0) out[y*width+x] = cnt>0 ? 1 : 0;
-    }
-  }
-  return out;
-}
-
-// 旧・新のインクマスクから「位置的許容つき」の削除/追加マスクを算出する純関数。
-// removed: 旧にインクがあり、かつ新側の許容範囲内(膨張後)にもインクが無い
-// added:   新にインクがあり、かつ旧側の許容範囲内にもインクが無い
-function toleratedDiffMasks(oMask, nMask, width, height, radius){
-  const oDil = dilateMask(oMask, width, height, radius);
-  const nDil = dilateMask(nMask, width, height, radius);
-  const n = width*height;
-  const removed = new Uint8Array(n), added = new Uint8Array(n);
-  for(let i=0;i<n;i++){
-    if(oMask[i] && !nDil[i]) removed[i]=1;
-    else if(nMask[i] && !oDil[i]) added[i]=1;
-  }
-  return {removed, added};
-}
 
 // 整列済み新版（作業フレームに配置済み）を旧版と同座標比較して変更枠を算出。
 function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
@@ -1055,15 +954,6 @@ function hitHandle(p){
   return -1;
 }
 // 反転ドラッグ（右下→左上）を正の w/h へ正規化する
-function normRect(x0,y0,x1,y1){
-  return {x:Math.min(x0,x1), y:Math.min(y0,y1), w:Math.abs(x1-x0), h:Math.abs(y1-y0)};
-}
-// 1個の矩形をフレーム内へクランプ（既存 clampBoxes と同じ規則の単体版）
-function clampBox(b, width, height){
-  const x0=Math.max(0,b.x), y0=Math.max(0,b.y);
-  const x1=Math.min(width,b.x+b.w), y1=Math.min(height,b.y+b.h);
-  return {x:x0, y:y0, w:Math.max(0,x1-x0), h:Math.max(0,y1-y0)};
-}
 
 // 画面解像度のオーバーレイへ枠を描く。CSS transform は掛けず view 変換を自前で適用するため、
 // 枠線は画面px固定になり拡大しても太らない。out の実データには一切触れない。
