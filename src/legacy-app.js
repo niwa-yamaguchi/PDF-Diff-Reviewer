@@ -5,6 +5,10 @@ import { dilateMask, toleratedDiffMasks } from "./core/image-diff/masks.js";
 import { computeBoxes } from "./core/change-boxes/detect.js";
 import { bestAlignment } from "./core/alignment/similarity.js";
 import { bestQuadrant } from "./core/alignment/quadrant.js";
+import { assembleFromLeaves, reconstructLinesInItemOrder } from "./core/text-diff/tokens.js";
+import { xyCut } from "./core/text-diff/xy-cut.js";
+import { buildTextHighlights } from "./core/text-diff/highlights.js";
+import { applyTableHighlights } from "./core/text-diff/tables.js";
 
 (function(){
   const url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -1529,132 +1533,6 @@ const TEXT_HI_COLORS = (() => {
 // 1ページ分のテキストを行単位に再構成（Y座標でグルーピング→X座標順に連結）。
 // トークンは box化せず item.transform（6要素）と item.width を保持（scale/viewport非依存）。
 // content.items 相当の配列を現行ロジックで行再構成（空str/hasEOL/TOL/末尾トリムを現行同様に処理）
-function reconstructLinesInItemOrder(items){
-  const lines = [];
-  const TOL = 2.5; // 同一行とみなすY座標の許容差
-  let cur = null;  // {y, parts:[{x,str,transform,w}]}
-  const flush = () => {
-    if(cur && cur.parts.length){
-      const sorted = cur.parts.slice().sort((a,b)=>a.x-b.x);
-      let text = "";
-      const tokens = [];
-      for(const p of sorted){
-        tokens.push({str:p.str, off:text.length, transform:p.transform.slice(), w:p.w});
-        text += p.str;
-      }
-      lines.push({text:text.replace(/\s+$/,""), tokens});
-    }
-    cur = null;
-  };
-  for(const it of items){
-    const y = it.transform[5];
-    if(cur===null || Math.abs(cur.y-y) > TOL){ flush(); cur = {y, parts:[]}; }
-    if(it.str) cur.parts.push({x:it.transform[4], str:it.str, transform:it.transform, w:it.width});
-    if(it.hasEOL){ flush(); cur = null; }
-  }
-  flush();
-  return lines;
-}
-
-// 区間[lo,hi]の和集合の隙間
-function unionGaps(intervals){
-  if(intervals.length < 2) return [];
-  const sorted = intervals.slice().sort((a,b)=>a[0]-b[0]);
-  const gaps = [];
-  let curEnd = sorted[0][1];
-  for(let i=1;i<sorted.length;i++){
-    const lo = sorted[i][0], hi = sorted[i][1];
-    if(lo > curEnd){ gaps.push({lo:curEnd, hi:lo, size:lo-curEnd}); curEnd = hi; }
-    else if(hi > curEnd){ curEnd = hi; }
-  }
-  return gaps;
-}
-function medianFh(tokens){
-  const fhs = tokens.map(t=>t.fh).filter(v=>v>0).sort((a,b)=>a-b);
-  if(!fhs.length) return 0;
-  const m = fhs.length >> 1;
-  return fhs.length % 2 ? fhs[m] : (fhs[m-1]+fhs[m]) / 2;
-}
-function distinctRowCount(tokens, q){
-  if(q <= 0) return tokens.length;
-  const s = new Set();
-  for(const t of tokens) s.add(Math.round(t.y0 / q));
-  return s.size;
-}
-function minOrd(leafList){
-  let m = Infinity;
-  for(const leaf of leafList) for(const t of leaf) if(t.ord < m) m = t.ord;
-  return m;
-}
-function orderByMinOrd(groups){
-  return groups.map(g=>({g,key:minOrd(g)})).sort((a,b)=>a.key-b.key).flatMap(x=>x.g);
-}
-function xyCut(tokens, depth, ctx){
-  if(tokens.length < XYCUT_MIN_BLOCK_TOKENS || depth >= XYCUT_MAX_DEPTH) return [tokens];
-  const fh = medianFh(tokens);
-  if(fh <= 0) return [tokens];
-  const q = fh / 2;
-  let bestCol = null;
-  for(const g of unionGaps(tokens.map(t=>[t.x0, t.x1]))){
-    if(g.size < COL_GAP_EM * fh) continue;
-    const mid = (g.lo + g.hi) / 2;
-    const left  = tokens.filter(t => t.x0 <  mid);
-    const right = tokens.filter(t => t.x0 >= mid);
-    if(distinctRowCount(left, q)  < COL_MIN_SIDE_LINES) continue;
-    if(distinctRowCount(right, q) < COL_MIN_SIDE_LINES) continue;
-    if(!bestCol || g.size > bestCol.size) bestCol = {size:g.size, left, right};
-  }
-  let bestRow = null;
-  for(const g of unionGaps(tokens.map(t=>[t.y0, t.y1]))){
-    if(g.size < ROW_GAP_EM * fh) continue;
-    if(!bestRow || g.size > bestRow.size) bestRow = {size:g.size, mid:(g.lo+g.hi)/2};
-  }
-  const colScore = bestCol ? bestCol.size / fh : -1;
-  const rowScore = bestRow ? bestRow.size / fh : -1;
-  if(colScore < 0 && rowScore < 0) return [tokens];
-  if(rowScore >= colScore && bestRow){
-    const top = tokens.filter(t => t.y0 >= bestRow.mid);
-    const bot = tokens.filter(t => t.y0 <  bestRow.mid);
-    return orderByMinOrd([ xyCut(top, depth+1, ctx), xyCut(bot, depth+1, ctx) ]);
-  }
-  ctx.hadVerticalCut = true;
-  const childL = xyCut(bestCol.left,  depth+1, ctx);
-  const childR = xyCut(bestCol.right, depth+1, ctx);
-  return [...childL, ...childR];
-}
-
-// 全item(空str含む)を葉bboxへ点割当し、葉ごとに現行ロジックで再構成→読み順連結
-function assembleFromLeaves(items, leaves){
-  const boxes = leaves.map(leaf => {
-    let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
-    for(const t of leaf){ if(t.x0<x0)x0=t.x0; if(t.x1>x1)x1=t.x1; if(t.y0<y0)y0=t.y0; if(t.y1>y1)y1=t.y1; }
-    return {x0,x1,y0,y1};
-  });
-  const buckets = leaves.map(()=>[]);
-  for(const it of items){
-    const px = it.transform[4], py = it.transform[5];
-    let bi = -1;
-    for(let i=0;i<boxes.length;i++){
-      const b = boxes[i];
-      if(px>=b.x0 && px<=b.x1 && py>=b.y0 && py<=b.y1){ bi=i; break; }
-    }
-    if(bi < 0){
-      let bd = Infinity;
-      for(let i=0;i<boxes.length;i++){
-        const b = boxes[i];
-        const dx = Math.max(b.x0-px, 0, px-b.x1), dy = Math.max(b.y0-py, 0, py-b.y1);
-        const d = dx*dx + dy*dy;
-        if(d < bd){ bd = d; bi = i; }
-      }
-    }
-    buckets[bi < 0 ? 0 : bi].push(it);
-  }
-  const lines = [];
-  for(const bucket of buckets){
-    for(const ln of reconstructLinesInItemOrder(bucket)) lines.push(ln);
-  }
-  return lines;
-}
 function logXYCutBlocks(idx, leaves, hadVerticalCut){
   console.log(`[XYCut] page ${idx+1}: leaves=${leaves.length} hadVerticalCut=${hadVerticalCut}`,
     leaves.map(l => l.length));
@@ -1686,7 +1564,14 @@ async function extractPageTokenLines(doc, idx){
   if(toks.length < XYCUT_MIN_BLOCK_TOKENS) return reconstructLinesInItemOrder(content.items);
 
   const ctx = {hadVerticalCut:false};
-  const leaves = xyCut(toks, 0, ctx);
+  const leaves = xyCut(toks, {
+    maxDepth: XYCUT_MAX_DEPTH,
+    minBlockTokens: XYCUT_MIN_BLOCK_TOKENS,
+    colGapEm: COL_GAP_EM,
+    rowGapEm: ROW_GAP_EM,
+    colMinSideLines: COL_MIN_SIDE_LINES,
+    context: ctx,
+  });
 
   // 列存在ゲート: 縦カット無しは現行動作（バイト一致・非回帰）。有りは葉ごと再構成。
   const result = ctx.hadVerticalCut
@@ -1708,226 +1593,12 @@ async function extractDocTokens(doc, label){
   return pages;
 }
 
-// [pageLines...] を {text, pageIndex, tokens} のグローバル行配列へ平坦化
-function flattenLines(pages){
-  const flat = [];
-  pages.forEach((pageLines, pageIndex) => {
-    pageLines.forEach(line => flat.push({text:line.text, pageIndex, tokens:line.tokens}));
-  });
-  return flat;
-}
-
-function pushHiEntry(map, pageIndex, token, color){
-  if(!map.has(pageIndex)) map.set(pageIndex, []);
-  map.get(pageIndex).push({token, color});
-}
-
-// diff-match-patch の行差分エントリ（複数行が1つに連結された文字列）の行数
-function diffChunkLineCount(text){
-  const n = text.split("\n").length;
-  return text.endsWith("\n") ? n-1 : n;
-}
-
-// 文字範囲[start,end)とトークン[off,off+len)が重なるか（半開区間・境界一致は除外）
-function rangeOverlapsToken(tok, start, end){
-  return tok.off < end && (tok.off + tok.str.length) > start;
-}
-
-// 行diff＋行内文字diffからページ×side別のハイライトを集約
-function buildTextHighlights(){
-  const oldFlat = flattenLines(state.textCache.old);
-  const newFlat = flattenLines(state.textCache.new);
-  const oldText = oldFlat.map(l=>l.text).join("\n");
-  const newText = newFlat.map(l=>l.text).join("\n");
-
-  const hi = { old:new Map(), new:new Map() };
-  const dmp = new diff_match_patch();
-  const a = dmp.diff_linesToChars_(oldText, newText);
-  const diffs = dmp.diff_main(a.chars1, a.chars2, false);
-  dmp.diff_charsToLines_(diffs, a.lineArray);
-
-  const highlightLine = (flat, side, idx, color, rangeStart, rangeEnd) => {
-    const line = flat[idx];
-    for(const tok of line.tokens){
-      if(rangeStart==null || rangeOverlapsToken(tok, rangeStart, rangeEnd)){
-        pushHiEntry(hi[side], line.pageIndex, tok, color);
-      }
-    }
-  };
-
-  let oldIdx = 0, newIdx = 0;
-  for(let i=0;i<diffs.length;i++){
-    const op = diffs[i][0], text = diffs[i][1];
-    const cnt = diffChunkLineCount(text);
-    if(op===0){ oldIdx += cnt; newIdx += cnt; continue; }
-    if(op===-1){
-      const next = diffs[i+1];
-      if(next && next[0]===1){
-        const addCnt = diffChunkLineCount(next[1]);
-        const n = Math.min(cnt, addCnt);
-        for(let k=0;k<n;k++){
-          const oldLine = oldFlat[oldIdx+k], newLine = newFlat[newIdx+k];
-          const cdiffs = dmp.diff_main(oldLine.text, newLine.text);
-          dmp.diff_cleanupSemantic(cdiffs);
-          let oldPos=0, newPos=0;
-          for(const part of cdiffs){
-            const pop = part[0], ptext = part[1];
-            if(pop===0){ oldPos+=ptext.length; newPos+=ptext.length; }
-            else if(pop===-1){
-              highlightLine(oldFlat, "old", oldIdx+k, "changed", oldPos, oldPos+ptext.length);
-              oldPos += ptext.length;
-            } else {
-              highlightLine(newFlat, "new", newIdx+k, "changed", newPos, newPos+ptext.length);
-              newPos += ptext.length;
-            }
-          }
-        }
-        for(let k=n;k<cnt;k++)    highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
-        for(let k=n;k<addCnt;k++) highlightLine(newFlat, "new", newIdx+k, "added",   null);
-        oldIdx += cnt; newIdx += addCnt;
-        i++; // 対にした追加ブロックを消費済みとしてスキップ
-        continue;
-      }
-      for(let k=0;k<cnt;k++) highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
-      oldIdx += cnt;
-      continue;
-    }
-    if(op===1){
-      for(let k=0;k<cnt;k++) highlightLine(newFlat, "new", newIdx+k, "added", null);
-      newIdx += cnt;
-    }
-  }
-  return hi;
-}
-
 // ── XY-cut 多段組み読み順復元（フェーズ3）定数 ──
 const XYCUT_MAX_DEPTH        = 6;   // 再帰深度上限
 const XYCUT_MIN_BLOCK_TOKENS = 2;   // これ未満は分割せず葉に
 const COL_GAP_EM             = 2.5; // 縦カット(段)最小ガター幅 ÷ フォント高
 const ROW_GAP_EM             = 1.6; // 横カット最小空白高 ÷ フォント高
 const COL_MIN_SIDE_LINES     = 3;   // 段分割は両側に≥3行(量子化Y種類)を要求
-
-// ── 表領域のセル格子diff（フェーズ2） ──
-const TABLE_ROWS_MIN = 3;   // 表と判定する最小行数
-const TABLE_COLS_MIN = 2;   // 表と判定する最小列数
-const TABLE_XQ = 8;         // 列クラスタリングのX許容差（PDFユーザ空間単位）
-
-// X座標配列を近接クラスタへグルーピングし、各クラスタの代表X値を返す
-function clusterColumns(xs, tol){
-  const sorted = xs.slice().sort((a,b)=>a-b);
-  const clusters = [];
-  for(const x of sorted){
-    const last = clusters[clusters.length-1];
-    if(last && x - last.max <= tol){ last.max=x; last.sum+=x; last.n++; }
-    else clusters.push({max:x, sum:x, n:1});
-  }
-  return clusters.map(c=>c.sum/c.n);
-}
-
-// ページ内トークンのX/Y位置から表候補領域を検出（罫線は使わずテキスト位置のみ）
-function detectTables(pageLines){
-  if(!pageLines || pageLines.length < TABLE_ROWS_MIN) return [];
-  const allX = [];
-  for(const line of pageLines) for(const tok of line.tokens) allX.push(tok.transform[4]);
-  if(!allX.length) return [];
-  const cols = clusterColumns(allX, TABLE_XQ);
-  if(cols.length < TABLE_COLS_MIN) return [];
-
-  const nearestCol = x => {
-    let best=0, bd=Infinity;
-    for(let i=0;i<cols.length;i++){ const d=Math.abs(cols[i]-x); if(d<bd){ bd=d; best=i; } }
-    return best;
-  };
-  const lineColSets = pageLines.map(line => {
-    const set = new Set();
-    for(const tok of line.tokens) set.add(nearestCol(tok.transform[4]));
-    return set;
-  });
-
-  const tables = [];
-  let runStart = -1, unionCols = new Set();
-  const flushRun = end => {
-    if(runStart>=0 && (end-runStart)>=TABLE_ROWS_MIN && unionCols.size>=TABLE_COLS_MIN){
-      tables.push(buildTableFromRun(pageLines, runStart, end, [...unionCols].sort((x,y)=>x-y), nearestCol));
-    }
-    runStart = -1; unionCols = new Set();
-  };
-  for(let i=0;i<pageLines.length;i++){
-    if(lineColSets[i].size >= TABLE_COLS_MIN){
-      if(runStart<0) runStart = i;
-      for(const c of lineColSets[i]) unionCols.add(c);
-    } else flushRun(i);
-  }
-  flushRun(pageLines.length);
-  return tables;
-}
-
-function buildTableFromRun(pageLines, rowStart, rowEnd, colIdxs, nearestCol){
-  const colIndexMap = new Map(colIdxs.map((c,i)=>[c,i]));
-  const rows = [];
-  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
-  for(let r=rowStart;r<rowEnd;r++){
-    const cells = colIdxs.map(()=>[]);
-    for(const tok of pageLines[r].tokens){
-      const ci = nearestCol(tok.transform[4]);
-      if(colIndexMap.has(ci)) cells[colIndexMap.get(ci)].push(tok);
-      const x = tok.transform[4], y = tok.transform[5];
-      if(x<minX) minX=x; if(x>maxX) maxX=x;
-      if(y<minY) minY=y; if(y>maxY) maxY=y;
-    }
-    rows.push(cells);
-  }
-  return { rows, rowCount:rows.length, colCount:colIdxs.length, box:{x0:minX,y0:minY,x1:maxX,y1:maxY} };
-}
-
-function tableCellText(cell){
-  return cell.slice().sort((a,b)=>a.transform[4]-b.transform[4]).map(t=>t.str).join("").trim();
-}
-
-// トークンのベースライン原点が矩形内にあるものを textHi[side] から除去（行diff由来との二重着色回避）
-function removeHighlightsInBox(map, pageIndex, box){
-  const arr = map.get(pageIndex);
-  if(!arr) return;
-  map.set(pageIndex, arr.filter(({token}) => {
-    const x = token.transform[4], y = token.transform[5];
-    const inside = x>=box.x0-1e-6 && x<=box.x1+1e-6 && y>=box.y0-1e-6 && y<=box.y1+1e-6;
-    return !inside;
-  }));
-}
-
-// 旧新の行数・列数が一致する場合のみ格子diffを適用（不一致時は行diff着色へフォールバック）
-function applyTableDiff(oldTable, newTable, pageIndex, hi){
-  if(oldTable.rowCount !== newTable.rowCount || oldTable.colCount !== newTable.colCount) return;
-  removeHighlightsInBox(hi.old, pageIndex, oldTable.box);
-  removeHighlightsInBox(hi.new, pageIndex, newTable.box);
-  for(let r=0;r<oldTable.rowCount;r++){
-    for(let c=0;c<oldTable.colCount;c++){
-      const oldCell = oldTable.rows[r][c], newCell = newTable.rows[r][c];
-      const oldStr = tableCellText(oldCell), newStr = tableCellText(newCell);
-      if(oldStr === newStr) continue; // 共通セルは無着色
-      if(oldStr && !newStr){
-        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "removed");
-      } else if(!oldStr && newStr){
-        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "added");
-      } else {
-        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "changed");
-        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "changed");
-      }
-    }
-  }
-}
-
-// ページ単位で旧新の表を出現順に対応づけ、格子diffで上書き
-function applyTableHighlights(hi){
-  const oldPages = state.textCache.old, newPages = state.textCache.new;
-  const maxPages = Math.max(oldPages.length, newPages.length);
-  for(let p=0;p<maxPages;p++){
-    const oldTables = detectTables(oldPages[p] || []);
-    const newTables = detectTables(newPages[p] || []);
-    const n = Math.min(oldTables.length, newTables.length);
-    for(let i=0;i<n;i++) applyTableDiff(oldTables[i], newTables[i], p, hi);
-  }
-}
 
 // ── 描画 ──
 
@@ -2167,8 +1838,8 @@ async function runTextDiff(){
     return;
   }
 
-  const hi = buildTextHighlights();
-  applyTableHighlights(hi);
+  const hi = buildTextHighlights(state.textCache.old, state.textCache.new);
+  applyTableHighlights(state.textCache.old, state.textCache.new, hi);
   state.textHi = hi;
   state.textScale = state.dpi/72;
   state.textPage = 0;
