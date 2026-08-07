@@ -27,6 +27,14 @@ function prepareSequences(state, dom) {
   dom.textStatus.textContent = "準備完了 — 「テキスト差分を表示」を押してください";
 }
 
+function closeReadyActions(state, dom) {
+  state.visual.rendered = false;
+  dom.run.disabled = true;
+  dom.runText.disabled = true;
+  dom.dlTextPng.disabled = true;
+  dom.dlTextPdf.disabled = true;
+}
+
 export function createDocumentController({
   state,
   dom,
@@ -35,15 +43,20 @@ export function createDocumentController({
   onReady,
   confirmDiscard = () => true,
 }) {
-  const latestGeneration = { old: null, new: null };
+  const pendingGeneration = { old: null, new: null };
+  const failed = { old: false, new: false };
+  const hasPending = () => pendingGeneration.old != null || pendingGeneration.new != null;
+  const hasFailure = () => failed.old || failed.new;
 
   async function load(side, file) {
     if (!confirmDiscard()) return false;
 
     state.documents.generation += 1;
     const generation = state.documents.generation;
-    latestGeneration[side] = generation;
-    const isCurrent = () => latestGeneration[side] === generation;
+    pendingGeneration[side] = generation;
+    failed[side] = false;
+    const isCurrent = () => pendingGeneration[side] === generation;
+    closeReadyActions(state, dom);
     let doc;
     try {
       const data = await file.arrayBuffer();
@@ -51,6 +64,8 @@ export function createDocumentController({
       doc = await pdf.getDocument({ data, ...PDF_DOCUMENT_OPTIONS }).promise;
     } catch (error) {
       if (isCurrent()) {
+        pendingGeneration[side] = null;
+        failed[side] = true;
         errorReporter.report(error, "PDFの読み込みに失敗しました");
       }
       return false;
@@ -65,11 +80,9 @@ export function createDocumentController({
       setDrop(dom.dropNew, file.name);
     }
     invalidateDocuments(state, { advanceGeneration: false });
-    state.visual.rendered = false;
-    dom.dlTextPng.disabled = true;
-    dom.dlTextPdf.disabled = true;
+    pendingGeneration[side] = null;
 
-    if (state.documents.oldDoc && state.documents.newDoc) {
+    if (!hasPending() && !hasFailure() && state.documents.oldDoc && state.documents.newDoc) {
       prepareSequences(state, dom);
       onReady();
     }

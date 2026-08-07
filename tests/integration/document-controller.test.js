@@ -150,6 +150,164 @@ test("allows concurrent loads for opposite document sides to both commit", async
   expect(onReady).toHaveBeenCalledOnce();
 });
 
+test("publishes only the complete replacement pair when both existing sides reload", async () => {
+  const state = createAppState();
+  const oldDoc0 = { numPages: 1, id: "old-0" };
+  const newDoc0 = { numPages: 1, id: "new-0" };
+  const oldDoc1 = { numPages: 2, id: "old-1" };
+  const newDoc1 = { numPages: 3, id: "new-1" };
+  state.documents.oldDoc = oldDoc0;
+  state.documents.newDoc = newDoc0;
+  state.documents.oldSequence = [0];
+  state.documents.newSequence = [0];
+  state.documents.pages = 1;
+  state.visual.rendered = true;
+  const dom = createDom();
+  dom.run.disabled = false;
+  dom.runText.disabled = false;
+  const oldParse = deferred();
+  const pdf = {
+    getDocument: vi.fn()
+      .mockReturnValueOnce({ promise: oldParse.promise })
+      .mockReturnValueOnce({ promise: Promise.resolve(newDoc1) }),
+  };
+  const { controller, onReady } = createHarness({ state, dom, pdf });
+  const oldFile = { name: "old-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(1)) };
+  const newFile = { name: "new-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(2)) };
+
+  const oldLoad = controller.load("old", oldFile);
+  const readyClosedAtStart = {
+    run: dom.run.disabled,
+    runText: dom.runText.disabled,
+    dlTextPng: dom.dlTextPng.disabled,
+    dlTextPdf: dom.dlTextPdf.disabled,
+    rendered: state.visual.rendered,
+  };
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
+  expect(await controller.load("new", newFile)).toBe(true);
+  const afterNew = {
+    oldDoc: state.documents.oldDoc,
+    newDoc: state.documents.newDoc,
+    oldSequence: [...state.documents.oldSequence],
+    newSequence: [...state.documents.newSequence],
+    pages: state.documents.pages,
+    runDisabled: dom.run.disabled,
+    readyCalls: onReady.mock.calls.length,
+  };
+  oldParse.resolve(oldDoc1);
+
+  expect(await oldLoad).toBe(true);
+  expect(readyClosedAtStart).toEqual({
+    run: true,
+    runText: true,
+    dlTextPng: true,
+    dlTextPdf: true,
+    rendered: false,
+  });
+  expect(afterNew).toEqual({
+    oldDoc: oldDoc0,
+    newDoc: newDoc1,
+    oldSequence: [0],
+    newSequence: [0],
+    pages: 1,
+    runDisabled: true,
+    readyCalls: 0,
+  });
+  expect(state.documents.oldDoc).toBe(oldDoc1);
+  expect(state.documents.newDoc).toBe(newDoc1);
+  expect(state.documents.pages).toBe(3);
+  expect(state.documents.generation).toBe(2);
+  expect(dom.run.disabled).toBe(false);
+  expect(onReady).toHaveBeenCalledOnce();
+});
+
+test("a stale same-side completion does not clear the newer pending request", async () => {
+  const state = createAppState();
+  state.documents.oldDoc = { numPages: 1, id: "old-0" };
+  state.documents.newDoc = { numPages: 1, id: "new-0" };
+  const dom = createDom();
+  dom.run.disabled = false;
+  dom.runText.disabled = false;
+  const firstParse = deferred();
+  const secondParse = deferred();
+  const newestDoc = { numPages: 2, id: "old-2" };
+  const pdf = {
+    getDocument: vi.fn()
+      .mockReturnValueOnce({ promise: firstParse.promise })
+      .mockReturnValueOnce({ promise: secondParse.promise }),
+  };
+  const { controller, onReady } = createHarness({ state, dom, pdf });
+  const firstFile = { name: "old-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(1)) };
+  const secondFile = { name: "old-2.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(2)) };
+
+  const firstLoad = controller.load("old", firstFile);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
+  const secondLoad = controller.load("old", secondFile);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(2));
+  firstParse.resolve({ numPages: 3, id: "old-1" });
+
+  expect(await firstLoad).toBe(false);
+  expect(dom.run.disabled).toBe(true);
+  expect(onReady).not.toHaveBeenCalled();
+
+  secondParse.resolve(newestDoc);
+  expect(await secondLoad).toBe(true);
+  expect(state.documents.oldDoc).toBe(newestDoc);
+  expect(state.documents.generation).toBe(2);
+  expect(dom.run.disabled).toBe(false);
+  expect(onReady).toHaveBeenCalledOnce();
+});
+
+test("keeps a failed replacement batch unready until a successful retry", async () => {
+  const state = createAppState();
+  const oldDoc0 = { numPages: 1, id: "old-0" };
+  const newDoc0 = { numPages: 1, id: "new-0" };
+  const oldDoc1 = { numPages: 2, id: "old-1" };
+  const newDoc1 = { numPages: 2, id: "new-1" };
+  state.documents.oldDoc = oldDoc0;
+  state.documents.newDoc = newDoc0;
+  const dom = createDom();
+  dom.run.disabled = false;
+  dom.runText.disabled = false;
+  const oldParse = deferred();
+  const parseError = new Error("new replacement failed");
+  const pdf = {
+    getDocument: vi.fn()
+      .mockReturnValueOnce({ promise: oldParse.promise })
+      .mockImplementationOnce(() => ({ promise: Promise.reject(parseError) }))
+      .mockReturnValueOnce({ promise: Promise.resolve(newDoc1) }),
+  };
+  const { controller, errorReporter, onReady } = createHarness({ state, dom, pdf });
+  const oldFile = { name: "old-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(1)) };
+  const failedNewFile = { name: "broken-new.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(2)) };
+  const retryNewFile = { name: "new-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(3)) };
+
+  const oldLoad = controller.load("old", oldFile);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
+  expect(await controller.load("new", failedNewFile)).toBe(false);
+
+  expect(state.documents.oldDoc).toBe(oldDoc0);
+  expect(state.documents.newDoc).toBe(newDoc0);
+  expect(dom.run.disabled).toBe(true);
+  expect(dom.runText.disabled).toBe(true);
+  expect(onReady).not.toHaveBeenCalled();
+  expect(errorReporter.report).toHaveBeenCalledWith(parseError, "PDFの読み込みに失敗しました");
+
+  expect(await controller.load("new", retryNewFile)).toBe(true);
+  expect(state.documents.oldDoc).toBe(oldDoc0);
+  expect(state.documents.newDoc).toBe(newDoc1);
+  expect(dom.run.disabled).toBe(true);
+  expect(onReady).not.toHaveBeenCalled();
+
+  oldParse.resolve(oldDoc1);
+  expect(await oldLoad).toBe(true);
+  expect(state.documents.oldDoc).toBe(oldDoc1);
+  expect(state.documents.newDoc).toBe(newDoc1);
+  expect(state.documents.generation).toBe(3);
+  expect(dom.run.disabled).toBe(false);
+  expect(onReady).toHaveBeenCalledOnce();
+});
+
 test("reports a parse failure only for the current generation", async () => {
   const error = new Error("invalid PDF");
   const pdf = { getDocument: vi.fn(() => ({ promise: Promise.reject(error) })) };
