@@ -2,7 +2,7 @@
 import { jsPDF } from "jspdf";
 import { createCanvas, createWhiteCanvas } from "./platform/canvas.js";
 import { downloadBlob } from "./platform/download.js";
-import { pdfjsLib, PDF_DOCUMENT_OPTIONS } from "./platform/pdfjs.js";
+import { pdfjsLib } from "./platform/pdfjs.js";
 import { clampBox, clampBoxes, normalizeRect as normRect } from "./core/geometry/rectangles.js";
 import { luminanceAt as lum } from "./core/image-diff/luminance.js";
 import { dilateMask, toleratedDiffMasks } from "./core/image-diff/masks.js";
@@ -20,143 +20,56 @@ import {
 import { createAppState } from "./app/state.js";
 import {
   applyInvalidatingChange,
-  invalidateDocuments,
   invalidateDpi,
   invalidateManualAlignment,
   invalidatePageAlignment,
   invalidateThreshold,
   invalidateTolerance,
 } from "./app/invalidation.js";
+import { createDocumentController } from "./features/documents/document-controller.js";
+import {
+  framePlan,
+  pageLabelText,
+  sequenceIndex,
+} from "./features/documents/page-layout.js";
+import {
+  canvasToGrayF,
+  pageSizePt,
+  renderPageCanvas,
+  rotateCanvas90,
+} from "./features/documents/page-renderer.js";
 
 const state = createAppState();
 
 const $ = id => document.getElementById(id);
 const out = $("out"), octx = out.getContext("2d");
 const boxLayer = $("boxLayer"), bctx = boxLayer.getContext("2d");
+const documentController = createDocumentController({
+  state,
+  dom: {
+    dropOld: $("dropOld"),
+    dropNew: $("dropNew"),
+    run: $("run"),
+    runText: $("runText"),
+    dlTextPng: $("dlTextPng"),
+    dlTextPdf: $("dlTextPdf"),
+    status: $("status"),
+    textStatus: $("textStatus"),
+  },
+  pdf: pdfjsLib,
+  errorReporter: {
+    report(error, message) {
+      console.error(message, error);
+      $("status").textContent = message;
+    },
+  },
+  onReady: syncInvalidatedBoxEditor,
+  confirmDiscard: confirmDiscardBoxEdits,
+});
 
-function setDrop(el, name){
-  el.classList.add("set");
-  el.querySelector(".fname").textContent = name;
-}
-
-async function loadPdf(file, which){
-  if(!confirmDiscardBoxEdits()) return false;
-  const doc = await pdfjsLib.getDocument({
-    data: await file.arrayBuffer(),
-    // CID方式（日本語等CJK）フォントのデコードにもローカルのCMap/標準フォントを使う。
-    ...PDF_DOCUMENT_OPTIONS,
-  }).promise;
-  if(which==="old"){ state.documents.oldDoc = doc; setDrop($("dropOld"), file.name); }
-  else { state.documents.newDoc = doc; setDrop($("dropNew"), file.name); }
-  invalidateDocuments(state);
-  syncInvalidatedBoxEditor();
-  state.visual.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
-  $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
-  if(state.documents.oldDoc && state.documents.newDoc){
-    state.documents.oldSequence = Array.from({length:state.documents.oldDoc.numPages}, (_,i)=>i);
-    state.documents.newSequence = Array.from({length:state.documents.newDoc.numPages}, (_,i)=>i);
-    state.documents.alignmentOps = [];
-    state.documents.pages = Math.max(state.documents.oldSequence.length, state.documents.newSequence.length);
-    state.documents.currentPage = 0;
-    $("run").disabled = false;
-    $("runText").disabled = false;
-    $("status").textContent = "準備完了 — 「差分を表示」を押してください";
-    $("textStatus").textContent = "準備完了 — 「テキスト差分を表示」を押してください";
-  }
-  return true;
-}
-
-// ── 用紙サイズ正規化 ────────────────────────────────────────────
-// 用紙サイズ違い(A4版↔A3版)の倍率は推定不要で、PDFのページ実寸(pt)から確定する。
-// 大きい用紙を基準(dpi/72)にし、小さい用紙側だけを ratio 倍の高解像度で描くことで、
-// 両版を「同一ピクセル寸法」に揃える。ベクタPDFなら両版とも劣化ゼロ。
-// 用紙が同寸なら normalized=false で両方 dpi/72 となり、現行と完全一致する。
-const FRAME_RATIO_EPS = 0.002;   // 用紙同寸とみなす倍率の許容（丸め差で毎回ワープしないため）
-const FRAME_ASPECT_EPS = 0.01;   // 縦横比の不一致とみなす閾値
-
-// ページ実寸(pt)。ページが無いスロット(空白/範囲外)は null。
-// pdf.js はページオブジェクトを内部キャッシュするため、renderPageCanvas と
-// 二重に getPage しても実質的な再取得コストは生じない。
-async function pageSizePt(doc, idx){
-  if(!doc || idx == null || idx >= doc.numPages) return null;
-  const page = await doc.getPage(idx+1);
-  const vp = page.getViewport({scale:1});
-  return { w: vp.width, h: vp.height };
-}
-
-// 旧新のページ実寸から、両者が同一ピクセル寸法になる描画scaleを決める（純関数）。
-// 縦横比が違う組（A4縦↔A3横など）は相似でないため正規化せず、警告フラグだけ立てる。
-function framePlan(oldPt, newPt, dpi){
-  const base = dpi/72;
-  const none = { oldScale:base, newScale:base, frameScale:base, ratio:1,
-                 normalized:false, aspectMismatch:false, refSide:null };
-  if(!oldPt || !newPt) return none;
-  if(!(oldPt.w>0 && oldPt.h>0 && newPt.w>0 && newPt.h>0)) return none;
-  const refIsOld = (oldPt.w*oldPt.h) >= (newPt.w*newPt.h);
-  const ref   = refIsOld ? oldPt : newPt;
-  const other = refIsOld ? newPt : oldPt;
-  const rw = ref.w/other.w, rh = ref.h/other.h;
-  if(Math.abs(rw-rh)/Math.max(rw,rh) > FRAME_ASPECT_EPS){
-    return { ...none, aspectMismatch:true };
-  }
-  const ratio = Math.min(rw, rh);
-  if(Math.abs(ratio-1) <= FRAME_RATIO_EPS) return none;
-  return {
-    oldScale:  refIsOld ? base : base*ratio,
-    newScale:  refIsOld ? base*ratio : base,
-    frameScale: base,
-    ratio, normalized:true, aspectMismatch:false,
-    refSide: refIsOld ? "old" : "new"
-  };
-}
-
-// PDFページ → 白背景のカラーCanvas（無い場合は null）
-async function renderPageCanvas(doc, idx, scale){
-  if(!doc || idx == null || idx >= doc.numPages) return null;
-  const page = await doc.getPage(idx+1);
-  const vp = page.getViewport({scale});
-  const c = createWhiteCanvas(Math.ceil(vp.width), Math.ceil(vp.height));
-  const ctx = c.getContext("2d");
-  await page.render({canvasContext:ctx, viewport:vp}).promise;
-  return c;
-}
-
-// autoAlign ON かつ当ページ未推定なら、フーリエ・メリンで推定して alignCache に格納。
-// oldC/newC はカラーCanvas。グレースケールFloat配列へ変換して estimateSimilarity に渡す。
-function canvasToGrayF(c){
-  if(!c) return null;
-  const {width:w, height:h} = c;
-  const d = c.getContext("2d").getImageData(0,0,w,h).data;
-  const g = new Float64Array(w*h);
-  for(let i=0,p=0;i<g.length;i++,p+=4) g[i] = 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
-  return { g, w, h };
-}
 // 象限判定用のプローブ描画の長辺px。本描画(state.comparison.dpi)とは独立の固定解像度にしてあるため、
 // quadCache は dpi 非依存（＝dpi変更で破棄する必要がない）。
 const QUAD_PROBE_LONG = 512;
-
-// キャンバスの直角回転。k=0 は入力をそのまま返す（新規canvasを作らない）。
-// これが「回転が絡まないペアでは現行と1画素も変わらない」ことの担保になっている。
-// 直角かつ整数オフセットの回転はサンプル点が元画素の中心に厳密一致するため、
-// setTransform 経由でも補間の影響を受けない（Task 4 のブラウザ実測で確認する）。
-function rotateCanvas90(c, k){
-  const kk = ((k % 4) + 4) % 4;
-  if(!c || kk === 0) return c;
-  const d = createWhiteCanvas(
-    (kk === 2) ? c.width : c.height,
-    (kk === 2) ? c.height : c.width,
-  );
-  const ctx = d.getContext("2d");
-  // 未描画領域は透明黒のまま残るが、lum()/canvasToGrayF() はアルファを見ないため
-  // 透明画素は輝度0＝インクとして誤認される。renderPageCanvas 等の他のcanvas生成箇所と
-  // 同様に白で下地を敷いてから描く（回転で全面が埋まる場合でも一貫させておく）。
-  ctx.imageSmoothingEnabled = false; // 直角回転の無損失性をブラウザ実装依存にしないため明示的に無効化
-  if(kk === 1)      ctx.setTransform(0, 1, -1, 0, c.height, 0);          // 時計回り90°
-  else if(kk === 2) ctx.setTransform(-1, 0, 0, -1, c.width, c.height);   // 180°
-  else              ctx.setTransform(0, -1, 1, 0, 0, c.width);           // 時計回り270°
-  ctx.drawImage(c, 0, 0);
-  return d;
-}
 
 // autoAlign ON かつ当ページ未推定なら、低解像度プローブを描画して象限を推定しキャッシュする。
 // oldPt/newPt は呼び出し側が pageSizePt で既に得ているものを渡す（再取得しない）。
@@ -169,7 +82,7 @@ async function ensureQuadEstimate(idx, oi, ni, oldPt, newPt){
     state.visual.quadrantCache.set(idx, {k:0, scores:[1,0,0,0], applied:false, blank:true});
     return;
   }
-  // 以降はプローブ描画で await をまたぐため、その間に loadPdf/refreshAfterAlign で
+  // 以降はプローブ描画で await をまたぐため、その間にPDF再読込/refreshAfterAlign で
   // quadCache が破棄される（＝スロット→ページ対応が変わる）と、古い対応で算出した k を
   // 新しい対応のスロットへ書き戻してしまう。世代を捕捉し、書き込み直前に必ず照合する。
   const gen = state.visual.quadrantGeneration;
@@ -266,17 +179,6 @@ function alignedNewBounds(newC, m){
     if(py > y1) y1 = py;
   }
   return { x1, y1 };
-}
-
-// スロット s の実ページ番号（0基点）。スペーサ(null)・範囲外は null。
-function seqIdx(seq, s){ const v = seq ? seq[s] : undefined; return (v == null) ? null : v; }
-
-// ページャ表示: "3 / 12（旧P3 ↔ 新P4）"。スペーサ側は「空白」。
-function pageLabelText(idx){
-  const o = seqIdx(state.documents.oldSequence, idx), n = seqIdx(state.documents.newSequence, idx);
-  const os = (o == null) ? "旧 空白" : "旧P"+(o+1);
-  const ns = (n == null) ? "新 空白" : "新P"+(n+1);
-  return (idx+1)+" / "+state.documents.pages+"（"+os+" ↔ "+ns+"）";
 }
 
 // 変更箇所の囲み枠（色・サイズ）に関する定数とヘルパ
@@ -620,7 +522,7 @@ function endBoxDrag(e){
 
 async function buildDiff(idx){
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
-  const oi = seqIdx(state.documents.oldSequence, idx), ni = seqIdx(state.documents.newSequence, idx);
+  const oi = sequenceIndex(state.documents.oldSequence, idx), ni = sequenceIndex(state.documents.newSequence, idx);
   // 用紙サイズが違う場合、大きい用紙を基準に「同一ピクセル寸法」となる描画scaleを求める。
   // 同寸なら plan.oldScale === plan.newScale === dpi/72 で現行と完全一致。
   const [oldPt, newPt] = await Promise.all([
@@ -724,7 +626,7 @@ async function buildDiff(idx){
   $("statAd").textContent = "追加 "+ad.toLocaleString();
   updateBoxStat();
   $("status").textContent = (rm+ad===0) ? "差分なし" : "差分を表示中";
-  $("pageLabel").textContent = pageLabelText(idx);
+  $("pageLabel").textContent = pageLabelText(state.documents, idx);
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
   $("boxToggle").disabled=false;
 }
@@ -732,7 +634,7 @@ async function buildDiff(idx){
 // 新旧切替モード：旧・新それぞれのページCanvasをキャッシュし、選択中の版だけを描画する
 async function buildToggle(idx){
   const token = ++state.visual.renderGeneration;
-  const oi = seqIdx(state.documents.oldSequence, idx), ni = seqIdx(state.documents.newSequence, idx);
+  const oi = sequenceIndex(state.documents.oldSequence, idx), ni = sequenceIndex(state.documents.newSequence, idx);
   // Canvasキャッシュにヒットしても読み出し表示に plan が要るため、キャッシュ判定より前に求める。
   const [oldPt, newPt] = await Promise.all([
     pageSizePt(state.documents.oldDoc, oi),
@@ -787,7 +689,7 @@ async function buildToggle(idx){
 
   drawToggleSide();
 
-  $("pageLabel").textContent = pageLabelText(idx);
+  $("pageLabel").textContent = pageLabelText(state.documents, idx);
   $("statRm").textContent = "削除 —";
   $("statAd").textContent = "追加 —";
   updateBoxStat();
@@ -1118,13 +1020,13 @@ document.addEventListener("keydown", e=>{
 $("fileOld").addEventListener("change",async e=>{
   const file=e.target.files[0];
   if(!file) return;
-  try { await loadPdf(file,"old"); }
+  try { await documentController.load("old", file); }
   finally { e.target.value=""; }
 });
 $("fileNew").addEventListener("change",async e=>{
   const file=e.target.files[0];
   if(!file) return;
-  try { await loadPdf(file,"new"); }
+  try { await documentController.load("new", file); }
   finally { e.target.value=""; }
 });
 ["dropOld","dropNew"].forEach(id=>{
@@ -1132,7 +1034,7 @@ $("fileNew").addEventListener("change",async e=>{
   el.addEventListener("dragover",e=>{e.preventDefault();el.style.borderColor="var(--signal)";});
   el.addEventListener("dragleave",()=>el.style.borderColor="");
   el.addEventListener("drop",e=>{e.preventDefault();el.style.borderColor="";
-    const f=e.dataTransfer.files[0]; if(f&&f.type==="application/pdf") loadPdf(f,which);});
+    const f=e.dataTransfer.files[0]; if(f&&f.type==="application/pdf") documentController.load(which,f);});
 });
 
 // レンジ入力はラベルだけを先行更新し、state は change 時の破棄確認後に確定する。

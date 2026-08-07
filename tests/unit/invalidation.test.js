@@ -58,6 +58,18 @@ test("document invalidation clears every document-derived cache and advances tic
   expect(state.textReview).toMatchObject({ scale: null, extraction: null, highlights: null, page: 0, extractGeneration: 1, renderGeneration: 1 });
 });
 
+test("document invalidation can preserve an already advanced document generation", () => {
+  const state = populatedState();
+  state.documents.generation = 4;
+
+  invalidateDocuments(state, { advanceGeneration: false });
+
+  expectVisual(state, { pageRendering: true, alignment: true, quadrant: true });
+  expectBoxesCleared(state);
+  expect(state.documents.generation).toBe(4);
+  expect(state.textReview).toMatchObject({ scale: null, extraction: null, highlights: null, page: 0, extractGeneration: 1, renderGeneration: 1 });
+});
+
 test("page alignment invalidation clears visual alignment rotation and boxes but preserves text", () => {
   const state = populatedState();
   invalidatePageAlignment(state);

@@ -28,9 +28,9 @@ export function applyInvalidatingChange(state, { confirmDiscard, update, invalid
   return true;
 }
 
-export function invalidateDocuments(state) {
+export function invalidateDocuments(state, { advanceGeneration = true } = {}) {
   clearVisualDerived(state, { pageRendering: true, alignment: true, quadrant: true, boxes: true });
-  state.documents.generation += 1;
+  if (advanceGeneration) state.documents.generation += 1;
   state.textReview.scale = null;
   state.textReview.extraction = null;
   state.textReview.highlights = null;
