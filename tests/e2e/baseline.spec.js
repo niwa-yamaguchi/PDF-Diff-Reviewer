@@ -36,6 +36,36 @@ test("renders with every external network request blocked", async ({ page }) => 
   await expect(page.locator("#status")).toHaveText(/差分を表示中|差分がない/);
 });
 
+test("keeps the committed threshold and edited boxes when discard is cancelled", async ({ page }) => {
+  await page.goto("/");
+  await page.setInputFiles("#fileOld", join(fixtures, "old.pdf"));
+  await page.setInputFiles("#fileNew", join(fixtures, "new.pdf"));
+  await page.locator("#run").click();
+  await expect(page.locator("#status")).toHaveText("差分を表示中");
+
+  await page.locator("#boxEdit").click();
+  const layer = await page.locator("#boxLayer").boundingBox();
+  expect(layer).not.toBeNull();
+  await page.mouse.move(layer.x + layer.width * 0.72, layer.y + layer.height * 0.72);
+  await page.mouse.down();
+  await page.mouse.move(layer.x + layer.width * 0.84, layer.y + layer.height * 0.82);
+  await page.mouse.up();
+  await expect(page.locator("#statBox")).toContainText("（手編集）");
+
+  const committedThreshold = await page.locator("#th").inputValue();
+  const editedBoxStatus = await page.locator("#statBox").textContent();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.locator("#th").evaluate((slider) => {
+    slider.value = "160";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  await expect(page.locator("#th")).toHaveValue(committedThreshold);
+  await expect(page.locator("#thVal")).toHaveText(committedThreshold);
+  await expect(page.locator("#statBox")).toHaveText(editedBoxStatus);
+});
+
 test("preserves the empty-state appearance", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveScreenshot("empty-state.png", { maxDiffPixelRatio: 0.005 });

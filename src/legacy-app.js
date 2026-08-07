@@ -17,46 +17,18 @@ import {
   legendLayout,
   LG_BORDER_PT,
 } from "./core/legend/layout.js";
+import { createAppState } from "./app/state.js";
+import {
+  applyInvalidatingChange,
+  invalidateDocuments,
+  invalidateDpi,
+  invalidateManualAlignment,
+  invalidatePageAlignment,
+  invalidateThreshold,
+  invalidateTolerance,
+} from "./app/invalidation.js";
 
-const state = {
-  oldDoc:null, newDoc:null, pages:0, cur:0,
-  dpi:150, th:128, dx:0, dy:0,
-  tolerancePx:0, // 位置ズレ許容半径（基準DPI150でのpx数）。既定0=恒等（現行動作と同じ）
-  manualAngle:0, manualScale:1, // 手動 傾き補正(ラジアン)・拡大縮小(倍率)。既定で恒等
-  cache:{}, // pageIndex -> {rm, ad}
-  mode:"diff", toggleSide:"old", toggleCache:null, // 新旧切替モード用（現在ページ分のみ保持）
-  renderToken:0, // buildToggle の再入ガード（世代カウンタ）
-  rendered:false, // out に描画済みか（visual再切替時の表示復元用）
-  topMode:"visual", // "visual"(図面比較) | "text"(テキスト比較)
-  textScale:null, // ページ描画scale(=dpi/72)。抽出には使わない（描画直前に設定）
-  textCache:null, // {old:[pageLines...], new:[pageLines...]}（位置つき抽出結果。scale非依存）
-  textHi:null, // {old:Map<pageIdx,[{token,color}...]>, new:Map<...>}（ハイライト集約）
-  textPage:0, // テキストモードの現在ページ(0基点)
-  textView:{scale:1, tx:0, ty:0}, // 旧新共有ビュー状態
-  textToken:0, // 抽出処理の再入ガード（renderToken と同型）
-  textRenderToken:0, // ページ描画の再入ガード（stale-draw防止）
-  debugXYCut:false,  // trueでXY-cutのブロック構造をconsoleへ出力
-  showBoxes:true,    // 変更箇所を四角枠で囲うか（描くかどうかだけを制御する）
-  boxes:null,        // 現在ページの枠リスト（自動算出 or 手編集後）
-  boxAuto:{},        // pageIndex -> 自動算出の原本（「自動検出に戻す」用）。
-                     // state.cache/alignCache/quadCache と同じく「現在のDPI・位置合わせ・モードの
-                     // もとでの算出結果」であり、前提が変わる操作では必ず捨てること。
-  boxEdits:{},       // pageIndex -> 手編集後の枠リスト（あれば自動より優先）
-  boxUndo:{},        // pageIndex -> 取り消しスタック（枠リストの複製・深さ50）
-  boxEditMode:false, // 枠編集モードのON/OFF
-  boxSel:-1,         // 選択中の枠のstate.boxes内インデックス（-1=未選択）
-  oldSeq:null, newSeq:null, // 旧/新のページ順（要素: 0基点ページ番号 or null=空白スペーサ）
-  alignOps:[], // 整列操作履歴（取り消しスタック）: {side:"old"|"new", slot:number}
-  autoAlign:false, // 自動位置合わせ（フーリエ・メリン）のON/OFF
-  alignCache:{},   // pageIndex -> {angle, scale, txFrac, tyFrac, applied, method, scoreBase, scoreBest}（正規化・dpi非依存）
-  quadCache:{},    // pageIndex -> {k, scores:[4], applied, blank?}（直角回転の自動推定。dpi非依存）
-  quadManual:{},   // pageIndex -> 0..3（直角回転の手動上書き。未設定はキーなし＝自動に従う）
-  quadGen:0,       // quadCache破棄の世代カウンタ（renderTokenと同型）。ensureQuadEstimateはawaitで
-                   // プローブ描画を挟むため、その間にquadCacheが破棄されると古いスロット→ページ対応の
-                   // 結果を書き戻してしまう。quadCache={}にする箇所すべてでこれをインクリメントし、
-                   // await前後で値が変わっていたら書き込みを捨てる。
-  curPlan:null,    // 現在ページの framePlan 返り値（用紙合わせの読み出し表示に使う）
-};
+const state = createAppState();
 
 const $ = id => document.getElementById(id);
 const out = $("out"), octx = out.getContext("2d");
@@ -68,29 +40,23 @@ function setDrop(el, name){
 }
 
 async function loadPdf(file, which){
-  clearBoxEdits(); // 読み込み直しで枠は意味を失う（確認なしで破棄）
   const doc = await pdfjsLib.getDocument({
     data: await file.arrayBuffer(),
     // CID方式（日本語等CJK）フォントのデコードにもローカルのCMap/標準フォントを使う。
     ...PDF_DOCUMENT_OPTIONS,
   }).promise;
-  if(which==="old"){ state.oldDoc = doc; setDrop($("dropOld"), file.name); }
-  else { state.newDoc = doc; setDrop($("dropNew"), file.name); }
-  state.toggleCache = null; state.textCache = null; // 差し替え時は古いキャッシュを破棄
-  state.textHi = null; state.textPage = 0;
-  state.alignCache = {}; // 自動整列の推定結果も破棄
-  state.quadCache = {}; state.quadManual = {}; state.quadGen++; // 直角回転の推定・手動上書きも破棄
-  state.curPlan = null;  // 用紙合わせの読み出しも破棄
-  state.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
+  if(which==="old"){ state.documents.oldDoc = doc; setDrop($("dropOld"), file.name); }
+  else { state.documents.newDoc = doc; setDrop($("dropNew"), file.name); }
+  invalidateDocuments(state);
+  syncInvalidatedBoxEditor();
+  state.visual.rendered = false; // 差し替え後は「差分を表示」を再度押すまで調整コントロールで自動表示しない
   $("dlTextPng").disabled = true; $("dlTextPdf").disabled = true;
-  if(state.oldDoc && state.newDoc){
-    state.oldSeq = Array.from({length:state.oldDoc.numPages}, (_,i)=>i);
-    state.newSeq = Array.from({length:state.newDoc.numPages}, (_,i)=>i);
-    state.alignOps = [];
-    state.alignCache = {}; // 明示的に再破棄（(a)で既に空だが両PDF読込時初期化として明示）
-    state.quadCache = {}; state.quadManual = {}; state.quadGen++; // 同上
-    state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
-    state.cur = 0; state.cache = {};
+  if(state.documents.oldDoc && state.documents.newDoc){
+    state.documents.oldSequence = Array.from({length:state.documents.oldDoc.numPages}, (_,i)=>i);
+    state.documents.newSequence = Array.from({length:state.documents.newDoc.numPages}, (_,i)=>i);
+    state.documents.alignmentOps = [];
+    state.documents.pages = Math.max(state.documents.oldSequence.length, state.documents.newSequence.length);
+    state.documents.currentPage = 0;
     $("run").disabled = false;
     $("runText").disabled = false;
     $("status").textContent = "準備完了 — 「差分を表示」を押してください";
@@ -163,8 +129,8 @@ function canvasToGrayF(c){
   for(let i=0,p=0;i<g.length;i++,p+=4) g[i] = 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
   return { g, w, h };
 }
-// 象限判定用のプローブ描画の長辺px。本描画(state.dpi)とは独立の固定解像度にしてあるため、
-// quadCache は dpi 非依存（＝dpi変更で破棄する必要がない。alignCache と同じ考え）。
+// 象限判定用のプローブ描画の長辺px。本描画(state.comparison.dpi)とは独立の固定解像度にしてあるため、
+// quadCache は dpi 非依存（＝dpi変更で破棄する必要がない）。
 const QUAD_PROBE_LONG = 512;
 
 // キャンバスの直角回転。k=0 は入力をそのまま返す（新規canvasを作らない）。
@@ -193,69 +159,69 @@ function rotateCanvas90(c, k){
 // autoAlign ON かつ当ページ未推定なら、低解像度プローブを描画して象限を推定しキャッシュする。
 // oldPt/newPt は呼び出し側が pageSizePt で既に得ているものを渡す（再取得しない）。
 async function ensureQuadEstimate(idx, oi, ni, oldPt, newPt){
-  if(!state.autoAlign) return;
-  if(state.quadCache[idx]) return; // ページ別キャッシュ
+  if(!state.comparison.autoAlign) return;
+  if(state.visual.quadrantCache.has(idx)) return; // ページ別キャッシュ
   // 片側が空白スロットなら比較対象が無いので回さない（ensureAlignEstimate の blank 分岐と同じ扱い）
   // ここは await をまたがない早期書き込みなので世代ガードは不要。
   if(!oldPt || !newPt){
-    state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
+    state.visual.quadrantCache.set(idx, {k:0, scores:[1,0,0,0], applied:false, blank:true});
     return;
   }
-  // 以降はプローブ描画で await をまたぐため、その間に loadPdf/refreshAfterAlign/th変更で
+  // 以降はプローブ描画で await をまたぐため、その間に loadPdf/refreshAfterAlign で
   // quadCache が破棄される（＝スロット→ページ対応が変わる）と、古い対応で算出した k を
   // 新しい対応のスロットへ書き戻してしまう。世代を捕捉し、書き込み直前に必ず照合する。
-  const gen = state.quadGen;
+  const gen = state.visual.quadrantGeneration;
   const probeScale = pt => QUAD_PROBE_LONG / Math.max(pt.w, pt.h);
   const [oc, nc] = await Promise.all([
-    renderPageCanvas(state.oldDoc, oi, probeScale(oldPt)),
-    renderPageCanvas(state.newDoc, ni, probeScale(newPt))
+    renderPageCanvas(state.documents.oldDoc, oi, probeScale(oldPt)),
+    renderPageCanvas(state.documents.newDoc, ni, probeScale(newPt))
   ]);
-  if(gen !== state.quadGen) return; // await中に世代が進んだので破棄（stale-write防止）。
+  if(gen !== state.visual.quadrantGeneration) return; // await中に世代が進んだので破棄（stale-write防止）。
   // これより下は同期処理のみなので再チェック不要。
   const O = canvasToGrayF(oc), Nw = canvasToGrayF(nc);
   if(!O || !Nw){
-    state.quadCache[idx] = {k:0, scores:[1,0,0,0], applied:false, blank:true};
+    state.visual.quadrantCache.set(idx, {k:0, scores:[1,0,0,0], applied:false, blank:true});
     return;
   }
-  state.quadCache[idx] = bestQuadrant(O, Nw, state.th);
+  state.visual.quadrantCache.set(idx, bestQuadrant(O, Nw, state.comparison.threshold));
 }
 
 // 当ページに適用する直角回転量。手動上書きが最優先、次に自動推定、既定は0。
 // 同期関数なので、呼び出し側は先に await ensureQuadEstimate(...) を済ませること。
 function effectiveQuad(idx){
-  const m = state.quadManual[idx];
+  const m = state.comparison.quadrantManual.get(idx);
   if(m != null) return m;
-  if(!state.autoAlign) return 0;
-  const q = state.quadCache[idx];
+  if(!state.comparison.autoAlign) return 0;
+  const q = state.visual.quadrantCache.get(idx);
   return (q && q.applied) ? q.k : 0;
 }
 
 function ensureAlignEstimate(idx, oldC, newC){
-  if(!state.autoAlign) return;
-  if(state.alignCache[idx]) return; // ページ別キャッシュ
+  if(!state.comparison.autoAlign) return;
+  if(state.visual.alignmentCache.has(idx)) return; // ページ別キャッシュ
   const O = canvasToGrayF(oldC), Nw = canvasToGrayF(newC);
   // 片側が空白スロットなら比較対象が無いので恒等。スコアは定義上1だが、全面が追加/削除
   // として出るページで「一致率100%」と読ませないよう blank フラグで読み出しを分岐させる。
   if(!O || !Nw){
-    state.alignCache[idx] = {angle:0,scale:1,txFrac:0,tyFrac:0,
-      applied:false,method:"identity",scoreBase:1,scoreBest:1,blank:true};
+    state.visual.alignmentCache.set(idx, {angle:0,scale:1,txFrac:0,tyFrac:0,
+      applied:false,method:"identity",scoreBase:1,scoreBest:1,blank:true});
     return;
   }
-  state.alignCache[idx] = bestAlignment(O, Nw, state.th);
+  state.visual.alignmentCache.set(idx, bestAlignment(O, Nw, state.comparison.threshold));
 }
 
 // alignCache の正規化パラメータ（new→old）から、現在Canvas寸法での適用可否と行列要素を返す。
 // 自動推定値（ONかつ適用時）に手動角度・倍率を合成する（角度=加算、倍率=乗算）。
 // 自動が無効/未適用のときは手動値のみが効く。手動値も既定(0/1)なら恒等（現行と完全一致）。
 function alignMatrixFor(idx, oldW, oldH, newW, newH){
-  const a = state.autoAlign ? state.alignCache[idx] : null;
+  const a = state.comparison.autoAlign ? state.visual.alignmentCache.get(idx) : null;
   const autoOn = !!(a && a.applied);
-  const angle = (autoOn ? a.angle : 0) + state.manualAngle;
-  const scale = (autoOn ? a.scale : 1) * state.manualScale;
+  const angle = (autoOn ? a.angle : 0) + state.comparison.manualAngle;
+  const scale = (autoOn ? a.scale : 1) * state.comparison.manualScale;
   const Wc = Math.max(oldW, newW), Hc = Math.max(oldH, newH);
   const tx = autoOn ? a.txFrac*Wc : 0;
   const ty = autoOn ? a.tyFrac*Hc : 0;
-  const applied = autoOn || state.manualAngle !== 0 || state.manualScale !== 1;
+  const applied = autoOn || state.comparison.manualAngle !== 0 || state.comparison.manualScale !== 1;
   return { angle, scale, tx, ty, applied };
 }
 
@@ -271,13 +237,13 @@ function renderAlignedNewCanvas(newC, m, width, height){
     // dest = center(=そのまま原点系) + t + scale·R(angle)·(src-newCenter)
     // ここでは newCenter を回転中心にし、旧フレーム原点へ (ncx,ncy)+dx/dy でマップ
     const cos=Math.cos(m.angle)*m.scale, sin=Math.sin(m.angle)*m.scale;
-    const e = ncx + m.tx + state.dx;
-    const f = ncy + m.ty + state.dy;
+    const e = ncx + m.tx + state.comparison.dx;
+    const f = ncy + m.ty + state.comparison.dy;
     ctx.setTransform(cos, sin, -sin, cos, e - (cos*ncx - sin*ncy), f - (sin*ncx + cos*ncy));
     ctx.drawImage(newC, 0, 0);
     ctx.setTransform(1,0,0,1,0,0);
   } else {
-    ctx.drawImage(newC, state.dx, state.dy); // 現行と同一（整数平行移動）
+    ctx.drawImage(newC, state.comparison.dx, state.comparison.dy); // 現行と同一（整数平行移動）
   }
   return c;
 }
@@ -288,8 +254,8 @@ function alignedNewBounds(newC, m){
   if(!newC || !m.applied) return null;
   const ncx = newC.width/2, ncy = newC.height/2;
   const cos = Math.cos(m.angle)*m.scale, sin = Math.sin(m.angle)*m.scale;
-  const e = ncx + m.tx + state.dx - (cos*ncx - sin*ncy);
-  const f = ncy + m.ty + state.dy - (sin*ncx + cos*ncy);
+  const e = ncx + m.tx + state.comparison.dx - (cos*ncx - sin*ncy);
+  const f = ncy + m.ty + state.comparison.dy - (sin*ncx + cos*ncy);
   const corners = [[0,0],[newC.width,0],[0,newC.height],[newC.width,newC.height]];
   let x1 = -Infinity, y1 = -Infinity;
   for(const [x,y] of corners){
@@ -305,10 +271,10 @@ function seqIdx(seq, s){ const v = seq ? seq[s] : undefined; return (v == null) 
 
 // ページャ表示: "3 / 12（旧P3 ↔ 新P4）"。スペーサ側は「空白」。
 function pageLabelText(idx){
-  const o = seqIdx(state.oldSeq, idx), n = seqIdx(state.newSeq, idx);
+  const o = seqIdx(state.documents.oldSequence, idx), n = seqIdx(state.documents.newSequence, idx);
   const os = (o == null) ? "旧 空白" : "旧P"+(o+1);
   const ns = (n == null) ? "新 空白" : "新P"+(n+1);
-  return (idx+1)+" / "+state.pages+"（"+os+" ↔ "+ns+"）";
+  return (idx+1)+" / "+state.documents.pages+"（"+os+" ↔ "+ns+"）";
 }
 
 // 変更箇所の囲み枠（色・サイズ）に関する定数とヘルパ
@@ -325,15 +291,15 @@ const rgbCss = c => "rgb("+c[0]+","+c[1]+","+c[2]+")";
 const BOX_BASE_DPI = 150;
 const BOX_BASE = 16;
 const BOX_MIN_BLOCKS = 2;
-function blockSize(){ return Math.max(4, Math.round(BOX_BASE * state.dpi / BOX_BASE_DPI)); }
-function toleranceRadiusPx(){ return Math.round(state.tolerancePx * state.dpi / BOX_BASE_DPI); }
+function blockSize(){ return Math.max(4, Math.round(BOX_BASE * state.comparison.dpi / BOX_BASE_DPI)); }
+function toleranceRadiusPx(){ return Math.round(state.comparison.tolerancePx * state.comparison.dpi / BOX_BASE_DPI); }
 
 // 変更ブロックのフラグ格子から、かたまりごとの外接矩形(px)を返す純関数。
 // 1ブロック膨張してからBFSで連結成分をラベリングする。
 
 // 整列済み新版（作業フレームに配置済み）を旧版と同座標比較して変更枠を算出。
 function computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height){
-  const th = state.th, block = blockSize();
+  const th = state.comparison.threshold, block = blockSize();
   const cols = Math.ceil(width/block), rows = Math.ceil(height/block);
   const bflags = new Uint8Array(cols*rows);
   const radius = toleranceRadiusPx();
@@ -383,11 +349,11 @@ function drawBoxesTo(ctx, boxes, lw){
   ctx.restore();
 }
 // 書き出し用の線幅。現行 drawBoxes と同じ式（DPIに比例）。
-const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.dpi / BOX_BASE_DPI));
+const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.comparison.dpi / BOX_BASE_DPI));
 
 let boxDrag = null; // ドラッグ中の枠操作。{kind:"create"|"move"|"resize", ...} か null
-// マウスを押したままキー操作（取り消し/削除/モード終了）が割り込むと state.boxSel が
-// -1 や別indexへ変わり得る。endBoxDrag 側で state.boxSel の妥当性を見て確定するのではなく、
+// マウスを押したままキー操作（取り消し/削除/モード終了）が割り込むと state.boxEditor.selectedIndex が
+// -1 や別indexへ変わり得る。endBoxDrag 側で state.boxEditor.selectedIndex の妥当性を見て確定するのではなく、
 // 割り込みが起きた時点でドラッグそのものを破棄する（原因側で止める）。
 function cancelBoxDrag(){
   if(!boxDrag) return;
@@ -409,7 +375,7 @@ function toFrame(e){
 }
 // 手前(リスト後方)から探して最初に当たった枠のindex。無ければ -1。
 function hitBox(p){
-  const bs = state.boxes || [];
+  const bs = state.boxEditor.currentBoxes || [];
   for(let i=bs.length-1;i>=0;i--){
     const b = bs[i];
     if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h) return i;
@@ -418,8 +384,8 @@ function hitBox(p){
 }
 // 選択枠のハンドルに当たっていればそのindex、外れていれば -1。判定は画面px基準。
 function hitHandle(p){
-  if(state.boxSel<0 || !state.boxes || state.boxSel>=state.boxes.length) return -1;
-  const b = state.boxes[state.boxSel], s = view.scale;
+  if(state.boxEditor.selectedIndex<0 || !state.boxEditor.currentBoxes || state.boxEditor.selectedIndex>=state.boxEditor.currentBoxes.length) return -1;
+  const b = state.boxEditor.currentBoxes[state.boxEditor.selectedIndex], s = view.scale;
   const pts = handlePoints(b.x, b.y, b.w, b.h);
   const r = HANDLE/s; // 画面px半径をフレーム座標へ換算
   for(let i=0;i<pts.length;i++){
@@ -435,27 +401,27 @@ function drawBoxLayer(){
   const W = wrap.clientWidth, H = wrap.clientHeight;
   if(boxLayer.width !== W || boxLayer.height !== H){ boxLayer.width = W; boxLayer.height = H; }
   bctx.clearRect(0,0,W,H);
-  if(!state.rendered || out.style.display === "none") return;
-  if(!state.showBoxes) return;
-  const hasBoxes = state.boxes && state.boxes.length;
+  if(!state.visual.rendered || out.style.display === "none") return;
+  if(!state.boxEditor.showBoxes) return;
+  const hasBoxes = state.boxEditor.currentBoxes && state.boxEditor.currentBoxes.length;
   if(!hasBoxes && !boxDrag) return;
   const s = view.scale;
   bctx.save();
   bctx.fillStyle = BOX_FILL;
   bctx.strokeStyle = BOX_COLOR;
   bctx.lineWidth = 2;
-  // プレビューはドラッグ対象（boxDrag.i/page）に紐づける。選択（state.boxSel）とは別物 —
+  // プレビューはドラッグ対象（boxDrag.i/page）に紐づける。選択（state.boxEditor.selectedIndex）とは別物 —
   // 非同期の再描画等で選択が変わってもドラッグ中のプレビュー位置がずれないようにするため。
-  const prev = (boxDrag && boxDrag.preview && boxDrag.page===state.cur) ? boxDrag.preview : null;
-  const boxes = state.boxes || [];
+  const prev = (boxDrag && boxDrag.preview && boxDrag.page===state.documents.currentPage) ? boxDrag.preview : null;
+  const boxes = state.boxEditor.currentBoxes || [];
   for(let i=0;i<boxes.length;i++){
     const b = (prev && i===boxDrag.i) ? prev : boxes[i];
     const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
     bctx.fillRect(x, y, w, h);
     bctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
   }
-  if(state.boxEditMode && state.boxSel>=0 && state.boxSel<boxes.length){
-    const b = (prev && boxDrag.i===state.boxSel) ? prev : boxes[state.boxSel];
+  if(state.boxEditor.editMode && state.boxEditor.selectedIndex>=0 && state.boxEditor.selectedIndex<boxes.length){
+    const b = (prev && boxDrag.i===state.boxEditor.selectedIndex) ? prev : boxes[state.boxEditor.selectedIndex];
     const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
     bctx.setLineDash([5,4]);
     bctx.strokeStyle = "#fff"; bctx.lineWidth = 1;
@@ -478,108 +444,114 @@ function drawBoxLayer(){
 
 // 変更箇所の件数表示。新旧切替モードで枠OFFのときだけ従来どおり「—」を出す。
 function updateBoxStat(){
-  if(state.mode==="toggle" && !state.showBoxes){ $("statBox").textContent = "変更箇所 —"; return; }
-  const n = state.boxes ? state.boxes.length : 0;
-  const edited = !!state.boxEdits[state.cur];
+  if(state.visual.mode==="toggle" && !state.boxEditor.showBoxes){ $("statBox").textContent = "変更箇所 —"; return; }
+  const n = state.boxEditor.currentBoxes ? state.boxEditor.currentBoxes.length : 0;
+  const edited = state.boxEditor.editsByPage.has(state.documents.currentPage);
   $("statBox").textContent = "変更箇所 " + n.toLocaleString() + (edited ? "（手編集）" : "");
 }
 
 // 枠のON/OFF切替。Canvasへ焼かないためレイヤの描き直しだけで済む。
 // 新旧切替モードで枠OFFのまま構築されたページだけは枠が未算出なので、ONにするとき再構築する。
 function toggleBoxes(){
-  if(!state.rendered) return;
-  state.showBoxes = !state.showBoxes;
-  $("boxToggle").classList.toggle("active", state.showBoxes);
-  if(!state.showBoxes && state.boxEditMode) setBoxEditMode(false);
-  if(state.showBoxes && !state.boxEdits[state.cur] && !state.boxAuto[state.cur]){
-    show(state.cur);   // 未算出のページのみ通常経路で算出させる
+  if(!state.visual.rendered) return;
+  state.boxEditor.showBoxes = !state.boxEditor.showBoxes;
+  $("boxToggle").classList.toggle("active", state.boxEditor.showBoxes);
+  if(!state.boxEditor.showBoxes && state.boxEditor.editMode) setBoxEditMode(false);
+  if(state.boxEditor.showBoxes && !state.boxEditor.editsByPage.has(state.documents.currentPage) && !state.boxEditor.autoByPage.has(state.documents.currentPage)){
+    show(state.documents.currentPage);   // 未算出のページのみ通常経路で算出させる
     return;
   }
-  if(!state.boxEdits[state.cur] && state.boxAuto[state.cur]) state.boxes = state.boxAuto[state.cur];
+  if(!state.boxEditor.editsByPage.has(state.documents.currentPage) && state.boxEditor.autoByPage.has(state.documents.currentPage)){
+    state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(state.documents.currentPage);
+  }
   updateBoxStat();
   drawBoxLayer();
 }
 
-// 枠の手編集・原本・取り消し履歴をすべて捨てる。state.boxes / 表示も合わせて同期する
-// （呼び出し直後に再描画経路を通らない場合でも、古い枠・古い「（手編集）」表示が残らないように）。
-function clearBoxEdits(){
-  state.boxAuto = {}; state.boxEdits = {}; state.boxUndo = {}; state.boxSel = -1;
-  state.boxes = null;
-  updateBoxStat(); setBoxEditUI(); drawBoxLayer(); // 画面に残った旧枠のピクセルも消す（loadPdf直後はshow()を経由しないため）
+// 無効化関数が枠キャッシュを捨てた後、選択状態と画面表示を同期する。
+// （直後に再描画しない経路でも、古い枠・古い「（手編集）」表示を残さない。）
+function syncInvalidatedBoxEditor(){
+  state.boxEditor.selectedIndex = -1;
+  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
 }
 // 手編集した枠は差分の前提（DPI・しきい値・位置合わせ等）が変わると意味を失うため、
 // 前提を変える操作の直前に確認して破棄する。
 // 破棄を了承しなければ false を返し、呼び出し側は操作自体を中止すること。
 function confirmDiscardBoxEdits(){
-  if(!Object.keys(state.boxEdits).length){
-    // 手編集がゼロでも state.boxAuto は「現在のDPI・位置合わせ・モードの下での算出結果」を
-    // 抱えたままなので、前提が変わる操作の直前は必ずここで捨てる（さもないと前提変更後に
-    // 古いboxAutoが復活し、座標系の合わない枠が描画・書き出しされる）。
-    clearBoxEdits();
-    return true;
-  }
-  if(!confirm("手編集した変更枠があります。この操作で破棄されます。よろしいですか？")) return false;
-  clearBoxEdits();
-  return true;
+  return state.boxEditor.editsByPage.size === 0 ||
+    confirm("手編集した変更枠があります。この操作で破棄されます。よろしいですか？");
+}
+
+function applyComparisonSettingChange(update, invalidate){
+  const applied = applyInvalidatingChange(state, {
+    confirmDiscard: confirmDiscardBoxEdits,
+    update,
+    invalidate,
+  });
+  if(applied) syncInvalidatedBoxEditor();
+  return applied;
 }
 
 // 枠編集モードのボタン状態・カーソル・補助ボタンの出し入れ
 function setBoxEditUI(){
-  const on = state.boxEditMode;
-  $("boxEdit").disabled = !state.rendered;
+  const on = state.boxEditor.editMode;
+  $("boxEdit").disabled = !state.visual.rendered;
   $("boxEdit").classList.toggle("active", on);
   wrap.classList.toggle("boxedit", on);
   $("boxDel").style.display = on ? "" : "none";
   $("boxReset").style.display = on ? "" : "none";
-  $("boxDel").disabled = state.boxSel < 0;
-  $("boxReset").disabled = !state.boxEdits[state.cur];
+  $("boxDel").disabled = state.boxEditor.selectedIndex < 0;
+  $("boxReset").disabled = !state.boxEditor.editsByPage.has(state.documents.currentPage);
 }
 // 枠が見えないと編集できないため、ONにするとき強調がOFFなら自動でONにする。
 function setBoxEditMode(on){
-  if(on && !state.rendered) return;
-  state.boxEditMode = on;
+  if(on && !state.visual.rendered) return;
+  state.boxEditor.editMode = on;
   // ONで入るときは進行中のドラッグは存在し得ないので、OFF時だけキャンセルすれば足りる。
   if(!on){ cancelBoxDrag(); wrap.style.cursor = ""; }
-  state.boxSel = -1;
-  if(on && !state.showBoxes){ toggleBoxes(); }
+  state.boxEditor.selectedIndex = -1;
+  if(on && !state.boxEditor.showBoxes){ toggleBoxes(); }
   setBoxEditUI();
   drawBoxLayer();
 }
 
 // 手編集リストを確定させる。初回は自動算出の枠を複製して materialize する。
-// 以後 state.boxes は state.boxEdits[cur] と同一の配列を指す。
+// 以後 state.boxEditor.currentBoxes は editsByPage.get(cur) と同一の配列を指す。
 function ensureBoxEdits(){
-  const i = state.cur;
-  if(!state.boxEdits[i]) state.boxEdits[i] = (state.boxes||[]).map(b=>({...b}));
-  state.boxes = state.boxEdits[i];
-  return state.boxes;
+  const i = state.documents.currentPage;
+  if(!state.boxEditor.editsByPage.has(i)){
+    state.boxEditor.editsByPage.set(i, (state.boxEditor.currentBoxes||[]).map(b=>({...b})));
+  }
+  state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(i);
+  return state.boxEditor.currentBoxes;
 }
 // 変更の直前に呼ぶ。現在の枠リストの複製を取り消しスタックへ積む（深さ50）。
 function pushBoxUndo(){
-  const i = state.cur;
-  const st = state.boxUndo[i] || (state.boxUndo[i] = []);
-  st.push((state.boxEdits[i] || state.boxes || []).map(b=>({...b})));
+  const i = state.documents.currentPage;
+  if(!state.boxEditor.undoByPage.has(i)) state.boxEditor.undoByPage.set(i, []);
+  const st = state.boxEditor.undoByPage.get(i);
+  st.push((state.boxEditor.editsByPage.get(i) || state.boxEditor.currentBoxes || []).map(b=>({...b})));
   if(st.length>50) st.shift();
 }
 // 直前の編集を取り消す。取り消しで自動算出と同じ内容へ戻っても boxEdits は残る
 // （＝「手編集」表示のまま）。完全に自動へ戻したいときは「自動検出に戻す」を使う。
 function undoBoxEdit(){
   cancelBoxDrag(); // ドラッグ中に取り消しが割り込んだ場合、そのドラッグは無かったことにする
-  const i = state.cur, st = state.boxUndo[i];
+  const i = state.documents.currentPage, st = state.boxEditor.undoByPage.get(i);
   if(!st || !st.length) return;
-  state.boxEdits[i] = st.pop();
-  state.boxes = state.boxEdits[i];
-  state.boxSel = -1;
+  state.boxEditor.editsByPage.set(i, st.pop());
+  state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(i);
+  state.boxEditor.selectedIndex = -1;
   updateBoxStat(); setBoxEditUI(); drawBoxLayer();
 }
 // 選択中の枠を削除する
 function deleteSelectedBox(){
   cancelBoxDrag(); // ドラッグ中に削除が割り込んだ場合、そのドラッグは無かったことにする
-  if(state.boxSel<0) return;
+  if(state.boxEditor.selectedIndex<0) return;
   pushBoxUndo();
   const list = ensureBoxEdits();
-  list.splice(state.boxSel,1);
-  state.boxSel = -1;
+  list.splice(state.boxEditor.selectedIndex,1);
+  state.boxEditor.selectedIndex = -1;
   updateBoxStat(); setBoxEditUI(); drawBoxLayer();
 }
 
@@ -597,23 +569,23 @@ function boxEditPointerDown(e){
   const p = toFrame(e);
   const hs = hitHandle(p);
   if(hs>=0){
-    boxDrag = {kind:"resize", h:hs, i:state.boxSel, page:state.cur, orig:{...state.boxes[state.boxSel]}, preview:null};
+    boxDrag = {kind:"resize", h:hs, i:state.boxEditor.selectedIndex, page:state.documents.currentPage, orig:{...state.boxEditor.currentBoxes[state.boxEditor.selectedIndex]}, preview:null};
     drawBoxLayer();
     return;
   }
   const hit = hitBox(p);
   if(hit>=0){
-    state.boxSel = hit;
-    boxDrag = {kind:"move", i:hit, page:state.cur, ox:p.x, oy:p.y, orig:{...state.boxes[hit]}, preview:null};
+    state.boxEditor.selectedIndex = hit;
+    boxDrag = {kind:"move", i:hit, page:state.documents.currentPage, ox:p.x, oy:p.y, orig:{...state.boxEditor.currentBoxes[hit]}, preview:null};
   } else {
-    state.boxSel = -1;
+    state.boxEditor.selectedIndex = -1;
     boxDrag = {kind:"create", x0:p.x, y0:p.y, x1:p.x, y1:p.y};
   }
   setBoxEditUI();
   drawBoxLayer();
 }
 // ドラッグ確定。小さすぎる作成はクリック扱いで捨てる。
-// move/resize は「押した時点のあの枠」（d.i, d.page）に対する操作。確定時点の state.boxSel
+// move/resize は「押した時点のあの枠」（d.i, d.page）に対する操作。確定時点の state.boxEditor.selectedIndex
 // （非同期の show() やボタン操作で書き換わり得る）は見ない — cancelBoxDrag() で止めきれない
 // 割り込み経路（DPI変更再描画中のドラッグ確定など）に対する二重の保険。
 function endBoxDrag(e){
@@ -626,11 +598,11 @@ function endBoxDrag(e){
     pushBoxUndo();
     const list = ensureBoxEdits();
     list.push(clampBox(r, out.width, out.height));
-    state.boxSel = list.length-1;
+    state.boxEditor.selectedIndex = list.length-1;
   }
   if(d.kind==="move" || d.kind==="resize"){
     // 対象ページが変わっている／対象indexがもう存在しないなら、このドラッグは確定させない。
-    if(d.page!==state.cur || d.i<0 || !state.boxes || d.i>=state.boxes.length){ drawBoxLayer(); return; }
+    if(d.page!==state.documents.currentPage || d.i<0 || !state.boxEditor.currentBoxes || d.i>=state.boxEditor.currentBoxes.length){ drawBoxLayer(); return; }
     const nb = d.preview;
     const changed = nb && (nb.x!==d.orig.x || nb.y!==d.orig.y || nb.w!==d.orig.w || nb.h!==d.orig.h);
     // 動いていない（＝ただのクリック）なら取り消しスタックを汚さない。
@@ -646,23 +618,23 @@ function endBoxDrag(e){
 
 async function buildDiff(idx){
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
-  const oi = seqIdx(state.oldSeq, idx), ni = seqIdx(state.newSeq, idx);
+  const oi = seqIdx(state.documents.oldSequence, idx), ni = seqIdx(state.documents.newSequence, idx);
   // 用紙サイズが違う場合、大きい用紙を基準に「同一ピクセル寸法」となる描画scaleを求める。
   // 同寸なら plan.oldScale === plan.newScale === dpi/72 で現行と完全一致。
   const [oldPt, newPt] = await Promise.all([
-    pageSizePt(state.oldDoc, oi),
-    pageSizePt(state.newDoc, ni)
+    pageSizePt(state.documents.oldDoc, oi),
+    pageSizePt(state.documents.newDoc, ni)
   ]);
   // 直角成分を先に確定し、回転後の寸法で用紙合わせを決める。
   // これにより A4縦↔A4横 が framePlan の aspectMismatch に落ちなくなる。
   await ensureQuadEstimate(idx, oi, ni, oldPt, newPt);
   const quad = effectiveQuad(idx);
   const newPtR = (newPt && (quad % 2)) ? {w:newPt.h, h:newPt.w} : newPt;
-  const plan = framePlan(oldPt, newPtR, state.dpi);
-  state.curPlan = plan;
+  const plan = framePlan(oldPt, newPtR, state.comparison.dpi);
+  state.visual.currentPlan = plan;
   const [oldC, newC0] = await Promise.all([
-    renderPageCanvas(state.oldDoc, oi, plan.oldScale),
-    renderPageCanvas(state.newDoc, ni, plan.newScale)
+    renderPageCanvas(state.documents.oldDoc, oi, plan.oldScale),
+    renderPageCanvas(state.documents.newDoc, ni, plan.newScale)
   ]);
   const newC = rotateCanvas90(newC0, quad); // quad=0 なら newC0 をそのまま返す（現行と同一）
   const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
@@ -672,8 +644,8 @@ async function buildDiff(idx){
   const warpedBounds = alignedNewBounds(newC, m);
   // 作業フレーム: 旧版矩形 ∪ 新版矩形(恒等時はdx/dy平行移動を考慮) ∪ ワープ後新版の外接矩形(適用時)。
   // 「正/遠い側だけ拡張」の既存規約は維持（負のdx/dyによる近い側のクリップは現行仕様のまま変更しない）。
-  let W = Math.max(ow, nw + Math.max(0,state.dx)) || Math.max(ow,nw);
-  let H = Math.max(oh, nh + Math.max(0,state.dy)) || Math.max(oh,nh);
+  let W = Math.max(ow, nw + Math.max(0,state.comparison.dx)) || Math.max(ow,nw);
+  let H = Math.max(oh, nh + Math.max(0,state.comparison.dy)) || Math.max(oh,nh);
   if(warpedBounds){ W = Math.max(W, Math.ceil(warpedBounds.x1)); H = Math.max(H, Math.ceil(warpedBounds.y1)); }
   const width  = Math.max(ow, nw, W, 1);
   const height = Math.max(oh, nh, H, 1);
@@ -686,7 +658,7 @@ async function buildDiff(idx){
   const res = octx.createImageData(width, height);
   const R = res.data; R.fill(255);
 
-  const th = state.th;
+  const th = state.comparison.threshold;
   let rm=0, ad=0;
   // ループ内でプロパティ参照しないようローカルへ展開（DIFF_RGB が唯一の定義）
   const [cR,cG,cB] = DIFF_RGB.common, [rR,rG,rB] = DIFF_RGB.removed, [aR,aG,aB] = DIFF_RGB.added;
@@ -736,16 +708,16 @@ async function buildDiff(idx){
   octx.putImageData(res,0,0);
   // 手編集済みページは自動算出の集約（computeBoxes / clampBoxes）を省く。
   // bflags 自体は差分の画素ループ内で立つため、ここでの分岐が省けるコストのすべて。
-  if(state.boxEdits[idx]){
-    state.boxes = state.boxEdits[idx];
+  if(state.boxEditor.editsByPage.has(idx)){
+    state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(idx);
   } else {
     const raw = computeBoxes(bflags, cols, rows, block, BOX_MIN_BLOCKS);
-    state.boxes = clampBoxes(raw, width, height);
-    state.boxAuto[idx] = state.boxes;
+    state.boxEditor.currentBoxes = clampBoxes(raw, width, height);
+    state.boxEditor.autoByPage.set(idx, state.boxEditor.currentBoxes);
   }
-  out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
+  out.style.display="block"; $("ph").style.display="none"; state.visual.rendered=true;
   drawBoxLayer();
-  state.cache[idx] = {rm, ad, bx: state.boxes.length};
+  state.visual.pageCache.set(idx, {rm, ad, bx: state.boxEditor.currentBoxes.length});
   $("statRm").textContent = "削除 "+rm.toLocaleString();
   $("statAd").textContent = "追加 "+ad.toLocaleString();
   updateBoxStat();
@@ -757,41 +729,41 @@ async function buildDiff(idx){
 
 // 新旧切替モード：旧・新それぞれのページCanvasをキャッシュし、選択中の版だけを描画する
 async function buildToggle(idx){
-  const token = ++state.renderToken;
-  const oi = seqIdx(state.oldSeq, idx), ni = seqIdx(state.newSeq, idx);
+  const token = ++state.visual.renderGeneration;
+  const oi = seqIdx(state.documents.oldSequence, idx), ni = seqIdx(state.documents.newSequence, idx);
   // Canvasキャッシュにヒットしても読み出し表示に plan が要るため、キャッシュ判定より前に求める。
   const [oldPt, newPt] = await Promise.all([
-    pageSizePt(state.oldDoc, oi),
-    pageSizePt(state.newDoc, ni)
+    pageSizePt(state.documents.oldDoc, oi),
+    pageSizePt(state.documents.newDoc, ni)
   ]);
-  if(token !== state.renderToken) return; // await を挟んだので割り込みチェック（stale-draw防止）
+  if(token !== state.visual.renderGeneration) return; // await を挟んだので割り込みチェック（stale-draw防止）
   await ensureQuadEstimate(idx, oi, ni, oldPt, newPt);
-  if(token !== state.renderToken) return; // 象限推定でも await を挟むため再チェック
+  if(token !== state.visual.renderGeneration) return; // 象限推定でも await を挟むため再チェック
   const quad = effectiveQuad(idx);
   const newPtR = (newPt && (quad % 2)) ? {w:newPt.h, h:newPt.w} : newPt;
-  const plan = framePlan(oldPt, newPtR, state.dpi);
-  state.curPlan = plan;
-  if(!state.toggleCache || state.toggleCache.idx !== idx || state.toggleCache.quad !== quad){
+  const plan = framePlan(oldPt, newPtR, state.comparison.dpi);
+  state.visual.currentPlan = plan;
+  if(!state.visual.toggleCache || state.visual.toggleCache.idx !== idx || state.visual.toggleCache.quad !== quad){
     $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
     const [oldC, newC0] = await Promise.all([
-      renderPageCanvas(state.oldDoc, oi, plan.oldScale),
-      renderPageCanvas(state.newDoc, ni, plan.newScale)
+      renderPageCanvas(state.documents.oldDoc, oi, plan.oldScale),
+      renderPageCanvas(state.documents.newDoc, ni, plan.newScale)
     ]);
-    if(token !== state.renderToken) return; // 別の描画が割り込んだので破棄（stale-draw防止）
+    if(token !== state.visual.renderGeneration) return; // 別の描画が割り込んだので破棄（stale-draw防止）
     const newC = rotateCanvas90(newC0, quad); // staleチェックの後に回す（無駄な回転を避ける）
     const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
     const nw = newC?newC.width:0, nh = newC?newC.height:0;
     // 枠算出用に旧版のImageDataも保持（再取得コストを避ける。新版は整列後にのみ使うため保持不要）
     const oimg = oldC ? oldC.getContext("2d").getImageData(0,0,ow,oh) : null;
-    state.toggleCache = {idx, quad, oldC, newC, ow, oh, nw, nh, oimg};
+    state.visual.toggleCache = {idx, quad, oldC, newC, ow, oh, nw, nh, oimg};
   }
-  const {ow, oh, nw, nh, oimg, oldC, newC} = state.toggleCache;
+  const {ow, oh, nw, nh, oimg, oldC, newC} = state.visual.toggleCache;
   ensureAlignEstimate(idx, oldC, newC);
   const m = alignMatrixFor(idx, ow, oh, nw, nh);
   const warpedBounds = alignedNewBounds(newC, m);
   // 作業フレーム: 旧版矩形 ∪ 新版矩形(恒等時はdx/dy平行移動を考慮) ∪ ワープ後新版の外接矩形(適用時)。
-  let W = Math.max(ow, nw+Math.max(0,state.dx)) || Math.max(ow,nw);
-  let H = Math.max(oh, nh+Math.max(0,state.dy)) || Math.max(oh,nh);
+  let W = Math.max(ow, nw+Math.max(0,state.comparison.dx)) || Math.max(ow,nw);
+  let H = Math.max(oh, nh+Math.max(0,state.comparison.dy)) || Math.max(oh,nh);
   if(warpedBounds){ W = Math.max(W, Math.ceil(warpedBounds.x1)); H = Math.max(H, Math.ceil(warpedBounds.y1)); }
   const width  = Math.max(ow, nw, W, 1);
   const height = Math.max(oh, nh, H, 1);
@@ -800,15 +772,15 @@ async function buildToggle(idx){
   // 整列済み新版（枠算出・NEW表示の双方に使う）
   const alignedNewC = renderAlignedNewCanvas(newC, m, width, height);
   const nAlignedImg = alignedNewC.getContext("2d").getImageData(0,0,width,height);
-  state.toggleCache.alignedNewC = alignedNewC;
+  state.visual.toggleCache.alignedNewC = alignedNewC;
   // 枠算出: 旧版 ImageData と整列済み新版 ImageData を同座標で比較
-  if(state.boxEdits[idx]){
-    state.boxes = state.boxEdits[idx];               // 手編集済み: 算出そのものを省く
-  } else if(state.showBoxes){
-    state.boxes = computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height);
-    state.boxAuto[idx] = state.boxes;
+  if(state.boxEditor.editsByPage.has(idx)){
+    state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(idx);               // 手編集済み: 算出そのものを省く
+  } else if(state.boxEditor.showBoxes){
+    state.boxEditor.currentBoxes = computeChangeBoxesAligned(oimg, ow, oh, nAlignedImg, width, height);
+    state.boxEditor.autoByPage.set(idx, state.boxEditor.currentBoxes);
   } else {
-    state.boxes = [];
+    state.boxEditor.currentBoxes = [];
   }
 
   drawToggleSide();
@@ -817,18 +789,18 @@ async function buildToggle(idx){
   $("statRm").textContent = "削除 —";
   $("statAd").textContent = "追加 —";
   updateBoxStat();
-  $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
+  $("status").textContent = "新旧切替（"+(state.visual.toggleSide==="old"?"OLD":"NEW")+"表示中）";
   $("dlPng").disabled=false; $("dlPdf").disabled=false;
   $("boxToggle").disabled=false;
 }
 
 // 選択中の版だけを out に描画（PDF再レンダ無し・瞬時）
 function drawToggleSide(){
-  const c = state.toggleCache;
+  const c = state.visual.toggleCache;
   if(!c) return;
   octx.clearRect(0,0,out.width,out.height);
   octx.fillStyle = "#fff"; octx.fillRect(0,0,out.width,out.height);
-  const side = state.toggleSide;
+  const side = state.visual.toggleSide;
   const hasPage = side==="old" ? !!c.oldC : !!c.newC;
   if(hasPage){
     if(side==="old") octx.drawImage(c.oldC,0,0);
@@ -839,43 +811,43 @@ function drawToggleSide(){
     octx.textAlign = "center"; octx.textBaseline = "middle";
     octx.fillText("この版にこのページはありません", out.width/2, out.height/2);
   }
-  out.style.display="block"; $("ph").style.display="none"; state.rendered=true;
+  out.style.display="block"; $("ph").style.display="none"; state.visual.rendered=true;
   drawBoxLayer(); // 枠座標は旧/新どちらの表示にも整合する
   updateToggleIndicator();
 }
 
 function updateToggleIndicator(){
-  $("sideOld").classList.toggle("active", state.toggleSide==="old");
-  $("sideNew").classList.toggle("active", state.toggleSide==="new");
+  $("sideOld").classList.toggle("active", state.visual.toggleSide==="old");
+  $("sideNew").classList.toggle("active", state.visual.toggleSide==="new");
 }
 
 function flipSide(){
-  state.toggleSide = state.toggleSide==="old" ? "new" : "old";
+  state.visual.toggleSide = state.visual.toggleSide==="old" ? "new" : "old";
   drawToggleSide();
-  $("status").textContent = "新旧切替（"+(state.toggleSide==="old"?"OLD":"NEW")+"表示中）";
+  $("status").textContent = "新旧切替（"+(state.visual.toggleSide==="old"?"OLD":"NEW")+"表示中）";
 }
 
 function setModeUI(){
-  $("modeDiff").classList.toggle("active", state.mode==="diff");
-  $("modeToggle").classList.toggle("active", state.mode==="toggle");
-  $("toggleInd").style.display = state.mode==="toggle" ? "flex" : "none";
-  $("th").disabled = state.mode==="toggle";
-  $("boxToggle").disabled = !state.rendered;
+  $("modeDiff").classList.toggle("active", state.visual.mode==="diff");
+  $("modeToggle").classList.toggle("active", state.visual.mode==="toggle");
+  $("toggleInd").style.display = state.visual.mode==="toggle" ? "flex" : "none";
+  $("th").disabled = state.visual.mode==="toggle";
+  $("boxToggle").disabled = !state.visual.rendered;
   setBoxEditUI();
 }
 
 function updateAlignButtons(){
-  const on = !!(state.oldDoc && state.newDoc) && state.rendered;
+  const on = !!(state.documents.oldDoc && state.documents.newDoc) && state.visual.rendered;
   $("alignAddNew").disabled = !on;
   $("alignDelOld").disabled = !on;
-  $("alignUndo").disabled  = !on || state.alignOps.length === 0;
+  $("alignUndo").disabled  = !on || state.documents.alignmentOps.length === 0;
 }
 
 // 用紙合わせ（自動・常時）と自動整列（トグル）の状態を、推定値ではなく実測値で表示する。
 function updateAlignReadout(){
   const el = $("alignReadout");
   const lines = [];
-  const p = state.curPlan;
+  const p = state.visual.currentPlan;
   if(p && p.normalized){
     // refSide が "old" なら旧版が基準＝新版を拡大している
     const grown = p.refSide === "old" ? "新版" : "旧版";
@@ -883,11 +855,11 @@ function updateAlignReadout(){
   } else if(p && p.aspectMismatch){
     lines.push("用紙合わせ: 用紙の縦横比が違うため未適用");
   }
-  const qm = state.quadManual[state.cur];
+  const qm = state.comparison.quadrantManual.get(state.documents.currentPage);
   if(qm != null){
     lines.push(`向き: 手動 ${qm*90}°`);
-  } else if(state.autoAlign){
-    const qc = state.quadCache[state.cur];
+  } else if(state.comparison.autoAlign){
+    const qc = state.visual.quadrantCache.get(state.documents.currentPage);
     // 未推定・片側空白のときは行を出さない（autoAlign OFF も同様。「自動整列: OFF」の行で足りる）
     if(qc && !qc.blank){
       const qpct = v => Math.round(v*100)+"%";
@@ -895,10 +867,10 @@ function updateAlignReadout(){
       else lines.push("向き: 0°（回転なし）");
     }
   }
-  if(!state.autoAlign){
+  if(!state.comparison.autoAlign){
     lines.push("自動整列: OFF");
   } else {
-    const a = state.alignCache[state.cur];
+    const a = state.visual.alignmentCache.get(state.documents.currentPage);
     if(!a){
       lines.push("自動整列: 推定待ち");
     } else if(a.blank){
@@ -922,34 +894,32 @@ function updateAlignReadout(){
 }
 
 function updateManualAlignReadout(){
-  const deg = state.manualAngle*180/Math.PI;
+  const deg = state.comparison.manualAngle*180/Math.PI;
   $("rotReset").textContent = (deg>=0?"+":"")+deg.toFixed(1)+"°";
-  $("scaleReset").textContent = (state.manualScale*100).toFixed(1)+"%";
-  const manual = state.quadManual[state.cur] != null;
-  $("quadReset").textContent = (effectiveQuad(state.cur)*90)+"°" + (manual ? "（手動）" : "");
+  $("scaleReset").textContent = (state.comparison.manualScale*100).toFixed(1)+"%";
+  const manual = state.comparison.quadrantManual.has(state.documents.currentPage);
+  $("quadReset").textContent = (effectiveQuad(state.documents.currentPage)*90)+"°" + (manual ? "（手動）" : "");
 }
 
 async function refreshAfterAlign(){
-  state.pages = Math.max(state.oldSeq.length, state.newSeq.length);
-  state.cache = {}; state.toggleCache = null; // スロット→内容が変わるため両キャッシュ破棄
-  state.alignCache = {}; // スロット→ページ対応が変わるため自動整列も再推定させる
-  state.quadCache = {}; state.quadManual = {}; state.quadGen++; // スロット→ページ対応が変わるため直角回転も破棄
-  state.boxAuto = {}; // スロット→ページ対応が変わるため自動枠の原本も破棄（ゲートは呼び出し側で通過済み）
-  if(state.cur > state.pages - 1) state.cur = state.pages - 1; // 縮小時クランプ（show前に必須）
-  if(state.cur < 0) state.cur = 0;
-  await show(state.cur);
+  state.documents.pages = Math.max(state.documents.oldSequence.length, state.documents.newSequence.length);
+  invalidatePageAlignment(state);
+  syncInvalidatedBoxEditor();
+  if(state.documents.currentPage > state.documents.pages - 1) state.documents.currentPage = state.documents.pages - 1; // 縮小時クランプ（show前に必須）
+  if(state.documents.currentPage < 0) state.documents.currentPage = 0;
+  await show(state.documents.currentPage);
 }
 
 async function show(idx){
-  if(idx<0||idx>=state.pages) return;
-  state.cur=idx;
-  state.boxSel=-1; // ページが変われば選択は無効
+  if(idx<0||idx>=state.documents.pages) return;
+  state.documents.currentPage=idx;
+  state.boxEditor.selectedIndex=-1; // ページが変われば選択は無効
   // 進行中のドラッグ（同一ページの再描画も含む）をここで確実に打ち切る。endBoxDrag側の
-  // ガード（page/i検証）だけだと、awaitの間にstate.boxesが同じページのまま「別の配列」へ
+  // ガード（page/i検証）だけだと、awaitの間にstate.boxEditor.currentBoxesが同じページのまま「別の配列」へ
   // 差し替わるケース（DPI変更等の再描画）を素通りしてしまい、古いorig座標が新しい配列の
   // 同indexへ誤って書き込まれ得るため（原因側で止める＋確定側でも検証、の二重化）。
   cancelBoxDrag();
-  if(state.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
+  if(state.visual.mode==="toggle") await buildToggle(idx); else await buildDiff(idx);
   updateAlignButtons();
   updateAlignReadout();
   updateManualAlignReadout();
@@ -986,7 +956,7 @@ const zoomCenter = f => zoomAt(f, wrap.clientWidth/2, wrap.clientHeight/2);
 
 // ホイールで拡大縮小（ポインタ位置中心）
 wrap.addEventListener("wheel", e=>{
-  if(state.topMode!=="visual") return;
+  if(state.ui.topMode!=="visual") return;
   if(!hasImage()) return;
   e.preventDefault();
   const r = wrap.getBoundingClientRect();
@@ -997,9 +967,9 @@ wrap.addEventListener("wheel", e=>{
 let panning=false, psx=0, psy=0, ptx=0, pty=0;
 let spaceHeld = false; // 枠編集モード中に Space を押している間はパンへ回す
 wrap.addEventListener("pointerdown", e=>{
-  if(state.topMode!=="visual") return;
+  if(state.ui.topMode!=="visual") return;
   if(!hasImage()) return;
-  if(state.boxEditMode && !spaceHeld && e.button!==1){ boxEditPointerDown(e); return; }
+  if(state.boxEditor.editMode && !spaceHeld && e.button!==1){ boxEditPointerDown(e); return; }
   panning=true; wrap.classList.add("panning"); wrap.setPointerCapture(e.pointerId);
   psx=e.clientX; psy=e.clientY; ptx=view.tx; pty=view.ty;
 });
@@ -1038,7 +1008,7 @@ wrap.addEventListener("pointermove", e=>{
 });
 // ドラッグしていないときのカーソル表示（ハンドル＝リサイズ方向、枠内＝move）
 wrap.addEventListener("pointermove", e=>{
-  if(!state.boxEditMode || boxDrag) return;
+  if(!state.boxEditor.editMode || boxDrag) return;
   const p = toFrame(e);
   const hs = hitHandle(p);
   if(hs>=0){ wrap.style.cursor = HANDLE_CURSORS[hs]; return; }
@@ -1056,36 +1026,36 @@ $("zoom1").addEventListener("click", ()=>{ if(hasImage()) zoomCenter(1/view.scal
 
 // ── モード切替（差分 / 新旧切替） ──
 $("modeDiff").addEventListener("click", async ()=>{
-  if(state.mode==="diff" || !hasImage()) return;
-  state.mode="diff"; setModeUI();
+  if(state.visual.mode==="diff" || !hasImage()) return;
+  state.visual.mode="diff"; setModeUI();
   // boxAuto は算出モードごとに中身が別物（差分アルゴリズム由来 or 新旧切替の再構築由来）
   // なので、モードが変わったら全ページ分を破棄する（さもないと切替後に別モードの枠が出る）。
-  state.boxAuto = {};
+  state.boxEditor.autoByPage.clear();
   $("status").innerHTML='<span class="busy">差分を再計算中…</span>';
-  if(state.pages) await show(state.cur);
+  if(state.documents.pages) await show(state.documents.currentPage);
 });
 $("modeToggle").addEventListener("click", async ()=>{
-  if(state.mode==="toggle" || !hasImage()) return;
-  state.mode="toggle"; state.toggleCache=null; setModeUI();
-  state.boxAuto = {}; // 同上（差分モード由来のboxAutoを新旧切替に持ち越さない）
-  if(state.pages) await show(state.cur);
+  if(state.visual.mode==="toggle" || !hasImage()) return;
+  state.visual.mode="toggle"; state.visual.toggleCache=null; setModeUI();
+  state.boxEditor.autoByPage.clear(); // 同上（差分モード由来のboxAutoを新旧切替に持ち越さない）
+  if(state.documents.pages) await show(state.documents.currentPage);
 });
 $("toggleFlip").addEventListener("click", flipSide);
 $("boxToggle").addEventListener("click", toggleBoxes);
-$("boxEdit").addEventListener("click", ()=>setBoxEditMode(!state.boxEditMode));
+$("boxEdit").addEventListener("click", ()=>setBoxEditMode(!state.boxEditor.editMode));
 $("boxDel").addEventListener("click", deleteSelectedBox);
 // このページの手編集を破棄して自動算出の原本へ戻す。原本があるため差分の再計算は要らない。
 $("boxReset").addEventListener("click", ()=>{
-  const i = state.cur;
-  if(!state.boxEdits[i]) return;
-  delete state.boxEdits[i];
-  delete state.boxUndo[i];
-  state.boxSel = -1;
-  if(state.boxAuto[i]){
-    state.boxes = state.boxAuto[i];
+  const i = state.documents.currentPage;
+  if(!state.boxEditor.editsByPage.has(i)) return;
+  state.boxEditor.editsByPage.delete(i);
+  state.boxEditor.undoByPage.delete(i);
+  state.boxEditor.selectedIndex = -1;
+  if(state.boxEditor.autoByPage.has(i)){
+    state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(i);
     updateBoxStat(); setBoxEditUI(); drawBoxLayer();
   } else {
-    show(state.cur); // 原本が無い場合だけ算出し直す
+    show(state.documents.currentPage); // 原本が無い場合だけ算出し直す
   }
 });
 
@@ -1101,12 +1071,12 @@ function isTypingTarget(e){
 // Space キーで新旧切替（トグルモード時のみ）。枠編集モード中はパンの修飾キーとして使う。
 // ボタンにフォーカスがある状態でSpaceを押すとボタンがクリック相当で発火してしまうため、ここだけ個別にBUTTONを除外する。
 document.addEventListener("keydown", e=>{
-  if(state.topMode!=="visual") return;
+  if(state.ui.topMode!=="visual") return;
   if(e.code!=="Space" || e.repeat) return;
   if(isTypingTarget(e)) return;
   if(e.target && e.target.tagName==="BUTTON") return;
-  if(state.boxEditMode){ spaceHeld = true; e.preventDefault(); return; }
-  if(state.mode==="toggle" && hasImage()){
+  if(state.boxEditor.editMode){ spaceHeld = true; e.preventDefault(); return; }
+  if(state.visual.mode==="toggle" && hasImage()){
     e.preventDefault();
     flipSide();
   }
@@ -1116,22 +1086,22 @@ window.addEventListener("blur", ()=>{ spaceHeld = false; }); // 押しっぱな�
 
 // 枠編集モードのキー操作。E=モード切替、Esc=選択解除→モード終了。
 document.addEventListener("keydown", e=>{
-  if(state.topMode!=="visual") return;
+  if(state.ui.topMode!=="visual") return;
   if(isTypingTarget(e)) return;
   if(e.key==="e" || e.key==="E"){
     // Ctrl+E・Alt+E等は別コマンド扱いにするため素通しする（Eは修飾キー無しの単独キー）。
     if(e.ctrlKey||e.metaKey||e.altKey) return;
-    if(!state.rendered) return;
+    if(!state.visual.rendered) return;
     e.preventDefault();
-    setBoxEditMode(!state.boxEditMode);
+    setBoxEditMode(!state.boxEditor.editMode);
     return;
   }
-  if(!state.boxEditMode) return;
+  if(!state.boxEditor.editMode) return;
   if(e.key==="Escape"){
     e.preventDefault();
-    // 選択解除はここで直接 state.boxSel を変えるため、setBoxEditMode(false) を経由しない。
+    // 選択解除はここで直接 state.boxEditor.selectedIndex を変えるため、setBoxEditMode(false) を経由しない。
     // ドラッグ中に割り込んだ場合はここでもキャンセルしないと endBoxDrag が旧selで確定してしまう。
-    if(state.boxSel>=0){ cancelBoxDrag(); state.boxSel=-1; setBoxEditUI(); drawBoxLayer(); }
+    if(state.boxEditor.selectedIndex>=0){ cancelBoxDrag(); state.boxEditor.selectedIndex=-1; setBoxEditUI(); drawBoxLayer(); }
     else setBoxEditMode(false);
     return;
   }
@@ -1157,132 +1127,149 @@ $("fileNew").addEventListener("change",e=>e.target.files[0]&&loadPdf(e.target.fi
     const f=e.dataTransfer.files[0]; if(f&&f.type==="application/pdf") loadPdf(f,which);});
 });
 
-// レンジ入力は input で state を先に書き換えるため、確定済みの値を要素に持たせておく。
-// 破棄を拒否したときはここから value / state / ラベルを戻す。
+// レンジ入力はラベルだけを先行更新し、state は change 時の破棄確認後に確定する。
+// 破棄を拒否したときは確定済みの値から value / ラベルだけを戻す。
 ["dpi","th","tolerance"].forEach(id=>{ $(id).dataset.committed = $(id).value; });
+function restoreCommittedRange(el, labelId){
+  el.value = el.dataset.committed;
+  $(labelId).textContent = el.value;
+}
 
-$("dpi").addEventListener("input",e=>{state.dpi=+e.target.value;$("dpiVal").textContent=e.target.value;});
+$("dpi").addEventListener("input",e=>{$("dpiVal").textContent=e.target.value;});
 $("dpi").addEventListener("change",async()=>{
   const el = $("dpi");
-  if(!confirmDiscardBoxEdits()){
-    el.value = el.dataset.committed; state.dpi = +el.value; $("dpiVal").textContent = el.value;
+  const next = +el.value;
+  if(!applyComparisonSettingChange(
+    ()=>{ state.comparison.dpi = next; },
+    invalidateDpi,
+  )){
+    restoreCommittedRange(el, "dpiVal");
     return;
   }
   el.dataset.committed = el.value;
-  state.cache={}; state.toggleCache=null;
-  if(state.rendered){await show(state.cur); fitView();}
+  if(state.visual.rendered){await show(state.documents.currentPage); fitView();}
 });
-$("th").addEventListener("input",e=>{state.th=+e.target.value;$("thVal").textContent=e.target.value;});
+$("th").addEventListener("input",e=>{$("thVal").textContent=e.target.value;});
 $("th").addEventListener("change",()=>{
   const el = $("th");
-  if(!confirmDiscardBoxEdits()){
-    el.value = el.dataset.committed; state.th = +el.value; $("thVal").textContent = el.value;
+  const next = +el.value;
+  if(!applyComparisonSettingChange(
+    ()=>{ state.comparison.threshold = next; },
+    invalidateThreshold,
+  )){
+    restoreCommittedRange(el, "thVal");
     return;
   }
   el.dataset.committed = el.value;
-  state.alignCache = {}; // 一致率スコアが th 依存のため再推定させる
-  state.quadCache = {}; state.quadGen++; // 象限スコアも th 依存のため再推定させる
-  if(state.mode==="diff" && state.rendered)show(state.cur);
+  if(state.visual.mode==="diff" && state.visual.rendered)show(state.documents.currentPage);
 });
-$("tolerance").addEventListener("input",e=>{state.tolerancePx=+e.target.value;$("toleranceVal").textContent=e.target.value;});
+$("tolerance").addEventListener("input",e=>{$("toleranceVal").textContent=e.target.value;});
 $("tolerance").addEventListener("change",()=>{
   const el = $("tolerance");
-  if(!confirmDiscardBoxEdits()){
-    el.value = el.dataset.committed; state.tolerancePx = +el.value; $("toleranceVal").textContent = el.value;
+  const next = +el.value;
+  if(!applyComparisonSettingChange(
+    ()=>{ state.comparison.tolerancePx = next; },
+    invalidateTolerance,
+  )){
+    restoreCommittedRange(el, "toleranceVal");
     return;
   }
   el.dataset.committed = el.value;
-  if(!state.rendered) return;
-  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  if(!state.visual.rendered) return;
+  if(state.visual.mode==="toggle") buildToggle(state.documents.currentPage); else show(state.documents.currentPage);
 });
 
 document.querySelectorAll(".nudge button[data-dx]").forEach(b=>{
   b.addEventListener("click",()=>{
-    if(!confirmDiscardBoxEdits()) return;
-    state.dx+=(+b.dataset.dx); state.dy+=(+b.dataset.dy);
-    $("nudgeReset").textContent=state.dx+","+state.dy;
-    if(!state.rendered) return;
-    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+    if(!applyComparisonSettingChange(()=>{
+      state.comparison.dx+=(+b.dataset.dx); state.comparison.dy+=(+b.dataset.dy);
+    }, invalidateManualAlignment)) return;
+    $("nudgeReset").textContent=state.comparison.dx+","+state.comparison.dy;
+    if(!state.visual.rendered) return;
+    if(state.visual.mode==="toggle") buildToggle(state.documents.currentPage); else show(state.documents.currentPage);
   });
 });
 $("nudgeReset").addEventListener("click",()=>{
-  if(!confirmDiscardBoxEdits()) return;
-  state.dx=0;state.dy=0;$("nudgeReset").textContent="0,0";
-  if(!state.rendered) return;
-  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  if(!applyComparisonSettingChange(()=>{
+    state.comparison.dx=0;state.comparison.dy=0;
+  }, invalidateManualAlignment)) return;
+  $("nudgeReset").textContent="0,0";
+  if(!state.visual.rendered) return;
+  if(state.visual.mode==="toggle") buildToggle(state.documents.currentPage); else show(state.documents.currentPage);
 });
 // 向き（直角回転）。押した時点で手動上書きが確定し、当ページの自動推定より優先される。
-// k が変わると絵が丸ごと変わるため、当ページの整列推定と差分集計キャッシュを破棄する。
-function invalidateForQuadChange(){
-  delete state.alignCache[state.cur];
-  delete state.cache[state.cur];
-  state.toggleCache = null;
-}
+// k が変わるとページ描画・位置合わせ・差分・枠が変わるため、DPI変更と同じ範囲を無効化する。
 document.querySelectorAll("button[data-quad]").forEach(b=>{
   b.addEventListener("click", async ()=>{
-    if(!confirmDiscardBoxEdits()) return;
-    const cur = effectiveQuad(state.cur);
-    state.quadManual[state.cur] = ((cur + (+b.dataset.quad)) % 4 + 4) % 4;
-    invalidateForQuadChange();
+    if(!applyComparisonSettingChange(()=>{
+      const cur = effectiveQuad(state.documents.currentPage);
+      state.comparison.quadrantManual.set(state.documents.currentPage, ((cur + (+b.dataset.quad)) % 4 + 4) % 4);
+    }, invalidateDpi)) return;
     updateManualAlignReadout();
-    if(!state.rendered) return;
+    if(!state.visual.rendered) return;
     // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
     // トグルモードでも「向き」表示を更新できるよう await して同期させる（autoAlign の change ハンドラと同じ対処）。
-    if(state.mode==="toggle"){ await buildToggle(state.cur); updateAlignReadout(); }
-    else await show(state.cur);
+    if(state.visual.mode==="toggle"){ await buildToggle(state.documents.currentPage); updateAlignReadout(); }
+    else await show(state.documents.currentPage);
   });
 });
 $("quadReset").addEventListener("click", async ()=>{
-  if(state.quadManual[state.cur] == null) return; // 既に自動
-  if(!confirmDiscardBoxEdits()) return;
-  delete state.quadManual[state.cur];             // 自動判定へ戻す
-  invalidateForQuadChange();
+  if(!state.comparison.quadrantManual.has(state.documents.currentPage)) return; // 既に自動
+  if(!applyComparisonSettingChange(()=>{
+    state.comparison.quadrantManual.delete(state.documents.currentPage);        // 自動判定へ戻す
+  }, invalidateDpi)) return;
   updateManualAlignReadout();
-  if(!state.rendered) return;
+  if(!state.visual.rendered) return;
   // 同上（data-quad ハンドラと同じ理由でトグルモードのみ明示的に読み出しを更新する）。
-  if(state.mode==="toggle"){ await buildToggle(state.cur); updateAlignReadout(); }
-  else await show(state.cur);
+  if(state.visual.mode==="toggle"){ await buildToggle(state.documents.currentPage); updateAlignReadout(); }
+  else await show(state.documents.currentPage);
 });
 document.querySelectorAll("button[data-rot]").forEach(b=>{
   b.addEventListener("click",()=>{
-    if(!confirmDiscardBoxEdits()) return;
-    state.manualAngle += (+b.dataset.rot) * 0.1 * Math.PI/180;
+    if(!applyComparisonSettingChange(()=>{
+      state.comparison.manualAngle += (+b.dataset.rot) * 0.1 * Math.PI/180;
+    }, invalidateDpi)) return;
     updateManualAlignReadout();
-    if(!state.rendered) return;
-    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+    if(!state.visual.rendered) return;
+    if(state.visual.mode==="toggle") buildToggle(state.documents.currentPage); else show(state.documents.currentPage);
   });
 });
 $("rotReset").addEventListener("click",()=>{
-  if(!confirmDiscardBoxEdits()) return;
-  state.manualAngle = 0;
+  if(!applyComparisonSettingChange(()=>{
+    state.comparison.manualAngle = 0;
+  }, invalidateDpi)) return;
   updateManualAlignReadout();
-  if(!state.rendered) return;
-  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  if(!state.visual.rendered) return;
+  if(state.visual.mode==="toggle") buildToggle(state.documents.currentPage); else show(state.documents.currentPage);
 });
 document.querySelectorAll("button[data-scale]").forEach(b=>{
   b.addEventListener("click",()=>{
-    if(!confirmDiscardBoxEdits()) return;
-    state.manualScale = Math.max(0.1, state.manualScale + (+b.dataset.scale) * 0.001);
+    if(!applyComparisonSettingChange(()=>{
+      state.comparison.manualScale = Math.max(0.1, state.comparison.manualScale + (+b.dataset.scale) * 0.001);
+    }, invalidateDpi)) return;
     updateManualAlignReadout();
-    if(!state.rendered) return;
-    if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+    if(!state.visual.rendered) return;
+    if(state.visual.mode==="toggle") buildToggle(state.documents.currentPage); else show(state.documents.currentPage);
   });
 });
 $("scaleReset").addEventListener("click",()=>{
-  if(!confirmDiscardBoxEdits()) return;
-  state.manualScale = 1;
+  if(!applyComparisonSettingChange(()=>{
+    state.comparison.manualScale = 1;
+  }, invalidateDpi)) return;
   updateManualAlignReadout();
-  if(!state.rendered) return;
-  if(state.mode==="toggle") buildToggle(state.cur); else show(state.cur);
+  if(!state.visual.rendered) return;
+  if(state.visual.mode==="toggle") buildToggle(state.documents.currentPage); else show(state.documents.currentPage);
 });
 $("autoAlign").addEventListener("change", async e=>{
-  if(!confirmDiscardBoxEdits()){ e.target.checked = !e.target.checked; return; }
-  state.autoAlign = e.target.checked;
-  if(!state.rendered){ updateAlignReadout(); return; }
+  const next = e.target.checked;
+  if(!applyComparisonSettingChange(()=>{
+    state.comparison.autoAlign = next;
+  }, invalidateThreshold)){ e.target.checked = !next; return; }
+  if(!state.visual.rendered){ updateAlignReadout(); return; }
   // buildToggle() 自体は updateAlignReadout() を呼ばない（show() 経由のときのみ呼ばれる）ため、
   // トグルモードでも推定完了後に読み出しを更新できるよう await して同期させる。
-  if(state.mode==="toggle"){ state.toggleCache=null; await buildToggle(state.cur); }
-  else await show(state.cur);
+  if(state.visual.mode==="toggle"){ state.visual.toggleCache=null; await buildToggle(state.documents.currentPage); }
+  else await show(state.documents.currentPage);
   updateAlignReadout();
 });
 
@@ -1291,30 +1278,30 @@ $("run").addEventListener("click",async()=>{
   await show(0); fitView();
 });
 $("alignAddNew").addEventListener("click", async ()=>{
-  if(!state.rendered) return;
+  if(!state.visual.rendered) return;
   if(!confirmDiscardBoxEdits()) return;
-  state.oldSeq.splice(state.cur, 0, null); // 旧側に空白 → 新ページが全面追加(青)に
-  state.alignOps.push({side:"old", slot:state.cur});
+  state.documents.oldSequence.splice(state.documents.currentPage, 0, null); // 旧側に空白 → 新ページが全面追加(青)に
+  state.documents.alignmentOps.push({side:"old", slot:state.documents.currentPage});
   await refreshAfterAlign();
 });
 $("alignDelOld").addEventListener("click", async ()=>{
-  if(!state.rendered) return;
+  if(!state.visual.rendered) return;
   if(!confirmDiscardBoxEdits()) return;
-  state.newSeq.splice(state.cur, 0, null); // 新側に空白 → 旧ページが全面削除(赤)に
-  state.alignOps.push({side:"new", slot:state.cur});
+  state.documents.newSequence.splice(state.documents.currentPage, 0, null); // 新側に空白 → 旧ページが全面削除(赤)に
+  state.documents.alignmentOps.push({side:"new", slot:state.documents.currentPage});
   await refreshAfterAlign();
 });
 $("alignUndo").addEventListener("click", async ()=>{
-  const op = state.alignOps[state.alignOps.length-1]; // pop ではなく覗き見。ゲート拒否時に何も書き換えないため
+  const op = state.documents.alignmentOps[state.documents.alignmentOps.length-1]; // pop ではなく覗き見。ゲート拒否時に何も書き換えないため
   if(!op) return;
   if(!confirmDiscardBoxEdits()) return;
-  state.alignOps.pop();
-  const seq = op.side === "old" ? state.oldSeq : state.newSeq;
+  state.documents.alignmentOps.pop();
+  const seq = op.side === "old" ? state.documents.oldSequence : state.documents.newSequence;
   if(seq[op.slot] === null) seq.splice(op.slot, 1); // 念のため null を確認して除去
   await refreshAfterAlign();
 });
-$("prev").addEventListener("click",()=>show(state.cur-1));
-$("next").addEventListener("click",()=>show(state.cur+1));
+$("prev").addEventListener("click",()=>show(state.documents.currentPage-1));
+$("next").addEventListener("click",()=>show(state.documents.currentPage+1));
 
 // ── 書き出し用の凡例 ──
 // 画面表示のCanvas(out)には描かない（画面はヘッダーのHTML凡例が担う）。書き出し時に
@@ -1378,9 +1365,9 @@ function drawLegend(ctx, items, x, y, unit, opts, pre){
 const LG_MARGIN_PT = 10; // 凡例ボックスの左上マージン
 
 // 図面比較の凡例項目。色は buildDiff が実際に塗る DIFF_RGB と同じ定義から作る。
-// 引数 kind は「書き出す画像の中身」であって state.mode ではない。dlPdf は切替モード中に
+// 引数 kind は「書き出す画像の中身」であって state.visual.mode ではない。dlPdf は切替モード中に
 // 押されてもループ内で buildDiff を呼ぶため中身は差分画像であり "diff" を渡す。
-// state.mode を関数内で直接読むと、この経路で凡例が「変更枠」だけになり誤りになる。
+// state.visual.mode を関数内で直接読むと、この経路で凡例が「変更枠」だけになり誤りになる。
 function diffLegendItems(kind){
   const items = [];
   // 切替モードの画像は旧版/新版そのもの。共通/削除/追加の3色は実在しないので出さない。
@@ -1390,7 +1377,7 @@ function diffLegendItems(kind){
     {color: rgbCss(DIFF_RGB.added),   label: "追加（新版のみ）"},
   );
   // 枠を出していないときに「変更枠」だけ凡例に残ると誤解を招くので連動させる
-  if(state.showBoxes) items.push({stroke: BOX_COLOR, fill: BOX_FILL, label: "変更枠"});
+  if(state.boxEditor.showBoxes) items.push({stroke: BOX_COLOR, fill: BOX_FILL, label: "変更枠"});
   return items;
 }
 
@@ -1403,8 +1390,8 @@ function exportCanvasWithLegend(src, kind, dest){
   c.width = src.width; c.height = src.height;
   const ctx = c.getContext("2d");
   ctx.drawImage(src, 0, 0);
-  if(state.showBoxes) drawBoxesTo(ctx, state.boxes, exportBoxLineWidth());
-  const unit = state.dpi / 72;
+  if(state.boxEditor.showBoxes) drawBoxesTo(ctx, state.boxEditor.currentBoxes, exportBoxLineWidth());
+  const unit = state.comparison.dpi / 72;
   const m = LG_MARGIN_PT * unit;
   drawLegend(ctx, diffLegendItems(kind), m, m, unit);
   return c;
@@ -1413,12 +1400,12 @@ function exportCanvasWithLegend(src, kind, dest){
 $("dlPng").addEventListener("click",()=>{
   // 切替モードの画像で説明を要する色はオレンジの変更枠だけ。枠OFFなら凡例は不要なので
   // out をそのまま出す。それ以外（差分モード全般／切替モードで枠ON）は凡例を重ねる。
-  const bare = state.mode==="toggle" && !state.showBoxes;
-  const shot = bare ? out : exportCanvasWithLegend(out, state.mode);
+  const bare = state.visual.mode==="toggle" && !state.boxEditor.showBoxes;
+  const shot = bare ? out : exportCanvasWithLegend(out, state.visual.mode);
   shot.toBlob(b=>{
-    const name = state.mode==="toggle"
-      ? (state.toggleSide==="new" ? "new_p"+(state.cur+1)+".png" : "old_p"+(state.cur+1)+".png")
-      : "diff_p"+(state.cur+1)+".png";
+    const name = state.visual.mode==="toggle"
+      ? (state.visual.toggleSide==="new" ? "new_p"+(state.documents.currentPage+1)+".png" : "old_p"+(state.documents.currentPage+1)+".png")
+      : "diff_p"+(state.documents.currentPage+1)+".png";
     downloadBlob(b, name);
   });
 });
@@ -1427,37 +1414,38 @@ $("dlPdf").addEventListener("click",async()=>{
   $("status").innerHTML='<span class="busy">PDF生成中…</span>';
   let pdf=null;
   const scratch=createCanvas(0, 0); // 全ページで使い回す複製先（毎ページ確保するとピークメモリが倍になる）
-  // dlPdf は state.mode に関わらず全ページを buildDiff で描くため、ループ内で書き込まれる
-  // state.boxAuto は差分アルゴリズム由来の値になる。これは書き出し専用の一時的な結果であり
-  // 画面表示（新旧切替モード等）の boxAuto を汚してはいけないため、ループの間だけ空の
-  // オブジェクトへ差し替え、終了後に元へ戻す（退避・復元）。
-  const savedBoxAuto = state.boxAuto;
-  state.boxAuto = {};
-  for(let i=0;i<state.pages;i++){
+  // dlPdf は state.visual.mode に関わらず全ページを buildDiff で描くため、ループ内で書き込まれる
+  // state.boxEditor.autoByPage は差分アルゴリズム由来の値になる。これは書き出し専用の一時的な結果であり
+  // 画面表示（新旧切替モード等）の自動枠を汚してはいけないため、ループの前にMap内容を
+  // 退避して空にし、終了後に同じMapへ戻す。
+  const savedBoxAuto = new Map(state.boxEditor.autoByPage);
+  state.boxEditor.autoByPage.clear();
+  for(let i=0;i<state.documents.pages;i++){
     await buildDiff(i);
-    // dlPdf は state.mode に関わらず buildDiff で差分を描くため、常に差分用の凡例を付ける
+    // dlPdf は state.visual.mode に関わらず buildDiff で差分を描くため、常に差分用の凡例を付ける
     const shot=exportCanvasWithLegend(out, "diff", scratch);
     const img=shot.toDataURL("image/png");
     const w=shot.width, h=shot.height;
     // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す。
     // 用紙サイズ正規化時も「基準ページ(大きい用紙)は必ず dpi/72 で描画する」(framePlan の
     // frameScale)ため、フレーム寸法を dpi/72 で割ると基準ページのpt実寸が得られる。式は不変。
-    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale;
+    const scale=state.comparison.dpi/72, wPt=w/scale, hPt=h/scale;
     const orient = w>h ? "l":"p";
     if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
     else { pdf.addPage([wPt,hPt],orient); }
     pdf.addImage(img,"PNG",0,0,wPt,hPt);
   }
-  state.boxAuto = savedBoxAuto; // 書き出し用の一時算出結果は捨て、呼び出し前のboxAutoへ戻す
+  state.boxEditor.autoByPage.clear();
+  for(const [pageIndex, boxes] of savedBoxAuto) state.boxEditor.autoByPage.set(pageIndex, boxes);
   pdf.save("diff.pdf");
-  await show(state.cur);
+  await show(state.documents.currentPage);
   $("status").textContent="PDFを保存しました";
 });
 
 // ── トップモード切替（図面比較 / テキスト比較） ──
 function applyTopMode(){
-  const visual = state.topMode==="visual";
-  if(!visual && state.boxEditMode) setBoxEditMode(false);
+  const visual = state.ui.topMode==="visual";
+  if(!visual && state.boxEditor.editMode) setBoxEditMode(false);
   $("topVisual").classList.toggle("active", visual);
   $("topText").classList.toggle("active", !visual);
   $("visualCtrl").style.display = visual ? "flex" : "none";
@@ -1466,25 +1454,25 @@ function applyTopMode(){
   document.querySelector(".canvas-wrap").style.display = visual ? "" : "none";
   $("textPanel").style.display = visual ? "none" : "flex";
   if(visual){
-    if(state.rendered) out.style.display = "block"; // 描画済みならCanvas表示を復元
+    if(state.visual.rendered) out.style.display = "block"; // 描画済みならCanvas表示を復元
     // テキストモード中は .canvas-wrap が display:none で幅0のため、resizeイベントで
     // boxLayer が0×0に潰れている。visual復帰時にここで寸法を取り直して枠を出し直す。
     drawBoxLayer();
   } else { out.style.display = "none"; } // hasImage() 誤判定・パン/ズームの誤発火を防ぐ
-  if(!visual && state.textHi){
+  if(!visual && state.textReview.highlights){
     // テキスト側は描画済みハイライトがあれば現在ページを再描画（往復時の表示復元）
-    const gen = ++state.textRenderToken; // 旧新2ペインへ同一世代を渡す
-    Promise.all([renderTextPage("old", state.textPage, gen), renderTextPage("new", state.textPage, gen)])
+    const gen = ++state.textReview.renderGeneration; // 旧新2ペインへ同一世代を渡す
+    Promise.all([renderTextPage("old", state.textReview.page, gen), renderTextPage("new", state.textReview.page, gen)])
       .then(applyTextTransform);
   }
 }
 $("topVisual").addEventListener("click", ()=>{
-  if(state.topMode==="visual") return;
-  state.topMode="visual"; applyTopMode();
+  if(state.ui.topMode==="visual") return;
+  state.ui.topMode="visual"; applyTopMode();
 });
 $("topText").addEventListener("click", ()=>{
-  if(state.topMode==="text") return;
-  state.topMode="text"; applyTopMode();
+  if(state.ui.topMode==="text") return;
+  state.ui.topMode="text"; applyTopMode();
 });
 
 // ── テキスト差分モード（ページ上ハイライト方式） ──
@@ -1547,7 +1535,7 @@ async function extractPageTokenLines(doc, idx){
     ? assembleFromLeaves(content.items, leaves)
     : reconstructLinesInItemOrder(content.items);
 
-  if(state.debugXYCut) logXYCutBlocks(idx, leaves, ctx.hadVerticalCut);
+  if(state.textReview.debugXYCut) logXYCutBlocks(idx, leaves, ctx.hadVerticalCut);
   return result;
 }
 
@@ -1600,7 +1588,7 @@ function drawTokenHighlight(ctx, vp, token, colorKey){
 // 指定側・ページを描画し、ハイライトを焼き込む（再入ガードでstale-draw防止）
 // gen は呼び出し側が採番する世代トークン（旧新2ペインへ同一世代を渡し、互いを無効化しないようにする）
 async function renderTextPage(side, pageIndex, gen){
-  const doc = side==="old" ? state.oldDoc : state.newDoc;
+  const doc = side==="old" ? state.documents.oldDoc : state.documents.newDoc;
   const canvas = side==="old" ? $("oldTextCanvas") : $("newTextCanvas");
   const ctx = canvas.getContext("2d");
   if(!doc || pageIndex>=doc.numPages){
@@ -1609,34 +1597,34 @@ async function renderTextPage(side, pageIndex, gen){
     return;
   }
   const page = await doc.getPage(pageIndex+1);
-  const vp = page.getViewport({scale: state.textScale});
-  if(gen !== state.textRenderToken) return;
+  const vp = page.getViewport({scale: state.textReview.scale});
+  if(gen !== state.textReview.renderGeneration) return;
   canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
   ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
   await page.render({canvasContext:ctx, viewport:vp}).promise;
-  if(gen !== state.textRenderToken) return; // 別世代の描画が割り込んだので着色せず終了
+  if(gen !== state.textReview.renderGeneration) return; // 別世代の描画が割り込んだので着色せず終了
 
-  const entries = state.textHi && state.textHi[side] ? state.textHi[side].get(pageIndex) : null;
+  const entries = state.textReview.highlights && state.textReview.highlights[side] ? state.textReview.highlights[side].get(pageIndex) : null;
   if(entries) for(const {token:tok, color} of entries) drawTokenHighlight(ctx, vp, tok, color);
 }
 
 // 出力用：オンスクリーンCanvas/再入ガードに触れず、指定ページを別Canvasへ描画（無ければnull）
 async function renderTextPageOffscreen(side, pageIndex){
-  const doc = side==="old" ? state.oldDoc : state.newDoc;
+  const doc = side==="old" ? state.documents.oldDoc : state.documents.newDoc;
   if(!doc || pageIndex>=doc.numPages) return null;
   const page = await doc.getPage(pageIndex+1);
-  const vp = page.getViewport({scale: state.textScale});
+  const vp = page.getViewport({scale: state.textReview.scale});
   const canvas = createWhiteCanvas(Math.ceil(vp.width), Math.ceil(vp.height));
   const ctx = canvas.getContext("2d");
   await page.render({canvasContext:ctx, viewport:vp}).promise;
 
-  const entries = state.textHi && state.textHi[side] ? state.textHi[side].get(pageIndex) : null;
+  const entries = state.textReview.highlights && state.textReview.highlights[side] ? state.textReview.highlights[side].get(pageIndex) : null;
   if(entries) for(const {token:tok, color} of entries) drawTokenHighlight(ctx, vp, tok, color);
   return canvas;
 }
 
 // テキスト比較のラベル帯(高さ28px・フォント16px固定)に収まる凡例のスケール。
-// 図面側の state.dpi/72 とは別系統の固定値（帯もフォントもDPIに依存しないため）。
+// 図面側の state.comparison.dpi/72 とは別系統の固定値（帯もフォントもDPIに依存しないため）。
 const TEXT_LG_UNIT = 1.6;
 
 // 旧(上)・新(下)を各ラベル帯付きで縦積み合成（等倍・非伸縮、横中央寄せ）（ページ無し側は白Canvasで代替）
@@ -1690,7 +1678,7 @@ function composeTextExport(oldC, newC, pageIndex, total){
 // ── ズーム/パン/ページング（旧新共有ビュー・topMode==="text"限定） ──
 
 function textTotalPages(){
-  return Math.max(state.oldDoc?state.oldDoc.numPages:0, state.newDoc?state.newDoc.numPages:0);
+  return Math.max(state.documents.oldDoc?state.documents.oldDoc.numPages:0, state.documents.newDoc?state.documents.newDoc.numPages:0);
 }
 
 // 両ペイン共通のワールド寸法（旧新のCanvas実寸の最大値。寸法差は中央寄せで吸収）
@@ -1701,7 +1689,7 @@ function textWorldSize(){
 
 function applyTextTransform(){
   const {W,H} = textWorldSize();
-  const v = state.textView;
+  const v = state.textReview.view;
   [$("oldTextCanvas"), $("newTextCanvas")].forEach(c=>{
     const offX = (W-c.width)/2, offY = (H-c.height)/2;
     c.style.transform = `translate(${v.tx+offX*v.scale}px, ${v.ty+offY*v.scale}px) scale(${v.scale})`;
@@ -1714,15 +1702,15 @@ function fitTextView(){
   const Ww = wrapEl.clientWidth, Wh = wrapEl.clientHeight;
   if(!W || !H || !Ww || !Wh) return;
   const s = Math.min(Ww/W, Wh/H) * 0.92;
-  state.textView.scale = s;
-  state.textView.tx = (Ww-W*s)/2;
-  state.textView.ty = (Wh-H*s)/2;
+  state.textReview.view.scale = s;
+  state.textReview.view.tx = (Ww-W*s)/2;
+  state.textReview.view.ty = (Wh-H*s)/2;
   applyTextTransform();
 }
 
 const clampTextScale = s => Math.min(Math.max(s, 0.05), 40);
 function textZoomAt(factor, cx, cy){
-  const v = state.textView;
+  const v = state.textReview.view;
   const ns = clampTextScale(v.scale*factor), k = ns/v.scale;
   v.tx = cx-(cx-v.tx)*k; v.ty = cy-(cy-v.ty)*k; v.scale = ns;
   applyTextTransform();
@@ -1735,17 +1723,17 @@ function textZoomCenter(factor){
 async function showTextPage(idx){
   const total = textTotalPages();
   if(!total || idx<0 || idx>=total) return;
-  state.textPage = idx;
+  state.textReview.page = idx;
   $("textPageInd").textContent = (idx+1)+" / "+total;
-  const gen = ++state.textRenderToken; // 旧新2ペインへ同一世代を渡し、互いのstale-drawガードで潰し合わないようにする
+  const gen = ++state.textReview.renderGeneration; // 旧新2ペインへ同一世代を渡し、互いのstale-drawガードで潰し合わないようにする
   await Promise.all([renderTextPage("old", idx, gen), renderTextPage("new", idx, gen)]);
   applyTextTransform();
 }
 
 document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
   wrapEl.addEventListener("wheel", e=>{
-    if(state.topMode!=="text") return;
-    if(!state.textHi) return;
+    if(state.ui.topMode!=="text") return;
+    if(!state.textReview.highlights) return;
     e.preventDefault();
     const r = wrapEl.getBoundingClientRect();
     textZoomAt(e.deltaY<0 ? 1.12 : 1/1.12, e.clientX-r.left, e.clientY-r.top);
@@ -1755,15 +1743,15 @@ document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
 let textPanning=false, tpsx=0, tpsy=0, tptx=0, tpty=0;
 document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
   wrapEl.addEventListener("pointerdown", e=>{
-    if(state.topMode!=="text") return;
-    if(!state.textHi) return;
+    if(state.ui.topMode!=="text") return;
+    if(!state.textReview.highlights) return;
     textPanning=true; wrapEl.classList.add("panning"); wrapEl.setPointerCapture(e.pointerId);
-    tpsx=e.clientX; tpsy=e.clientY; tptx=state.textView.tx; tpty=state.textView.ty;
+    tpsx=e.clientX; tpsy=e.clientY; tptx=state.textReview.view.tx; tpty=state.textReview.view.ty;
   });
   wrapEl.addEventListener("pointermove", e=>{
-    if(state.topMode!=="text") return;
+    if(state.ui.topMode!=="text") return;
     if(!textPanning) return;
-    state.textView.tx = tptx+(e.clientX-tpsx); state.textView.ty = tpty+(e.clientY-tpsy);
+    state.textReview.view.tx = tptx+(e.clientX-tpsx); state.textReview.view.ty = tpty+(e.clientY-tpsy);
     applyTextTransform();
   });
   const endTextPan = e=>{
@@ -1775,39 +1763,39 @@ document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
   wrapEl.addEventListener("pointercancel", endTextPan);
 });
 
-$("textPrev").addEventListener("click", ()=>{ if(state.topMode!=="text") return; showTextPage(state.textPage-1); });
-$("textNext").addEventListener("click", ()=>{ if(state.topMode!=="text") return; showTextPage(state.textPage+1); });
-$("textZoomIn").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1.25); });
-$("textZoomOut").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1/1.25); });
-$("textZoomFit").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) fitTextView(); });
-$("textZoom1").addEventListener("click", ()=>{ if(state.topMode!=="text") return; if(state.textHi) textZoomCenter(1/state.textView.scale); });
+$("textPrev").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; showTextPage(state.textReview.page-1); });
+$("textNext").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; showTextPage(state.textReview.page+1); });
+$("textZoomIn").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) textZoomCenter(1.25); });
+$("textZoomOut").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) textZoomCenter(1/1.25); });
+$("textZoomFit").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) fitTextView(); });
+$("textZoom1").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) textZoomCenter(1/state.textReview.view.scale); });
 
 async function runTextDiff(){
-  const token = ++state.textToken;
+  const token = ++state.textReview.extractGeneration;
   $("textStatus").classList.add("busy");
   $("textStatus").textContent = "抽出中…";
 
-  if(!state.textCache){
-    const oldPages = await extractDocTokens(state.oldDoc, "旧版: ");
-    if(token !== state.textToken) return; // 別の抽出が割り込んだので破棄
-    const newPages = await extractDocTokens(state.newDoc, "新版: ");
-    if(token !== state.textToken) return;
-    state.textCache = {old:oldPages, new:newPages};
+  if(!state.textReview.extraction){
+    const oldPages = await extractDocTokens(state.documents.oldDoc, "旧版: ");
+    if(token !== state.textReview.extractGeneration) return; // 別の抽出が割り込んだので破棄
+    const newPages = await extractDocTokens(state.documents.newDoc, "新版: ");
+    if(token !== state.textReview.extractGeneration) return;
+    state.textReview.extraction = {old:oldPages, new:newPages};
   }
   $("textStatus").classList.remove("busy");
 
-  const hasText = state.textCache.old.some(p=>p.some(l=>l.text.trim())) ||
-                  state.textCache.new.some(p=>p.some(l=>l.text.trim()));
+  const hasText = state.textReview.extraction.old.some(p=>p.some(l=>l.text.trim())) ||
+                  state.textReview.extraction.new.some(p=>p.some(l=>l.text.trim()));
   if(!hasText){
     $("textStatus").textContent = "テキストレイヤがありません。図面比較で確認してください";
     return;
   }
 
-  const hi = buildTextHighlights(state.textCache.old, state.textCache.new);
-  applyTableHighlights(state.textCache.old, state.textCache.new, hi);
-  state.textHi = hi;
-  state.textScale = state.dpi/72;
-  state.textPage = 0;
+  const hi = buildTextHighlights(state.textReview.extraction.old, state.textReview.extraction.new);
+  applyTableHighlights(state.textReview.extraction.old, state.textReview.extraction.new, hi);
+  state.textReview.highlights = hi;
+  state.textReview.scale = state.comparison.dpi/72;
+  state.textReview.page = 0;
 
   await showTextPage(0);
   fitTextView();
@@ -1818,9 +1806,9 @@ async function runTextDiff(){
 $("runText").addEventListener("click", runTextDiff);
 
 $("dlTextPng").addEventListener("click", async()=>{
-  if(state.topMode!=="text" || !state.textHi) return;
+  if(state.ui.topMode!=="text" || !state.textReview.highlights) return;
   $("textStatus").textContent = "PNG生成中…";
-  const idx = state.textPage, total = textTotalPages();
+  const idx = state.textReview.page, total = textTotalPages();
   const [oldC, newC] = await Promise.all([
     renderTextPageOffscreen("old", idx),
     renderTextPageOffscreen("new", idx),
@@ -1833,7 +1821,7 @@ $("dlTextPng").addEventListener("click", async()=>{
 });
 
 $("dlTextPdf").addEventListener("click", async()=>{
-  if(state.topMode!=="text" || !state.textHi) return;
+  if(state.ui.topMode!=="text" || !state.textReview.highlights) return;
   const total = textTotalPages();
   let pdf=null;
   for(let i=0;i<total;i++){
@@ -1845,7 +1833,7 @@ $("dlTextPdf").addEventListener("click", async()=>{
     const canvas = composeTextExport(oldC, newC, i, total);
     const img = canvas.toDataURL("image/png");
     const w = canvas.width, h = canvas.height;
-    const scale=state.dpi/72, wPt=w/scale, hPt=h/scale; // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す
+    const scale=state.comparison.dpi/72, wPt=w/scale, hPt=h/scale; // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す
     const orient = w>h ? "l":"p";
     if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
     else { pdf.addPage([wPt,hPt],orient); }
