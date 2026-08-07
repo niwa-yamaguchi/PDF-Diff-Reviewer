@@ -15,8 +15,17 @@ test("detects a three-row table and replaces row highlights with cell highlights
   expect(tables).toHaveLength(1);
   expect(tables[0]).toMatchObject({ rowCount: 3, colCount: 2 });
 
-  const hi = { old: new Map(), new: new Map() };
-  applyTableHighlights([oldLines], [newLines], hi);
-  expect(hi.old.get(0).some((entry) => entry.color === "changed")).toBe(true);
-  expect(hi.new.get(0).some((entry) => entry.color === "changed")).toBe(true);
+  const oldRowToken = oldLines[1].tokens[0];
+  const newRowToken = newLines[1].tokens[0];
+  const hi = {
+    old: new Map([[0, [{ token: oldRowToken, color: "changed" }]]]),
+    new: new Map([[0, [{ token: newRowToken, color: "changed" }]]]),
+  };
+  const returned = applyTableHighlights([oldLines], [newLines], hi);
+
+  expect(returned).toBe(hi);
+  expect(hi.old.get(0).some((entry) => entry.token === oldRowToken)).toBe(false);
+  expect(hi.new.get(0).some((entry) => entry.token === newRowToken)).toBe(false);
+  expect(hi.old.get(0)).toContainEqual({ token: oldLines[1].tokens[1], color: "changed" });
+  expect(hi.new.get(0)).toContainEqual({ token: newLines[1].tokens[1], color: "changed" });
 });
