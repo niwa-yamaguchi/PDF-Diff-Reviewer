@@ -6,10 +6,16 @@ function keepJsPdfPdfObjectLocal() {
     name: "keep-jspdf-pdfobject-local",
     transform(code, id) {
       if (!id.endsWith("jspdf.es.min.js")) return null;
-      return code.replace(
-        "https://cdnjs.cloudflare.com/ajax/libs/pdfobject/2.1.1/pdfobject.min.js",
-        "/pdfobject.min.js",
-      );
+      const start = code.indexOf('case"pdfobjectnewwindow":');
+      const end = code.indexOf('case"pdfjsnewwindow":', start);
+      if (start === -1 || end === -1) {
+        throw new Error("Could not disable jsPDF PDFObject output safely.");
+      }
+      const unsupported = [
+        'case"pdfobjectnewwindow":throw new Error(',
+        '"The jsPDF pdfobjectnewwindow output is not supported in this local-only build.");',
+      ].join("");
+      return `${code.slice(0, start)}${unsupported}${code.slice(end)}`;
     },
   };
 }

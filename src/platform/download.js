@@ -4,5 +4,5 @@ export function downloadBlob(blob, filename) {
   anchor.href = url;
   anchor.download = filename;
   anchor.click();
-  queueMicrotask(() => URL.revokeObjectURL(url));
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
