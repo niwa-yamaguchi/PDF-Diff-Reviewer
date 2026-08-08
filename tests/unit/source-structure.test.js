@@ -9,4 +9,16 @@ describe("source structure", () => {
     expect(html).toContain('<script type="module" src="/src/main.js"></script>');
     expect(html).toContain('href="/favicon.png"');
   });
+
+  test("buildDiff rejects render results from an obsolete document generation", async () => {
+    const source = await readFile("src/legacy-app.js", "utf8");
+    const buildDiff = source.slice(
+      source.indexOf("async function buildDiff"),
+      source.indexOf("async function buildToggle"),
+    );
+
+    expect(buildDiff).toContain("const token = ++state.visual.renderGeneration;");
+    expect(buildDiff).toContain("const documentGeneration = state.documents.generation;");
+    expect(buildDiff.match(/if\(isStale\(\)\) return;/g)).toHaveLength(3);
+  });
 });

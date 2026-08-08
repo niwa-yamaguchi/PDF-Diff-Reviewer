@@ -523,6 +523,10 @@ function endBoxDrag(e){
 }
 
 async function buildDiff(idx){
+  const token = ++state.visual.renderGeneration;
+  const documentGeneration = state.documents.generation;
+  const isStale = () => token !== state.visual.renderGeneration
+    || documentGeneration !== state.documents.generation;
   $("status").innerHTML = '<span class="busy">レンダリング中…</span>';
   const oi = sequenceIndex(state.documents.oldSequence, idx), ni = sequenceIndex(state.documents.newSequence, idx);
   // 用紙サイズが違う場合、大きい用紙を基準に「同一ピクセル寸法」となる描画scaleを求める。
@@ -531,9 +535,11 @@ async function buildDiff(idx){
     pageSizePt(state.documents.oldDoc, oi),
     pageSizePt(state.documents.newDoc, ni)
   ]);
+  if(isStale()) return;
   // 直角成分を先に確定し、回転後の寸法で用紙合わせを決める。
   // これにより A4縦↔A4横 が framePlan の aspectMismatch に落ちなくなる。
   await ensureQuadEstimate(idx, oi, ni, oldPt, newPt);
+  if(isStale()) return;
   const quad = effectiveQuad(idx);
   const newPtR = (newPt && (quad % 2)) ? {w:newPt.h, h:newPt.w} : newPt;
   const plan = framePlan(oldPt, newPtR, state.comparison.dpi);
@@ -542,6 +548,7 @@ async function buildDiff(idx){
     renderPageCanvas(state.documents.oldDoc, oi, plan.oldScale),
     renderPageCanvas(state.documents.newDoc, ni, plan.newScale)
   ]);
+  if(isStale()) return;
   const newC = rotateCanvas90(newC0, quad); // quad=0 なら newC0 をそのまま返す（現行と同一）
   const ow = oldC?oldC.width:0, oh = oldC?oldC.height:0;
   const nw = newC?newC.width:0, nh = newC?newC.height:0;

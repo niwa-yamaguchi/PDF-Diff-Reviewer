@@ -142,10 +142,16 @@ test("allows concurrent loads for opposite document sides to both commit", async
 
   const oldLoad = controller.load("old", oldFile);
   await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
-  expect(await controller.load("new", newFile)).toBe(true);
+  const newLoad = controller.load("new", newFile);
+  const newSettled = vi.fn();
+  newLoad.then(newSettled);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(2));
+  await Promise.resolve();
+  expect(newSettled).not.toHaveBeenCalled();
   oldParse.resolve(oldDoc);
 
   expect(await oldLoad).toBe(true);
+  expect(await newLoad).toBe(true);
   expect(state.documents.oldDoc).toBe(oldDoc);
   expect(state.documents.newDoc).toBe(newDoc);
   expect(state.documents.generation).toBe(2);
@@ -191,7 +197,12 @@ test("publishes only the complete replacement pair when both existing sides relo
     rendered: state.visual.rendered,
   };
   await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
-  expect(await controller.load("new", newFile)).toBe(true);
+  const newLoad = controller.load("new", newFile);
+  const newSettled = vi.fn();
+  newLoad.then(newSettled);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(2));
+  await Promise.resolve();
+  expect(newSettled).not.toHaveBeenCalled();
   const afterNew = {
     oldDoc: state.documents.oldDoc,
     newDoc: state.documents.newDoc,
@@ -208,6 +219,7 @@ test("publishes only the complete replacement pair when both existing sides relo
   oldParse.resolve(oldDoc1);
 
   expect(await oldLoad).toBe(true);
+  expect(await newLoad).toBe(true);
   expect(readyClosedAtStart).toEqual({
     run: true,
     runText: true,
@@ -365,7 +377,10 @@ test("a stale same-side completion preserves current stages and pending requests
   expect(onReady).not.toHaveBeenCalled();
 
   newParse1.resolve(newDoc1);
-  expect(await newLoad1).toBe(true);
+  const newSettled = vi.fn();
+  newLoad1.then(newSettled);
+  await Promise.resolve();
+  expect(newSettled).not.toHaveBeenCalled();
   expect(state.documents.oldDoc).toBe(oldDoc0);
   expect(state.documents.newDoc).toBe(newDoc0);
   expect(state.visual.pageCache.get(0)).toEqual({ stable: true });
@@ -374,6 +389,7 @@ test("a stale same-side completion preserves current stages and pending requests
 
   oldParse2.resolve(oldDoc2);
   expect(await oldLoad2).toBe(true);
+  expect(await newLoad1).toBe(true);
   expect(state.documents.oldDoc).toBe(oldDoc2);
   expect(state.documents.newDoc).toBe(newDoc1);
   expect(state.documents.generation).toBe(3);
@@ -417,7 +433,7 @@ test("keeps a failed replacement batch unready until a successful retry", async 
   await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
   expect(await controller.load("new", failedNewFile)).toBe(false);
   oldParse.resolve(oldDoc1);
-  expect(await oldLoad).toBe(true);
+  expect(await oldLoad).toBe(false);
 
   expect(state.documents.oldDoc).toBe(oldDoc0);
   expect(state.documents.newDoc).toBe(newDoc0);
@@ -441,6 +457,68 @@ test("keeps a failed replacement batch unready until a successful retry", async 
   expect(dom.dropOld.fileName.textContent).toBe("old-1.pdf");
   expect(dom.dropNew.fileName.textContent).toBe("new-1.pdf");
   expect(dom.run.disabled).toBe(false);
+  expect(onReady).toHaveBeenCalledOnce();
+});
+
+test("abandons a failed batch when the staged side is loaded again", async () => {
+  const state = createAppState();
+  const oldDoc0 = { numPages: 1, id: "old-0" };
+  const newDoc0 = { numPages: 1, id: "new-0" };
+  const oldDoc1 = { numPages: 2, id: "old-1" };
+  const oldDoc2 = { numPages: 3, id: "old-2" };
+  state.documents.oldDoc = oldDoc0;
+  state.documents.newDoc = newDoc0;
+  state.documents.oldSequence = [0];
+  state.documents.newSequence = [0];
+  state.documents.pages = 1;
+  state.visual.rendered = true;
+  state.visual.pageCache.set(0, { stable: true });
+  const dom = createDom();
+  dom.run.disabled = false;
+  dom.runText.disabled = false;
+  dom.dropOld.fileName.textContent = "old-0.pdf";
+  dom.dropNew.fileName.textContent = "new-0.pdf";
+  const newParse = deferred();
+  const parseError = new Error("new replacement failed");
+  const pdf = {
+    getDocument: vi.fn()
+      .mockReturnValueOnce({ promise: newParse.promise })
+      .mockReturnValueOnce({ promise: Promise.resolve(oldDoc1) })
+      .mockReturnValueOnce({ promise: Promise.resolve(oldDoc2) }),
+  };
+  const { controller, errorReporter, onReady } = createHarness({ state, dom, pdf });
+  const failedNewFile = { name: "broken-new.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(1)) };
+  const stagedOldFile = { name: "old-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(2)) };
+  const replacementOldFile = { name: "old-2.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(3)) };
+
+  const failedNewLoad = controller.load("new", failedNewFile);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
+  const stagedOldLoad = controller.load("old", stagedOldFile);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(2));
+  const stagedSettled = vi.fn();
+  stagedOldLoad.then(stagedSettled);
+  await Promise.resolve();
+  expect(stagedSettled).not.toHaveBeenCalled();
+
+  newParse.reject(parseError);
+  expect(await failedNewLoad).toBe(false);
+  expect(await stagedOldLoad).toBe(false);
+  expect(state.documents.oldDoc).toBe(oldDoc0);
+  expect(state.documents.newDoc).toBe(newDoc0);
+  expect(state.visual.pageCache.get(0)).toEqual({ stable: true });
+  expect(dom.run.disabled).toBe(false);
+  expect(onReady).not.toHaveBeenCalled();
+
+  expect(await controller.load("old", replacementOldFile)).toBe(true);
+  expect(state.documents.oldDoc).toBe(oldDoc2);
+  expect(state.documents.newDoc).toBe(newDoc0);
+  expect(state.documents.generation).toBe(3);
+  expect(state.visual.pageCache.size).toBe(0);
+  expect(state.visual.renderGeneration).toBe(1);
+  expect(dom.dropOld.fileName.textContent).toBe("old-2.pdf");
+  expect(dom.dropNew.fileName.textContent).toBe("new-0.pdf");
+  expect(dom.run.disabled).toBe(false);
+  expect(errorReporter.report).toHaveBeenCalledWith(parseError, "PDFの読み込みに失敗しました");
   expect(onReady).toHaveBeenCalledOnce();
 });
 

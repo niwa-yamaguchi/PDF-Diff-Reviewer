@@ -79,6 +79,17 @@ export function createDocumentController({
   const hasStaged = () => staged.old != null || staged.new != null;
   const hasFailure = () => failed.old || failed.new;
 
+  function resolveStage(entry, result) {
+    if (!entry?.resolve) return;
+    entry.resolve(result);
+    entry.resolve = null;
+  }
+
+  function resolveStaged(result) {
+    resolveStage(staged.old, result);
+    resolveStage(staged.new, result);
+  }
+
   function clearBatch() {
     staged.old = null;
     staged.new = null;
@@ -91,6 +102,7 @@ export function createDocumentController({
     if (hasPending()) return;
     if (hasFailure()) {
       restoreReadyState(state, dom, readySnapshot);
+      resolveStaged(false);
       if (!hasStaged()) clearBatch();
       return;
     }
@@ -109,20 +121,26 @@ export function createDocumentController({
       setDrop(dom.dropNew, staged.new.fileName);
     }
     invalidateDocuments(state, { advanceGeneration: false });
-    clearBatch();
     if (state.documents.oldDoc && state.documents.newDoc) {
       prepareSequences(state, dom);
       onReady();
     }
+    resolveStaged(true);
+    clearBatch();
   }
 
   async function load(side, file) {
     if (!confirmDiscard()) return false;
 
+    if (hasFailure() && !hasPending() && hasStaged() && !failed[side]) {
+      resolveStaged(false);
+      clearBatch();
+    }
     if (readySnapshot == null) readySnapshot = captureReadyState(state, dom);
     state.documents.generation += 1;
     const generation = state.documents.generation;
     pendingGeneration[side] = generation;
+    resolveStage(staged[side], false);
     staged[side] = null;
     failed[side] = false;
     const isCurrent = () => pendingGeneration[side] === generation;
@@ -143,10 +161,14 @@ export function createDocumentController({
     }
 
     if (!isCurrent()) return false;
-    staged[side] = { doc, fileName: file.name };
+    let resolve;
+    const result = new Promise((resolveResult) => {
+      resolve = resolveResult;
+    });
+    staged[side] = { doc, fileName: file.name, resolve };
     pendingGeneration[side] = null;
     settleBatch();
-    return true;
+    return result;
   }
 
   return { load };
