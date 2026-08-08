@@ -214,6 +214,162 @@ describe("text extraction controller", () => {
 });
 
 describe("text page render controller", () => {
+  test("initial candidate render failure preserves the prior committed review atomically", async () => {
+    const renderPage = vi.fn().mockRejectedValue(new Error("candidate render failed"));
+    const { state, dom, renderer, errorReporter, controller } = makeHarness({
+      extract: vi.fn().mockResolvedValue(lines("candidate")),
+      renderPage,
+    });
+    const priorExtraction = { old: [lines("prior old")], new: [lines("prior new")] };
+    const priorHighlights = { old: new Map([[0, [{ color: "removed" }]]]), new: new Map() };
+    state.textReview.extraction = priorExtraction;
+    state.textReview.highlights = priorHighlights;
+    state.textReview.scale = 1.25;
+    state.textReview.page = 1;
+    dom.oldTextCanvas.width = 71;
+    dom.newTextCanvas.width = 72;
+    dom.dlTextPng.disabled = false;
+    dom.dlTextPdf.disabled = true;
+    dom.textStatus.textContent = "prior review";
+
+    await controller.run({ force: true });
+
+    expect(errorReporter.report).toHaveBeenCalledTimes(1);
+    expect(state.textReview.extraction).toBe(priorExtraction);
+    expect(state.textReview.highlights).toBe(priorHighlights);
+    expect(state.textReview.scale).toBe(1.25);
+    expect(state.textReview.page).toBe(1);
+    expect(dom.oldTextCanvas.width).toBe(71);
+    expect(dom.newTextCanvas.width).toBe(72);
+    expect(dom.oldTextCanvas.context.drawImage).not.toHaveBeenCalled();
+    expect(dom.newTextCanvas.context.drawImage).not.toHaveBeenCalled();
+    expect(dom.dlTextPng.disabled).toBe(false);
+    expect(dom.dlTextPdf.disabled).toBe(true);
+    expect(dom.textStatus.textContent).toBe("prior review");
+    expect(dom.textStatus.classList.contains("busy")).toBe(false);
+    expect(renderer.fit).not.toHaveBeenCalled();
+
+    controller.renderOffscreen("old", 0);
+    expect(renderer.renderOffscreen).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: expect.objectContaining({ scale: 1.25 }),
+    }));
+    expect(renderer.renderOffscreen.mock.calls.at(-1)[0].snapshot.highlights.old.get(0))
+      .toEqual([{ color: "removed" }]);
+  });
+
+  test("page navigation can settle the pending candidate after initial page zero becomes stale", async () => {
+    const page0 = deferred();
+    const page1Old = canvas(210, 310);
+    const page1New = canvas(220, 320);
+    const renderPage = vi.fn(({ side, pageIndex }) => (
+      pageIndex === 0 ? page0.promise : Promise.resolve(side === "old" ? page1Old : page1New)
+    ));
+    const { state, dom, renderer, controller } = makeHarness({
+      extract: vi.fn().mockResolvedValue(lines("candidate")),
+      renderPage,
+    });
+    state.documents.oldDoc = doc(2);
+    state.documents.newDoc = doc(2);
+    const priorExtraction = { old: [lines("prior")], new: [lines("prior")] };
+    state.textReview.extraction = priorExtraction;
+    state.textReview.highlights = { old: new Map(), new: new Map() };
+    state.textReview.scale = 1;
+    dom.dlTextPng.disabled = true;
+    dom.dlTextPdf.disabled = true;
+
+    const running = controller.run({ force: true });
+    await vi.waitFor(() => expect(renderPage).toHaveBeenCalledTimes(2));
+    expect(state.textReview.extraction).toBe(priorExtraction);
+
+    expect(await controller.showPage(1)).toBe(true);
+
+    expect(state.textReview.extraction.old).toEqual([lines("candidate"), lines("candidate")]);
+    expect(state.textReview.scale).toBe(150 / 72);
+    expect(state.textReview.page).toBe(1);
+    expect(dom.oldTextCanvas.width).toBe(210);
+    expect(dom.newTextCanvas.width).toBe(220);
+    expect(dom.textPageInd.textContent).toBe("2 / 2");
+    expect(dom.dlTextPng.disabled).toBe(false);
+    expect(dom.dlTextPdf.disabled).toBe(false);
+    expect(dom.textStatus.textContent).toBe("テキスト差分を表示中");
+    expect(dom.textStatus.classList.contains("busy")).toBe(false);
+    expect(renderer.fit).toHaveBeenCalledTimes(1);
+
+    page0.resolve(canvas(50, 60));
+    expect(await running).toBe(true);
+    expect(renderer.fit).toHaveBeenCalledTimes(1);
+  });
+
+  test("text mode restoration can settle a candidate whose initial render was cancelled", async () => {
+    const initial = deferred();
+    const restoredOld = canvas(310, 410);
+    const restoredNew = canvas(320, 420);
+    const renderPage = vi.fn(({ side }) => (
+      renderPage.mock.calls.length <= 2
+        ? initial.promise
+        : Promise.resolve(side === "old" ? restoredOld : restoredNew)
+    ));
+    const { state, dom, renderer, controller } = makeHarness({
+      extract: vi.fn().mockResolvedValue(lines("candidate")),
+      renderPage,
+    });
+    state.textReview.extraction = { old: [lines("prior")], new: [lines("prior")] };
+    state.textReview.highlights = { old: new Map(), new: new Map() };
+    state.textReview.scale = 1;
+    dom.dlTextPng.disabled = true;
+    dom.dlTextPdf.disabled = true;
+
+    const running = controller.run({ force: true });
+    await vi.waitFor(() => expect(renderPage).toHaveBeenCalledTimes(2));
+    await controller.setTopMode("visual");
+
+    expect(await controller.setTopMode("text")).toBe(true);
+
+    expect(state.textReview.extraction.old).toEqual([lines("candidate")]);
+    expect(state.textReview.page).toBe(0);
+    expect(dom.oldTextCanvas.width).toBe(310);
+    expect(dom.newTextCanvas.width).toBe(320);
+    expect(dom.dlTextPng.disabled).toBe(false);
+    expect(dom.dlTextPdf.disabled).toBe(false);
+    expect(dom.textStatus.textContent).toBe("テキスト差分を表示中");
+    expect(renderer.fit).toHaveBeenCalledTimes(1);
+
+    initial.resolve(canvas(60, 70));
+    expect(await running).toBe(true);
+    expect(renderer.fit).toHaveBeenCalledTimes(1);
+  });
+
+  test("document invalidation abandons the pending candidate without overwriting document UI", async () => {
+    const pending = deferred();
+    const renderPage = vi.fn(() => pending.promise);
+    const { state, dom, controller } = makeHarness({
+      extract: vi.fn().mockResolvedValue(lines("candidate")),
+      renderPage,
+    });
+    const priorExtraction = { old: [lines("prior")], new: [lines("prior")] };
+    state.textReview.extraction = priorExtraction;
+    state.textReview.highlights = { old: new Map(), new: new Map() };
+
+    const running = controller.run({ force: true });
+    await vi.waitFor(() => expect(renderPage).toHaveBeenCalledTimes(2));
+    state.documents.generation += 1;
+    state.textReview.extractGeneration += 1;
+    state.textReview.renderGeneration += 1;
+    dom.textStatus.textContent = "new documents ready";
+    dom.dlTextPng.disabled = true;
+    dom.dlTextPdf.disabled = true;
+    pending.resolve(canvas(70, 80));
+
+    expect(await running).toBe(false);
+    expect(state.textReview.extraction).toBe(priorExtraction);
+    expect(dom.oldTextCanvas.width).toBe(10);
+    expect(dom.newTextCanvas.width).toBe(10);
+    expect(dom.textStatus.textContent).toBe("new documents ready");
+    expect(dom.textStatus.classList.contains("busy")).toBe(false);
+    expect(dom.dlTextPng.disabled).toBe(true);
+    expect(dom.dlTextPdf.disabled).toBe(true);
+  });
+
   test("shares one ticket across both panes and discards a late older page atomically", async () => {
     const page0Old = deferred();
     const page0New = deferred();

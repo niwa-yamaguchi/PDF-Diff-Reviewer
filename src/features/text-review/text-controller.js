@@ -99,15 +99,57 @@ export function createTextController({
     value.leafSizes,
   ),
 }) {
+  let pendingSession = null;
   const currentExtraction = ticket => (
     ticket.id === state.textReview.extractGeneration
     && ticket.documentGeneration === state.documents.generation
   );
-  const currentRender = ticket => (
-    ticket.id === state.textReview.renderGeneration
-    && ticket.documentGeneration === state.documents.generation
-    && state.ui.topMode === "text"
+  const currentSession = session => (
+    pendingSession === session
+    && currentExtraction(session.extractionTicket)
   );
+  const currentRender = snapshot => (
+    snapshot.ticket.id === state.textReview.renderGeneration
+    && snapshot.ticket.documentGeneration === state.documents.generation
+    && state.ui.topMode === "text"
+    && (!snapshot.session || (
+      currentSession(snapshot.session)
+      && snapshot.session.ready
+    ))
+  );
+
+  function captureUi() {
+    return {
+      status: dom.textStatus.textContent,
+      busy: dom.textStatus.classList.contains("busy"),
+      pngDisabled: dom.dlTextPng.disabled,
+      pdfDisabled: dom.dlTextPdf.disabled,
+    };
+  }
+
+  function restoreUi(snapshot) {
+    dom.textStatus.textContent = snapshot.status;
+    if (snapshot.busy) dom.textStatus.classList.add("busy");
+    else dom.textStatus.classList.remove("busy");
+    dom.dlTextPng.disabled = snapshot.pngDisabled;
+    dom.dlTextPdf.disabled = snapshot.pdfDisabled;
+  }
+
+  function abandonSession(session) {
+    if (pendingSession !== session) return;
+    pendingSession = null;
+    dom.textStatus.classList.remove("busy");
+  }
+
+  function activeCandidate() {
+    if (!pendingSession) return null;
+    if (!currentSession(pendingSession)) {
+      pendingSession = null;
+      dom.textStatus.classList.remove("busy");
+      return null;
+    }
+    return pendingSession.ready ? pendingSession : null;
+  }
 
   function extractionSnapshot() {
     const id = ++state.textReview.extractGeneration;
@@ -119,7 +161,7 @@ export function createTextController({
     });
   }
 
-  function renderSnapshot(pageIndex) {
+  function renderSnapshot(pageIndex, session) {
     const id = ++state.textReview.renderGeneration;
     const ticket = Object.freeze({
       id,
@@ -128,9 +170,12 @@ export function createTextController({
     });
     return Object.freeze({
       ticket,
-      documents: Object.freeze({ old: state.documents.oldDoc, new: state.documents.newDoc }),
-      scale: state.textReview.scale,
-      highlights: cloneHighlightMap(state.textReview.highlights),
+      session,
+      documents: session
+        ? session.documents
+        : Object.freeze({ old: state.documents.oldDoc, new: state.documents.newDoc }),
+      scale: session ? session.scale : state.textReview.scale,
+      highlights: cloneHighlightMap(session ? session.highlights : state.textReview.highlights),
     });
   }
 
@@ -155,46 +200,97 @@ export function createTextController({
   }
 
   async function showPage(pageIndex) {
-    const documents = { old: state.documents.oldDoc, new: state.documents.newDoc };
+    const session = activeCandidate();
+    const documents = session?.documents || { old: state.documents.oldDoc, new: state.documents.newDoc };
     const total = totalPages(documents);
-    if (!state.textReview.highlights || !total || pageIndex < 0 || pageIndex >= total) return false;
-    const snapshot = renderSnapshot(pageIndex);
+    const highlights = session?.highlights || state.textReview.highlights;
+    if (!highlights || !total || pageIndex < 0 || pageIndex >= total) return false;
+    if (session) session.requestedPage = pageIndex;
+    const snapshot = renderSnapshot(pageIndex, session);
     try {
       const [oldCanvas, newCanvas] = await Promise.all([
         renderer.renderPage({ side: "old", pageIndex, snapshot }),
         renderer.renderPage({ side: "new", pageIndex, snapshot }),
       ]);
-      if (!currentRender(snapshot.ticket)) return false;
+      if (!currentRender(snapshot)) {
+        if (session && !currentSession(session)) abandonSession(session);
+        return false;
+      }
       copyCanvas(oldCanvas, dom.oldTextCanvas);
       copyCanvas(newCanvas, dom.newTextCanvas);
+      if (session) {
+        state.textReview.extraction = session.extraction;
+        state.textReview.highlights = session.highlights;
+        state.textReview.scale = session.scale;
+      }
       state.textReview.page = pageIndex;
       dom.textPageInd.textContent = `${pageIndex + 1} / ${total}`;
       renderer.applyView();
+      if (session) {
+        renderer.fit();
+        dom.dlTextPng.disabled = false;
+        dom.dlTextPdf.disabled = false;
+        dom.textStatus.textContent = "テキスト差分を表示中";
+        dom.textStatus.classList.remove("busy");
+        session.settled = true;
+        pendingSession = null;
+      }
       return true;
     } catch (error) {
-      if (!currentRender(snapshot.ticket)) return false;
+      if (!currentRender(snapshot)) {
+        if (session && !currentSession(session)) abandonSession(session);
+        return false;
+      }
       errorReporter.report(error, "テキスト描画に失敗しました");
+      if (session) {
+        session.failed = true;
+        pendingSession = null;
+        restoreUi(session.priorUi);
+      }
       return false;
     }
   }
 
   async function run({ force = false } = {}) {
     const snapshot = extractionSnapshot();
+    const priorUi = pendingSession?.priorUi || captureUi();
+    const session = {
+      extractionTicket: snapshot.ticket,
+      documents: snapshot.documents,
+      scale: snapshot.scale,
+      priorUi,
+      extraction: null,
+      highlights: null,
+      requestedPage: 0,
+      ready: false,
+      settled: false,
+      failed: false,
+    };
+    pendingSession = session;
     dom.textStatus.classList.add("busy");
     dom.textStatus.textContent = "抽出中…";
     try {
       let extraction = state.textReview.extraction;
       if (force || !extraction) {
         const oldPages = await extractDocument("old", snapshot);
-        if (!currentExtraction(snapshot.ticket) || oldPages === null) return false;
+        if (!currentSession(session) || oldPages === null) {
+          abandonSession(session);
+          return false;
+        }
         const newPages = await extractDocument("new", snapshot);
-        if (!currentExtraction(snapshot.ticket) || newPages === null) return false;
+        if (!currentSession(session) || newPages === null) {
+          abandonSession(session);
+          return false;
+        }
         extraction = { old: oldPages, new: newPages };
       }
 
       const hasText = extraction.old.some(page => page.some(line => line.text.trim()))
         || extraction.new.some(page => page.some(line => line.text.trim()));
-      if (!currentExtraction(snapshot.ticket)) return false;
+      if (!currentSession(session)) {
+        abandonSession(session);
+        return false;
+      }
       if (!hasText) {
         state.textReview.extraction = extraction;
         state.textReview.highlights = null;
@@ -203,29 +299,40 @@ export function createTextController({
         dom.dlTextPng.disabled = true;
         dom.dlTextPdf.disabled = true;
         dom.textStatus.textContent = "テキストレイヤがありません。図面比較で確認してください";
+        dom.textStatus.classList.remove("busy");
+        session.settled = true;
+        pendingSession = null;
         return false;
       }
 
       const highlights = buildTextHighlights(extraction.old, extraction.new);
       applyTableHighlights(extraction.old, extraction.new, highlights);
-      if (!currentExtraction(snapshot.ticket)) return false;
-      state.textReview.extraction = extraction;
-      state.textReview.highlights = highlights;
-      state.textReview.scale = snapshot.scale;
+      if (!currentSession(session)) {
+        abandonSession(session);
+        return false;
+      }
+      session.extraction = extraction;
+      session.highlights = highlights;
+      session.ready = true;
 
       const shown = await showPage(0);
-      if (!currentExtraction(snapshot.ticket) || !shown) return false;
-      renderer.fit();
-      dom.dlTextPng.disabled = false;
-      dom.dlTextPdf.disabled = false;
-      dom.textStatus.textContent = "テキスト差分を表示中";
-      return true;
+      if (session.settled) return true;
+      if (!currentSession(session)) {
+        abandonSession(session);
+        return false;
+      }
+      if (!shown) return false;
+      return session.settled;
     } catch (error) {
-      if (!currentExtraction(snapshot.ticket)) return false;
+      if (!currentSession(session)) {
+        abandonSession(session);
+        return false;
+      }
       errorReporter.report(error, "テキスト抽出に失敗しました");
+      session.failed = true;
+      pendingSession = null;
+      dom.textStatus.classList.remove("busy");
       return false;
-    } finally {
-      if (currentExtraction(snapshot.ticket)) dom.textStatus.classList.remove("busy");
     }
   }
 
@@ -253,6 +360,8 @@ export function createTextController({
       return true;
     }
     dom.out.style.display = "none";
+    const session = activeCandidate();
+    if (session) return showPage(session.requestedPage);
     if (state.textReview.highlights) return showPage(state.textReview.page);
     return true;
   }
@@ -273,10 +382,16 @@ export function createTextController({
 
   dom.runText?.addEventListener?.("click", () => run());
   dom.textPrev?.addEventListener?.("click", () => {
-    if (state.ui.topMode === "text") showPage(state.textReview.page - 1);
+    if (state.ui.topMode === "text") {
+      const page = activeCandidate()?.requestedPage ?? state.textReview.page;
+      showPage(page - 1);
+    }
   });
   dom.textNext?.addEventListener?.("click", () => {
-    if (state.ui.topMode === "text") showPage(state.textReview.page + 1);
+    if (state.ui.topMode === "text") {
+      const page = activeCandidate()?.requestedPage ?? state.textReview.page;
+      showPage(page + 1);
+    }
   });
   dom.topVisual?.addEventListener?.("click", () => setTopMode("visual"));
   dom.topText?.addEventListener?.("click", () => setTopMode("text"));
