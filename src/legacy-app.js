@@ -3,10 +3,6 @@ import { jsPDF } from "jspdf";
 import { createCanvas, createWhiteCanvas } from "./platform/canvas.js";
 import { downloadBlob } from "./platform/download.js";
 import { pdfjsLib } from "./platform/pdfjs.js";
-import { assembleFromLeaves, reconstructLinesInItemOrder } from "./core/text-diff/tokens.js";
-import { xyCut } from "./core/text-diff/xy-cut.js";
-import { buildTextHighlights } from "./core/text-diff/highlights.js";
-import { applyTableHighlights } from "./core/text-diff/tables.js";
 import {
   legendLayout,
   LG_BORDER_PT,
@@ -42,6 +38,8 @@ import {
 import { renderTogglePage } from "./features/visual-diff/toggle-renderer.js";
 import { createBoxEditorController } from "./features/box-editor/box-editor-controller.js";
 import { createBoxEditorView } from "./features/box-editor/box-editor-view.js";
+import { createTextController, extractPageTokens } from "./features/text-review/text-controller.js";
+import { createTextRenderer } from "./features/text-review/text-renderer.js";
 
 const state = createAppState();
 
@@ -50,6 +48,66 @@ const out = $("out"), octx = out.getContext("2d");
 const boxLayer = $("boxLayer");
 let boxEditorController;
 let boxEditorView;
+const TEXT_HI_COLORS = (() => {
+  const styles = getComputedStyle(document.documentElement);
+  return {
+    removed: styles.getPropertyValue("--removed").trim(),
+    added: styles.getPropertyValue("--added-text").trim(),
+    changed: styles.getPropertyValue("--changed").trim(),
+  };
+})();
+const textRenderer = createTextRenderer({
+  state,
+  dom: {
+    oldTextCanvas: $("oldTextCanvas"),
+    newTextCanvas: $("newTextCanvas"),
+    oldWrap: document.querySelector(".text-pane.old .text-canvas-wrap"),
+    newWrap: document.querySelector(".text-pane.new .text-canvas-wrap"),
+    zoomIn: $("textZoomIn"),
+    zoomOut: $("textZoomOut"),
+    zoomFit: $("textZoomFit"),
+    zoomOne: $("textZoom1"),
+    window,
+  },
+  createCanvas,
+  transform: pdfjsLib.Util.transform,
+  colors: TEXT_HI_COLORS,
+});
+const textController = createTextController({
+  state,
+  dom: {
+    textStatus: $("textStatus"),
+    runText: $("runText"),
+    dlTextPng: $("dlTextPng"),
+    dlTextPdf: $("dlTextPdf"),
+    textPageInd: $("textPageInd"),
+    oldTextCanvas: $("oldTextCanvas"),
+    newTextCanvas: $("newTextCanvas"),
+    topVisual: $("topVisual"),
+    topText: $("topText"),
+    visualCtrl: $("visualCtrl"),
+    textCtrl: $("textCtrl"),
+    viewbar: $("viewbar"),
+    canvasWrap: document.querySelector(".canvas-wrap"),
+    textPanel: $("textPanel"),
+    out,
+    textPrev: $("textPrev"),
+    textNext: $("textNext"),
+    cancelBoxEdit: () => boxEditorController?.setEditMode(false),
+    restoreVisual: () => {
+      if (state.visual.rendered) out.style.display = "block";
+      boxEditorView?.redraw();
+    },
+  },
+  extractPageTokens,
+  renderer: textRenderer,
+  errorReporter: {
+    report(error, message) {
+      console.error(message, error);
+      $("textStatus").textContent = message;
+    },
+  },
+});
 const documentController = createDocumentController({
   state,
   dom: {
@@ -698,187 +756,6 @@ $("dlPdf").addEventListener("click",async()=>{
   $("status").textContent="PDFを保存しました";
 });
 
-// ── トップモード切替（図面比較 / テキスト比較） ──
-function applyTopMode(){
-  const visual = state.ui.topMode==="visual";
-  if(!visual && state.boxEditor.editMode) boxEditorController.setEditMode(false);
-  $("topVisual").classList.toggle("active", visual);
-  $("topText").classList.toggle("active", !visual);
-  $("visualCtrl").style.display = visual ? "flex" : "none";
-  $("textCtrl").style.display = visual ? "none" : "flex";
-  $("viewbar").style.display = visual ? "flex" : "none";
-  document.querySelector(".canvas-wrap").style.display = visual ? "" : "none";
-  $("textPanel").style.display = visual ? "none" : "flex";
-  if(visual){
-    if(state.visual.rendered) out.style.display = "block"; // 描画済みならCanvas表示を復元
-    // テキストモード中は .canvas-wrap が display:none で幅0のため、resizeイベントで
-    // boxLayer が0×0に潰れている。visual復帰時にここで寸法を取り直して枠を出し直す。
-    boxEditorView.redraw();
-  } else { out.style.display = "none"; } // hasImage() 誤判定・パン/ズームの誤発火を防ぐ
-  if(!visual && state.textReview.highlights){
-    // テキスト側は描画済みハイライトがあれば現在ページを再描画（往復時の表示復元）
-    const gen = ++state.textReview.renderGeneration; // 旧新2ペインへ同一世代を渡す
-    Promise.all([renderTextPage("old", state.textReview.page, gen), renderTextPage("new", state.textReview.page, gen)])
-      .then(applyTextTransform);
-  }
-}
-$("topVisual").addEventListener("click", ()=>{
-  if(state.ui.topMode==="visual") return;
-  state.ui.topMode="visual"; applyTopMode();
-});
-$("topText").addEventListener("click", ()=>{
-  if(state.ui.topMode==="text") return;
-  state.ui.topMode="text"; applyTopMode();
-});
-
-// ── テキスト差分モード（ページ上ハイライト方式） ──
-
-// ハイライト色（CSS変数から取得。--removed は図面モードと共用、他はテキスト専用変数）
-const TEXT_HI_COLORS = (() => {
-  const cs = getComputedStyle(document.documentElement);
-  return {
-    removed: cs.getPropertyValue("--removed").trim(),
-    added:   cs.getPropertyValue("--added-text").trim(),
-    changed: cs.getPropertyValue("--changed").trim(),
-  };
-})();
-
-// 1ページ分のテキストを行単位に再構成（Y座標でグルーピング→X座標順に連結）。
-// トークンは box化せず item.transform（6要素）と item.width を保持（scale/viewport非依存）。
-// content.items 相当の配列を現行ロジックで行再構成（空str/hasEOL/TOL/末尾トリムを現行同様に処理）
-function logXYCutBlocks(idx, leaves, hadVerticalCut){
-  console.log(`[XYCut] page ${idx+1}: leaves=${leaves.length} hadVerticalCut=${hadVerticalCut}`,
-    leaves.map(l => l.length));
-}
-
-async function extractPageTokenLines(doc, idx){
-  const page = await doc.getPage(idx+1);
-  const content = await page.getTextContent();
-
-  // 前処理ゲート: 回転ページは現行動作（横書き前提が崩れるため）
-  if(page.rotate % 180 !== 0) return reconstructLinesInItemOrder(content.items);
-
-  // 非空トークン化（ord=content.items内の添字を保持）
-  // 空白のみitem（pdf.jsが段間ギャップを表す" "等）は幾何解析から除外。これを含めると
-  // ガターが空白itemで橋渡しされ和集合ギャップが消え、縦カット(段分割)を取りこぼす。
-  // 行の再構成(reconstructLinesInItemOrder)は全item(空白含む)を使うため出力・非回帰には不影響。
-  const toks = [];
-  let vcount = 0;
-  content.items.forEach((it, ord) => {
-    if(!it.str || !it.str.trim()) return;
-    const x0 = it.transform[4], y0 = it.transform[5];
-    const fh = Math.hypot(it.transform[2], it.transform[3]);
-    if(Math.abs(it.transform[1]) > Math.abs(it.transform[0])) vcount++;
-    toks.push({ord, x0, x1:x0 + it.width, y0, y1:y0 + fh, fh});
-  });
-
-  // 縦書き主体ページは現行動作
-  if(toks.length && vcount * 2 > toks.length) return reconstructLinesInItemOrder(content.items);
-  if(toks.length < XYCUT_MIN_BLOCK_TOKENS) return reconstructLinesInItemOrder(content.items);
-
-  const ctx = {hadVerticalCut:false};
-  const leaves = xyCut(toks, {
-    maxDepth: XYCUT_MAX_DEPTH,
-    minBlockTokens: XYCUT_MIN_BLOCK_TOKENS,
-    colGapEm: COL_GAP_EM,
-    rowGapEm: ROW_GAP_EM,
-    colMinSideLines: COL_MIN_SIDE_LINES,
-    context: ctx,
-  });
-
-  // 列存在ゲート: 縦カット無しは現行動作（バイト一致・非回帰）。有りは葉ごと再構成。
-  const result = ctx.hadVerticalCut
-    ? assembleFromLeaves(content.items, leaves)
-    : reconstructLinesInItemOrder(content.items);
-
-  if(state.textReview.debugXYCut) logXYCutBlocks(idx, leaves, ctx.hadVerticalCut);
-  return result;
-}
-
-// 文書全体を位置つきでページ配列として取得（[pageLines, ...]）
-async function extractDocTokens(doc, label){
-  if(!doc) return [];
-  const pages = [];
-  for(let i=0;i<doc.numPages;i++){
-    pages.push(await extractPageTokenLines(doc, i));
-    $("textStatus").textContent = label+"抽出中…（"+(i+1)+"/"+doc.numPages+"）";
-  }
-  return pages;
-}
-
-// ── XY-cut 多段組み読み順復元（フェーズ3）定数 ──
-const XYCUT_MAX_DEPTH        = 6;   // 再帰深度上限
-const XYCUT_MIN_BLOCK_TOKENS = 2;   // これ未満は分割せず葉に
-const COL_GAP_EM             = 2.5; // 縦カット(段)最小ガター幅 ÷ フォント高
-const ROW_GAP_EM             = 1.6; // 横カット最小空白高 ÷ フォント高
-const COL_MIN_SIDE_LINES     = 3;   // 段分割は両側に≥3行(量子化Y種類)を要求
-
-// ── 描画 ──
-
-// pdf.js textlayer と同じ単位分離でトークンのAABBを求め、色枠を焼き込む
-function drawTokenHighlight(ctx, vp, token, colorKey){
-  const tx = pdfjsLib.Util.transform(vp.transform, token.transform);
-  const advLen = Math.hypot(tx[0], tx[1]) || 1;
-  const ux = tx[0]/advLen, uy = tx[1]/advLen; // 送り方向単位ベクトル
-  const wid = token.w * vp.scale;             // 幅は item.width×scale（token.transformには掛けない）
-  const descFrac = 0.2;                       // ディセント分の余白
-  const p0x = tx[4] - tx[2]*descFrac, p0y = tx[5] - tx[3]*descFrac;
-  const vx = tx[2]*(1+descFrac), vy = tx[3]*(1+descFrac); // 縦方向ベクトル（アセント方向、高さ=hypot(tx[2],tx[3])基準）
-  const p1x = p0x + ux*wid, p1y = p0y + uy*wid;
-  const p2x = p0x + vx, p2y = p0y + vy;
-  const p3x = p1x + vx, p3y = p1y + vy;
-  const xs=[p0x,p1x,p2x,p3x], ys=[p0y,p1y,p2y,p3y];
-  const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
-  const color = TEXT_HI_COLORS[colorKey] || "#fff";
-  ctx.save();
-  ctx.globalAlpha = 0.28;
-  ctx.fillStyle = color;
-  ctx.fillRect(minX, minY, maxX-minX, maxY-minY);
-  ctx.globalAlpha = 0.9;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  ctx.strokeRect(minX+0.5, minY+0.5, Math.max(maxX-minX-1,0), Math.max(maxY-minY-1,0));
-  ctx.restore();
-}
-
-// 指定側・ページを描画し、ハイライトを焼き込む（再入ガードでstale-draw防止）
-// gen は呼び出し側が採番する世代トークン（旧新2ペインへ同一世代を渡し、互いを無効化しないようにする）
-async function renderTextPage(side, pageIndex, gen){
-  const doc = side==="old" ? state.documents.oldDoc : state.documents.newDoc;
-  const canvas = side==="old" ? $("oldTextCanvas") : $("newTextCanvas");
-  const ctx = canvas.getContext("2d");
-  if(!doc || pageIndex>=doc.numPages){
-    canvas.width = 10; canvas.height = 10;
-    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
-    return;
-  }
-  const page = await doc.getPage(pageIndex+1);
-  const vp = page.getViewport({scale: state.textReview.scale});
-  if(gen !== state.textReview.renderGeneration) return;
-  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
-  await page.render({canvasContext:ctx, viewport:vp}).promise;
-  if(gen !== state.textReview.renderGeneration) return; // 別世代の描画が割り込んだので着色せず終了
-
-  const entries = state.textReview.highlights && state.textReview.highlights[side] ? state.textReview.highlights[side].get(pageIndex) : null;
-  if(entries) for(const {token:tok, color} of entries) drawTokenHighlight(ctx, vp, tok, color);
-}
-
-// 出力用：オンスクリーンCanvas/再入ガードに触れず、指定ページを別Canvasへ描画（無ければnull）
-async function renderTextPageOffscreen(side, pageIndex){
-  const doc = side==="old" ? state.documents.oldDoc : state.documents.newDoc;
-  if(!doc || pageIndex>=doc.numPages) return null;
-  const page = await doc.getPage(pageIndex+1);
-  const vp = page.getViewport({scale: state.textReview.scale});
-  const canvas = createWhiteCanvas(Math.ceil(vp.width), Math.ceil(vp.height));
-  const ctx = canvas.getContext("2d");
-  await page.render({canvasContext:ctx, viewport:vp}).promise;
-
-  const entries = state.textReview.highlights && state.textReview.highlights[side] ? state.textReview.highlights[side].get(pageIndex) : null;
-  if(entries) for(const {token:tok, color} of entries) drawTokenHighlight(ctx, vp, tok, color);
-  return canvas;
-}
-
 // テキスト比較のラベル帯(高さ28px・フォント16px固定)に収まる凡例のスケール。
 // 図面側の state.comparison.dpi/72 とは別系統の固定値（帯もフォントもDPIに依存しないため）。
 const TEXT_LG_UNIT = 1.6;
@@ -931,143 +808,13 @@ function composeTextExport(oldC, newC, pageIndex, total){
   return canvas;
 }
 
-// ── ズーム/パン/ページング（旧新共有ビュー・topMode==="text"限定） ──
-
-function textTotalPages(){
-  return Math.max(state.documents.oldDoc?state.documents.oldDoc.numPages:0, state.documents.newDoc?state.documents.newDoc.numPages:0);
-}
-
-// 両ペイン共通のワールド寸法（旧新のCanvas実寸の最大値。寸法差は中央寄せで吸収）
-function textWorldSize(){
-  const oldC = $("oldTextCanvas"), newC = $("newTextCanvas");
-  return { W: Math.max(oldC.width||0, newC.width||0, 1), H: Math.max(oldC.height||0, newC.height||0, 1) };
-}
-
-function applyTextTransform(){
-  const {W,H} = textWorldSize();
-  const v = state.textReview.view;
-  [$("oldTextCanvas"), $("newTextCanvas")].forEach(c=>{
-    const offX = (W-c.width)/2, offY = (H-c.height)/2;
-    c.style.transform = `translate(${v.tx+offX*v.scale}px, ${v.ty+offY*v.scale}px) scale(${v.scale})`;
-  });
-}
-
-function fitTextView(){
-  const {W,H} = textWorldSize();
-  const wrapEl = document.querySelector(".text-pane.old .text-canvas-wrap");
-  const Ww = wrapEl.clientWidth, Wh = wrapEl.clientHeight;
-  if(!W || !H || !Ww || !Wh) return;
-  const s = Math.min(Ww/W, Wh/H) * 0.92;
-  state.textReview.view.scale = s;
-  state.textReview.view.tx = (Ww-W*s)/2;
-  state.textReview.view.ty = (Wh-H*s)/2;
-  applyTextTransform();
-}
-
-const clampTextScale = s => Math.min(Math.max(s, 0.05), 40);
-function textZoomAt(factor, cx, cy){
-  const v = state.textReview.view;
-  const ns = clampTextScale(v.scale*factor), k = ns/v.scale;
-  v.tx = cx-(cx-v.tx)*k; v.ty = cy-(cy-v.ty)*k; v.scale = ns;
-  applyTextTransform();
-}
-function textZoomCenter(factor){
-  const wrapEl = document.querySelector(".text-pane.old .text-canvas-wrap");
-  textZoomAt(factor, wrapEl.clientWidth/2, wrapEl.clientHeight/2);
-}
-
-async function showTextPage(idx){
-  const total = textTotalPages();
-  if(!total || idx<0 || idx>=total) return;
-  state.textReview.page = idx;
-  $("textPageInd").textContent = (idx+1)+" / "+total;
-  const gen = ++state.textReview.renderGeneration; // 旧新2ペインへ同一世代を渡し、互いのstale-drawガードで潰し合わないようにする
-  await Promise.all([renderTextPage("old", idx, gen), renderTextPage("new", idx, gen)]);
-  applyTextTransform();
-}
-
-document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
-  wrapEl.addEventListener("wheel", e=>{
-    if(state.ui.topMode!=="text") return;
-    if(!state.textReview.highlights) return;
-    e.preventDefault();
-    const r = wrapEl.getBoundingClientRect();
-    textZoomAt(e.deltaY<0 ? 1.12 : 1/1.12, e.clientX-r.left, e.clientY-r.top);
-  }, {passive:false});
-});
-
-let textPanning=false, tpsx=0, tpsy=0, tptx=0, tpty=0;
-document.querySelectorAll(".text-canvas-wrap").forEach(wrapEl=>{
-  wrapEl.addEventListener("pointerdown", e=>{
-    if(state.ui.topMode!=="text") return;
-    if(!state.textReview.highlights) return;
-    textPanning=true; wrapEl.classList.add("panning"); wrapEl.setPointerCapture(e.pointerId);
-    tpsx=e.clientX; tpsy=e.clientY; tptx=state.textReview.view.tx; tpty=state.textReview.view.ty;
-  });
-  wrapEl.addEventListener("pointermove", e=>{
-    if(state.ui.topMode!=="text") return;
-    if(!textPanning) return;
-    state.textReview.view.tx = tptx+(e.clientX-tpsx); state.textReview.view.ty = tpty+(e.clientY-tpsy);
-    applyTextTransform();
-  });
-  const endTextPan = e=>{
-    if(!textPanning) return;
-    textPanning=false; wrapEl.classList.remove("panning");
-    try{ wrapEl.releasePointerCapture(e.pointerId); }catch(_){}
-  };
-  wrapEl.addEventListener("pointerup", endTextPan);
-  wrapEl.addEventListener("pointercancel", endTextPan);
-});
-
-$("textPrev").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; showTextPage(state.textReview.page-1); });
-$("textNext").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; showTextPage(state.textReview.page+1); });
-$("textZoomIn").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) textZoomCenter(1.25); });
-$("textZoomOut").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) textZoomCenter(1/1.25); });
-$("textZoomFit").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) fitTextView(); });
-$("textZoom1").addEventListener("click", ()=>{ if(state.ui.topMode!=="text") return; if(state.textReview.highlights) textZoomCenter(1/state.textReview.view.scale); });
-
-async function runTextDiff(){
-  const token = ++state.textReview.extractGeneration;
-  $("textStatus").classList.add("busy");
-  $("textStatus").textContent = "抽出中…";
-
-  if(!state.textReview.extraction){
-    const oldPages = await extractDocTokens(state.documents.oldDoc, "旧版: ");
-    if(token !== state.textReview.extractGeneration) return; // 別の抽出が割り込んだので破棄
-    const newPages = await extractDocTokens(state.documents.newDoc, "新版: ");
-    if(token !== state.textReview.extractGeneration) return;
-    state.textReview.extraction = {old:oldPages, new:newPages};
-  }
-  $("textStatus").classList.remove("busy");
-
-  const hasText = state.textReview.extraction.old.some(p=>p.some(l=>l.text.trim())) ||
-                  state.textReview.extraction.new.some(p=>p.some(l=>l.text.trim()));
-  if(!hasText){
-    $("textStatus").textContent = "テキストレイヤがありません。図面比較で確認してください";
-    return;
-  }
-
-  const hi = buildTextHighlights(state.textReview.extraction.old, state.textReview.extraction.new);
-  applyTableHighlights(state.textReview.extraction.old, state.textReview.extraction.new, hi);
-  state.textReview.highlights = hi;
-  state.textReview.scale = state.comparison.dpi/72;
-  state.textReview.page = 0;
-
-  await showTextPage(0);
-  fitTextView();
-  $("dlTextPng").disabled = false; $("dlTextPdf").disabled = false;
-  $("textStatus").textContent = "テキスト差分を表示中";
-}
-
-$("runText").addEventListener("click", runTextDiff);
-
 $("dlTextPng").addEventListener("click", async()=>{
   if(state.ui.topMode!=="text" || !state.textReview.highlights) return;
   $("textStatus").textContent = "PNG生成中…";
-  const idx = state.textReview.page, total = textTotalPages();
+  const idx = state.textReview.page, total = textController.totalPages();
   const [oldC, newC] = await Promise.all([
-    renderTextPageOffscreen("old", idx),
-    renderTextPageOffscreen("new", idx),
+    textController.renderOffscreen("old", idx),
+    textController.renderOffscreen("new", idx),
   ]);
   const canvas = composeTextExport(oldC, newC, idx, total);
   canvas.toBlob(b=>{
@@ -1078,13 +825,13 @@ $("dlTextPng").addEventListener("click", async()=>{
 
 $("dlTextPdf").addEventListener("click", async()=>{
   if(state.ui.topMode!=="text" || !state.textReview.highlights) return;
-  const total = textTotalPages();
+  const total = textController.totalPages();
   let pdf=null;
   for(let i=0;i<total;i++){
     $("textStatus").innerHTML = '<span class="busy">PDF生成中…（'+(i+1)+"/"+total+"）</span>";
     const [oldC, newC] = await Promise.all([
-      renderTextPageOffscreen("old", i),
-      renderTextPageOffscreen("new", i),
+      textController.renderOffscreen("old", i),
+      textController.renderOffscreen("new", i),
     ]);
     const canvas = composeTextExport(oldC, newC, i, total);
     const img = canvas.toDataURL("image/png");

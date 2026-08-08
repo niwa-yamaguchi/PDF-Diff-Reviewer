@@ -1,0 +1,292 @@
+import { assembleFromLeaves, reconstructLinesInItemOrder } from "../../core/text-diff/tokens.js";
+import { xyCut } from "../../core/text-diff/xy-cut.js";
+import { buildTextHighlights } from "../../core/text-diff/highlights.js";
+import { applyTableHighlights } from "../../core/text-diff/tables.js";
+
+const XYCUT_MAX_DEPTH = 6;
+const XYCUT_MIN_BLOCK_TOKENS = 2;
+const COL_GAP_EM = 2.5;
+const ROW_GAP_EM = 1.6;
+const COL_MIN_SIDE_LINES = 3;
+
+export async function extractPageTokens({
+  doc,
+  pageIndex,
+  debugXYCut = false,
+  onDebug = () => {},
+}) {
+  const page = await doc.getPage(pageIndex + 1);
+  const content = await page.getTextContent();
+  if (page.rotate % 180 !== 0) return reconstructLinesInItemOrder(content.items);
+
+  const tokens = [];
+  let verticalCount = 0;
+  content.items.forEach((item, ordinal) => {
+    if (!item.str || !item.str.trim()) return;
+    const x0 = item.transform[4];
+    const y0 = item.transform[5];
+    const fontHeight = Math.hypot(item.transform[2], item.transform[3]);
+    if (Math.abs(item.transform[1]) > Math.abs(item.transform[0])) verticalCount += 1;
+    tokens.push({
+      ord: ordinal,
+      x0,
+      x1: x0 + item.width,
+      y0,
+      y1: y0 + fontHeight,
+      fh: fontHeight,
+    });
+  });
+
+  if (tokens.length && verticalCount * 2 > tokens.length) {
+    return reconstructLinesInItemOrder(content.items);
+  }
+  if (tokens.length < XYCUT_MIN_BLOCK_TOKENS) {
+    return reconstructLinesInItemOrder(content.items);
+  }
+
+  const context = { hadVerticalCut: false };
+  const leaves = xyCut(tokens, {
+    maxDepth: XYCUT_MAX_DEPTH,
+    minBlockTokens: XYCUT_MIN_BLOCK_TOKENS,
+    colGapEm: COL_GAP_EM,
+    rowGapEm: ROW_GAP_EM,
+    colMinSideLines: COL_MIN_SIDE_LINES,
+    context,
+  });
+  const result = context.hadVerticalCut
+    ? assembleFromLeaves(content.items, leaves)
+    : reconstructLinesInItemOrder(content.items);
+
+  if (debugXYCut) {
+    onDebug({
+      pageIndex,
+      leafSizes: leaves.map(leaf => leaf.length),
+      hadVerticalCut: context.hadVerticalCut,
+    });
+  }
+  return result;
+}
+
+function cloneHighlightMap(highlights) {
+  if (!highlights) return null;
+  return Object.freeze({
+    old: new Map(highlights.old),
+    new: new Map(highlights.new),
+  });
+}
+
+function totalPages(documents) {
+  return Math.max(documents.old?.numPages || 0, documents.new?.numPages || 0);
+}
+
+function copyCanvas(source, target) {
+  target.width = source.width;
+  target.height = source.height;
+  const context = target.getContext("2d");
+  context.clearRect?.(0, 0, target.width, target.height);
+  context.drawImage(source, 0, 0);
+}
+
+export function createTextController({
+  state,
+  dom,
+  extractPageTokens: extractTokens,
+  renderer,
+  errorReporter,
+  onProgress = () => {},
+  onDebug = value => console.log(
+    `[XYCut] page ${value.pageIndex + 1}: leaves=${value.leafSizes.length} hadVerticalCut=${value.hadVerticalCut}`,
+    value.leafSizes,
+  ),
+}) {
+  const currentExtraction = ticket => (
+    ticket.id === state.textReview.extractGeneration
+    && ticket.documentGeneration === state.documents.generation
+  );
+  const currentRender = ticket => (
+    ticket.id === state.textReview.renderGeneration
+    && ticket.documentGeneration === state.documents.generation
+    && state.ui.topMode === "text"
+  );
+
+  function extractionSnapshot() {
+    const id = ++state.textReview.extractGeneration;
+    return Object.freeze({
+      ticket: Object.freeze({ id, documentGeneration: state.documents.generation }),
+      documents: Object.freeze({ old: state.documents.oldDoc, new: state.documents.newDoc }),
+      scale: state.comparison.dpi / 72,
+      debugXYCut: Boolean(state.textReview.debugXYCut),
+    });
+  }
+
+  function renderSnapshot(pageIndex) {
+    const id = ++state.textReview.renderGeneration;
+    const ticket = Object.freeze({
+      id,
+      documentGeneration: state.documents.generation,
+      pageIndex,
+    });
+    return Object.freeze({
+      ticket,
+      documents: Object.freeze({ old: state.documents.oldDoc, new: state.documents.newDoc }),
+      scale: state.textReview.scale,
+      highlights: cloneHighlightMap(state.textReview.highlights),
+    });
+  }
+
+  async function extractDocument(side, snapshot) {
+    const document = snapshot.documents[side];
+    if (!document) return [];
+    const pages = [];
+    for (let pageIndex = 0; pageIndex < document.numPages; pageIndex += 1) {
+      const lines = await extractTokens({
+        doc: document,
+        pageIndex,
+        debugXYCut: snapshot.debugXYCut,
+        onDebug,
+      });
+      if (!currentExtraction(snapshot.ticket)) return null;
+      pages.push(lines);
+      const progress = { side, page: pageIndex + 1, total: document.numPages };
+      onProgress(progress);
+      dom.textStatus.textContent = `${side === "old" ? "旧版" : "新版"}: 抽出中…（${progress.page}/${progress.total}）`;
+    }
+    return pages;
+  }
+
+  async function showPage(pageIndex) {
+    const documents = { old: state.documents.oldDoc, new: state.documents.newDoc };
+    const total = totalPages(documents);
+    if (!state.textReview.highlights || !total || pageIndex < 0 || pageIndex >= total) return false;
+    const snapshot = renderSnapshot(pageIndex);
+    try {
+      const [oldCanvas, newCanvas] = await Promise.all([
+        renderer.renderPage({ side: "old", pageIndex, snapshot }),
+        renderer.renderPage({ side: "new", pageIndex, snapshot }),
+      ]);
+      if (!currentRender(snapshot.ticket)) return false;
+      copyCanvas(oldCanvas, dom.oldTextCanvas);
+      copyCanvas(newCanvas, dom.newTextCanvas);
+      state.textReview.page = pageIndex;
+      dom.textPageInd.textContent = `${pageIndex + 1} / ${total}`;
+      renderer.applyView();
+      return true;
+    } catch (error) {
+      if (!currentRender(snapshot.ticket)) return false;
+      errorReporter.report(error, "テキスト描画に失敗しました");
+      return false;
+    }
+  }
+
+  async function run({ force = false } = {}) {
+    const snapshot = extractionSnapshot();
+    dom.textStatus.classList.add("busy");
+    dom.textStatus.textContent = "抽出中…";
+    try {
+      let extraction = state.textReview.extraction;
+      if (force || !extraction) {
+        const oldPages = await extractDocument("old", snapshot);
+        if (!currentExtraction(snapshot.ticket) || oldPages === null) return false;
+        const newPages = await extractDocument("new", snapshot);
+        if (!currentExtraction(snapshot.ticket) || newPages === null) return false;
+        extraction = { old: oldPages, new: newPages };
+      }
+
+      const hasText = extraction.old.some(page => page.some(line => line.text.trim()))
+        || extraction.new.some(page => page.some(line => line.text.trim()));
+      if (!currentExtraction(snapshot.ticket)) return false;
+      if (!hasText) {
+        state.textReview.extraction = extraction;
+        state.textReview.highlights = null;
+        state.textReview.scale = snapshot.scale;
+        state.textReview.page = 0;
+        dom.dlTextPng.disabled = true;
+        dom.dlTextPdf.disabled = true;
+        dom.textStatus.textContent = "テキストレイヤがありません。図面比較で確認してください";
+        return false;
+      }
+
+      const highlights = buildTextHighlights(extraction.old, extraction.new);
+      applyTableHighlights(extraction.old, extraction.new, highlights);
+      if (!currentExtraction(snapshot.ticket)) return false;
+      state.textReview.extraction = extraction;
+      state.textReview.highlights = highlights;
+      state.textReview.scale = snapshot.scale;
+
+      const shown = await showPage(0);
+      if (!currentExtraction(snapshot.ticket) || !shown) return false;
+      renderer.fit();
+      dom.dlTextPng.disabled = false;
+      dom.dlTextPdf.disabled = false;
+      dom.textStatus.textContent = "テキスト差分を表示中";
+      return true;
+    } catch (error) {
+      if (!currentExtraction(snapshot.ticket)) return false;
+      errorReporter.report(error, "テキスト抽出に失敗しました");
+      return false;
+    } finally {
+      if (currentExtraction(snapshot.ticket)) dom.textStatus.classList.remove("busy");
+    }
+  }
+
+  function cancelRender() {
+    state.textReview.renderGeneration += 1;
+    renderer.cancelPan?.();
+  }
+
+  async function setTopMode(mode) {
+    if (mode !== "visual" && mode !== "text") return false;
+    if (state.ui.topMode === mode) return true;
+    cancelRender();
+    if (mode === "text" && state.boxEditor.editMode) dom.cancelBoxEdit?.();
+    state.ui.topMode = mode;
+    const visual = mode === "visual";
+    dom.topVisual.classList.toggle("active", visual);
+    dom.topText.classList.toggle("active", !visual);
+    dom.visualCtrl.style.display = visual ? "flex" : "none";
+    dom.textCtrl.style.display = visual ? "none" : "flex";
+    dom.viewbar.style.display = visual ? "flex" : "none";
+    dom.canvasWrap.style.display = visual ? "" : "none";
+    dom.textPanel.style.display = visual ? "none" : "flex";
+    if (visual) {
+      dom.restoreVisual?.();
+      return true;
+    }
+    dom.out.style.display = "none";
+    if (state.textReview.highlights) return showPage(state.textReview.page);
+    return true;
+  }
+
+  function renderOffscreen(side, pageIndex) {
+    const snapshot = Object.freeze({
+      ticket: Object.freeze({
+        id: state.textReview.renderGeneration,
+        documentGeneration: state.documents.generation,
+        pageIndex,
+      }),
+      documents: Object.freeze({ old: state.documents.oldDoc, new: state.documents.newDoc }),
+      scale: state.textReview.scale,
+      highlights: cloneHighlightMap(state.textReview.highlights),
+    });
+    return renderer.renderOffscreen({ side, pageIndex, snapshot });
+  }
+
+  dom.runText?.addEventListener?.("click", () => run());
+  dom.textPrev?.addEventListener?.("click", () => {
+    if (state.ui.topMode === "text") showPage(state.textReview.page - 1);
+  });
+  dom.textNext?.addEventListener?.("click", () => {
+    if (state.ui.topMode === "text") showPage(state.textReview.page + 1);
+  });
+  dom.topVisual?.addEventListener?.("click", () => setTopMode("visual"));
+  dom.topText?.addEventListener?.("click", () => setTopMode("text"));
+
+  return {
+    run,
+    showPage,
+    setTopMode,
+    cancelRender,
+    renderOffscreen,
+    totalPages: () => totalPages({ old: state.documents.oldDoc, new: state.documents.newDoc }),
+  };
+}
