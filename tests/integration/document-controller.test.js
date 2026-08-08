@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
+import { invalidateDocuments } from "../../src/app/invalidation.js";
 import { createDocumentController } from "../../src/features/documents/document-controller.js";
 
 function drop(initialName = "") {
@@ -40,6 +41,7 @@ function createHarness(overrides = {}) {
     onReady,
     onLoadAccepted,
     confirmDiscard: overrides.confirmDiscard,
+    invalidateDocuments,
   });
   return { state, dom, errorReporter, onReady, onLoadAccepted, controller };
 }

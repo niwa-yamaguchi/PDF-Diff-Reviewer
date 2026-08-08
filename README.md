@@ -9,7 +9,7 @@
 - **ラスタライズ→画素比較方式**でテキストレイヤに依存せず、ベクタPDF・スキャンPDFの双方で動作
 - **図面比較**と**テキスト比較**の2つのモードを用途に応じて切り替え可能
 - 処理はすべてブラウザ内で完結し、**ファイルを外部に送信しない**（アップロード・外部API・テレメトリなし）
-- 成果物は `index.html` 1ファイルのみ
+- ViteとES Modulesで機能ごとに分割し、`dist/` へ静的配布物を生成
 
 ## モード
 
@@ -55,7 +55,7 @@ pdf.js の `getTextContent()` でテキストを抽出し、行単位で差分�
 
 ## 使い方
 
-1. 公開URLまたは静的ホストに配置した `index.html` をブラウザで開く
+1. 公開URLまたは開発サーバーをブラウザで開く
 2. サイドバー上部で **図面比較** / **テキスト比較** を選択
 3. 改訂前（OLD）・改訂後（NEW）のPDFをそれぞれ読み込む
 4. **差分を表示** / **テキスト差分を表示** を押すと変更箇所が表示される
@@ -68,16 +68,40 @@ pdf.js の `getTextContent()` でテキストを抽出し、行単位で差分�
 
 - [pdf.js](https://mozilla.github.io/pdf.js/) 3.11.174（Apache License 2.0）
 - [jsPDF](https://github.com/parallax/jsPDF) 2.5.1（MIT License）
-- [diff_match_patch](https://github.com/google/diff-match-patch) 20121119（Apache License 2.0）
+- [diff-match-patch](https://github.com/google/diff-match-patch) 1.0.5（Apache License 2.0）
 
-いずれも cdnjs から `<script>` で読み込むため、利用時はネット接続が必要です。バージョンを上げる場合は `index.html` の `<head>` 内のCDN URLを直接書き換えます。
+依存ライブラリはnpmで完全一致のバージョンを固定しています。pdf.js Worker、CMap、標準フォントもビルド成果物へ同梱されるため、本番実行時のCDN接続は不要です。
+
+## 開発
+
+Node.js 22.12以上の22系を使用します。初回は依存を固定どおりに導入し、Vite開発サーバーを起動します。
+
+```text
+npm ci
+npm run dev
+```
+
+テスト、ビルド、ビルド成果物の確認には次のコマンドを使います。
+
+```text
+npm run test
+npm run test:e2e
+npm run build
+npm run preview
+```
+
+ソースは `src/app/`（組み立てと状態）、`src/features/`（画面機能）、`src/core/`（純粋計算）、`src/platform/`（ブラウザ基盤）へ分割しています。PDF、差分結果、ログは外部へ送信せず、処理はすべてブラウザ内で完結します。外部API、テレメトリ、実行時CDNは使用しません。
 
 ## 素材
 
-- ロゴおよびアイコン画像（`favicon.png`、`index.html` 内の埋め込みPNG）は ChatGPT により出力しました。
+- ロゴおよびアイコン画像（`favicon.png`）は ChatGPT により出力しました。
 
 ## デプロイ
 
-`index.html` を含むフォルダを任意の静的ホストに配置するだけです（Cloudflare Pages の Direct Upload、GitHub Pages など）。
+`npm run build` が生成する `dist/` を任意の静的ホストへ配置します。Cloudflare Pagesでは次の設定を使用します。
+
+- Build command: `npm run build`
+- Build output directory: `dist`
+- Production branch: `main`
 
 本番環境は Cloudflare Pages で <https://pdfreview.goodsun-support.net/> に公開しています。

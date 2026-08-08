@@ -200,48 +200,43 @@ export function createTextRenderer({ state, dom, createCanvas, transform, colors
     try { owner.releasePointerCapture(pointerId); } catch (_) { /* capture may already be gone */ }
   }
 
-  for (const wrap of wraps) {
-    wrap.addEventListener("wheel", event => {
-      if (!active()) return;
-      event.preventDefault();
-      const rect = wrap.getBoundingClientRect();
-      zoomAt(
-        event.deltaY < 0 ? 1.12 : 1 / 1.12,
-        event.clientX - rect.left,
-        event.clientY - rect.top,
-      );
-    }, { passive: false });
-
-    wrap.addEventListener("pointerdown", event => {
-      if (!active() || pan) return;
-      pan = {
-        owner: wrap,
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        startTx: view.tx,
-        startTy: view.ty,
-      };
-      wrap.classList.add("panning");
-      wrap.setPointerCapture(event.pointerId);
-    });
-    wrap.addEventListener("pointermove", event => {
-      if (!pan || !active() || event.pointerId !== pan.pointerId) return;
-      applyView({
-        ...view,
-        tx: pan.startTx + event.clientX - pan.startX,
-        ty: pan.startTy + event.clientY - pan.startY,
-      });
-    });
-    wrap.addEventListener("pointerup", cancelPan);
-    wrap.addEventListener("pointercancel", cancelPan);
+  function handleWheel(wrap, event) {
+    if (!wraps.includes(wrap) || !active()) return;
+    event.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    zoomAt(
+      event.deltaY < 0 ? 1.12 : 1 / 1.12,
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+    );
   }
 
-  dom.zoomIn?.addEventListener("click", () => { if (active()) zoomCenter(1.25); });
-  dom.zoomOut?.addEventListener("click", () => { if (active()) zoomCenter(1 / 1.25); });
-  dom.zoomFit?.addEventListener("click", () => { if (active()) fit(); });
-  dom.zoomOne?.addEventListener("click", () => { if (active()) zoomCenter(1 / view.scale); });
-  dom.window?.addEventListener("resize", () => applyView());
+  function handlePointerDown(wrap, event) {
+    if (!wraps.includes(wrap) || !active() || pan) return;
+    pan = {
+      owner: wrap,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startTx: view.tx,
+      startTy: view.ty,
+    };
+    wrap.classList.add("panning");
+    wrap.setPointerCapture(event.pointerId);
+  }
+
+  function handlePointerMove(_wrap, event) {
+    if (!pan || !active() || event.pointerId !== pan.pointerId) return;
+    applyView({
+      ...view,
+      tx: pan.startTx + event.clientX - pan.startX,
+      ty: pan.startTy + event.clientY - pan.startY,
+    });
+  }
+
+  function zoomIfActive(factor) {
+    if (active()) zoomCenter(factor);
+  }
 
   return {
     renderPage({ side, pageIndex, snapshot }) {
@@ -256,6 +251,16 @@ export function createTextRenderer({ state, dom, createCanvas, transform, colors
     zoomAt,
     zoomCenter,
     cancelPan,
+    zoomIn: () => zoomIfActive(1.25),
+    zoomOut: () => zoomIfActive(1 / 1.25),
+    zoomOne: () => zoomIfActive(1 / view.scale),
+    fitIfActive: () => { if (active()) fit(); },
+    handleWheel,
+    handlePointerDown,
+    handlePointerMove,
+    handlePointerUp: (_wrap, event) => cancelPan(event),
+    handlePointerCancel: (_wrap, event) => cancelPan(event),
+    handleResize: () => applyView(),
     getView: copyView,
   };
 }

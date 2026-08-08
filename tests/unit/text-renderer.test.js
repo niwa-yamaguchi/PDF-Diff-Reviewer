@@ -178,38 +178,38 @@ describe("shared text viewport", () => {
 
   test("pan is pointer-bound and gated by text mode and highlights", () => {
     const { state, oldWrap, newWrap, renderer } = harness();
-    oldWrap.emit("pointerdown", { pointerId: 3, clientX: 10, clientY: 20 });
-    newWrap.emit("pointerdown", { pointerId: 4, clientX: 100, clientY: 200 });
+    renderer.handlePointerDown(oldWrap, { pointerId: 3, clientX: 10, clientY: 20 });
+    renderer.handlePointerDown(newWrap, { pointerId: 4, clientX: 100, clientY: 200 });
     expect(newWrap.classList.contains("panning")).toBe(false);
-    oldWrap.emit("pointermove", { pointerId: 4, clientX: 100, clientY: 200 });
+    renderer.handlePointerMove(oldWrap, { pointerId: 4, clientX: 100, clientY: 200 });
     expect(renderer.getView()).toEqual({ scale: 1, tx: 0, ty: 0 });
-    oldWrap.emit("pointermove", { pointerId: 3, clientX: 30, clientY: 50 });
+    renderer.handlePointerMove(oldWrap, { pointerId: 3, clientX: 30, clientY: 50 });
     expect(renderer.getView()).toEqual({ scale: 1, tx: 20, ty: 30 });
-    oldWrap.emit("pointerup", { pointerId: 4 });
+    renderer.handlePointerUp(oldWrap, { pointerId: 4 });
     expect(oldWrap.classList.contains("panning")).toBe(true);
-    oldWrap.emit("pointercancel", { pointerId: 3 });
+    renderer.handlePointerCancel(oldWrap, { pointerId: 3 });
     expect(oldWrap.classList.contains("panning")).toBe(false);
 
     state.ui.topMode = "visual";
-    oldWrap.emit("pointerdown", { pointerId: 5, clientX: 0, clientY: 0 });
+    renderer.handlePointerDown(oldWrap, { pointerId: 5, clientX: 0, clientY: 0 });
     expect(oldWrap.classList.contains("panning")).toBe(false);
     state.ui.topMode = "text";
     state.textReview.highlights = null;
-    oldWrap.emit("pointerdown", { pointerId: 6, clientX: 0, clientY: 0 });
+    renderer.handlePointerDown(oldWrap, { pointerId: 6, clientX: 0, clientY: 0 });
     expect(oldWrap.classList.contains("panning")).toBe(false);
   });
 
   test("wheel zoom is cursor-centered only in active highlighted text mode", () => {
     const { state, oldWrap, renderer } = harness();
     const preventDefault = vi.fn();
-    oldWrap.emit("wheel", { deltaY: -1, clientX: 110, clientY: 220, preventDefault });
+    renderer.handleWheel(oldWrap, { deltaY: -1, clientX: 110, clientY: 220, preventDefault });
     expect(preventDefault).toHaveBeenCalled();
     const zoomed = renderer.getView();
     expect(zoomed.scale).toBeCloseTo(1.12);
     expect(zoomed.tx).toBeCloseTo(-12);
     expect(zoomed.ty).toBeCloseTo(-24);
     state.ui.topMode = "visual";
-    oldWrap.emit("wheel", { deltaY: -1, clientX: 110, clientY: 220, preventDefault });
+    renderer.handleWheel(oldWrap, { deltaY: -1, clientX: 110, clientY: 220, preventDefault });
     expect(renderer.getView().scale).toBe(1.12);
   });
 });

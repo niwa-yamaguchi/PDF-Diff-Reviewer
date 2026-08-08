@@ -45,7 +45,7 @@ export function createViewerController({ state, dom, window, onTransform = () =>
     try { dom.wrap.releasePointerCapture(pointerId); } catch (_) { /* capture may already be gone */ }
   }
 
-  dom.wrap.addEventListener("wheel", event => {
+  function handleWheel(event) {
     if (!visualIsActive() || !hasImage()) return;
     event.preventDefault();
     const rect = dom.wrap.getBoundingClientRect();
@@ -54,9 +54,9 @@ export function createViewerController({ state, dom, window, onTransform = () =>
       event.clientX - rect.left,
       event.clientY - rect.top,
     );
-  }, { passive: false });
+  }
 
-  dom.wrap.addEventListener("pointerdown", event => {
+  function handlePointerDown(event) {
     if (!visualIsActive() || !hasImage()) return;
     const spaceHeld = typeof dom.isSpaceHeld === "function" && dom.isSpaceHeld();
     if (state.boxEditor.editMode && !spaceHeld && event.button !== 1) {
@@ -72,33 +72,36 @@ export function createViewerController({ state, dom, window, onTransform = () =>
     };
     dom.wrap.classList.add("panning");
     dom.wrap.setPointerCapture(event.pointerId);
-  });
+  }
 
-  dom.wrap.addEventListener("pointermove", event => {
+  function handlePointerMove(event) {
     if (!pan) return;
     apply({
       ...view,
       tx: pan.startTx + (event.clientX - pan.startX),
       ty: pan.startTy + (event.clientY - pan.startY),
     });
-  });
-  dom.wrap.addEventListener("pointerup", cancelPan);
-  dom.wrap.addEventListener("pointercancel", cancelPan);
-  dom.wrap.addEventListener("dblclick", fit);
-  window.addEventListener("resize", () => apply());
+  }
 
-  dom.zoomIn?.addEventListener("click", () => zoomCenter(1.25));
-  dom.zoomOut?.addEventListener("click", () => zoomCenter(1 / 1.25));
-  dom.zoomFit?.addEventListener("click", fit);
-  dom.zoomOne?.addEventListener("click", () => {
+  function zoomOne() {
     if (hasImage()) zoomCenter(1 / view.scale);
-  });
+  }
 
   return {
     apply,
     fit,
     zoomCenter,
+    zoomIn: () => zoomCenter(1.25),
+    zoomOut: () => zoomCenter(1 / 1.25),
+    zoomOne,
     cancelPan,
+    handleWheel,
+    handlePointerDown,
+    handlePointerMove,
+    handlePointerUp: cancelPan,
+    handlePointerCancel: cancelPan,
+    handleDoubleClick: fit,
+    handleResize: () => apply(),
     getView: copyView,
   };
 }

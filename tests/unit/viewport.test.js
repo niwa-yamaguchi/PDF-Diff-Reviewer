@@ -102,26 +102,26 @@ describe("viewer controller", () => {
     const { controller, wrap, onTransform } = viewerHarness();
     const down = { pointerId: 7, button: 0, clientX: 100, clientY: 80 };
 
-    wrap.emit("pointerdown", down);
-    wrap.emit("pointermove", { pointerId: 7, clientX: 130, clientY: 100 });
+    controller.handlePointerDown(down);
+    controller.handlePointerMove({ pointerId: 7, clientX: 130, clientY: 100 });
 
     expect(controller.getView()).toEqual({ scale: 1, tx: 30, ty: 20 });
     expect(onTransform).toHaveBeenLastCalledWith({ scale: 1, tx: 30, ty: 20 });
     expect(wrap.classList.contains("panning")).toBe(true);
-    wrap.emit("pointercancel", { pointerId: 7 });
+    controller.handlePointerCancel({ pointerId: 7 });
     expect(wrap.classList.contains("panning")).toBe(false);
     expect(wrap.releasePointerCapture).toHaveBeenCalledWith(7);
 
-    wrap.emit("pointermove", { pointerId: 7, clientX: 160, clientY: 120 });
+    controller.handlePointerMove({ pointerId: 7, clientX: 160, clientY: 120 });
     expect(controller.getView()).toEqual({ scale: 1, tx: 30, ty: 20 });
   });
 
   test("keeps the current view when resize requests an overlay refresh", () => {
-    const { controller, out, windowTarget, onTransform } = viewerHarness();
+    const { controller, out, onTransform } = viewerHarness();
     controller.fit();
     onTransform.mockClear();
 
-    windowTarget.emit("resize", { type: "resize" });
+    controller.handleResize({ type: "resize" });
 
     expect(controller.getView()).toEqual({ scale: 0.46, tx: 20, ty: 135 });
     expect(out.style.transform).toBe("translate(20px,135px) scale(0.46)");

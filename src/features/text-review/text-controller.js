@@ -94,10 +94,7 @@ export function createTextController({
   renderer,
   errorReporter,
   onProgress = () => {},
-  onDebug = value => console.log(
-    `[XYCut] page ${value.pageIndex + 1}: leaves=${value.leafSizes.length} hadVerticalCut=${value.hadVerticalCut}`,
-    value.leafSizes,
-  ),
+  onDebug = () => {},
 }) {
   let pendingSession = null;
   const currentExtraction = ticket => (
@@ -388,21 +385,19 @@ export function createTextController({
     return true;
   }
 
-  dom.runText?.addEventListener?.("click", () => run());
-  dom.textPrev?.addEventListener?.("click", () => {
+  function previousPage() {
     if (state.ui.topMode === "text") {
       const page = activeCandidate()?.requestedPage ?? state.textReview.page;
       showPage(page - 1);
     }
-  });
-  dom.textNext?.addEventListener?.("click", () => {
+  }
+
+  function nextPage() {
     if (state.ui.topMode === "text") {
       const page = activeCandidate()?.requestedPage ?? state.textReview.page;
       showPage(page + 1);
     }
-  });
-  dom.topVisual?.addEventListener?.("click", () => setTopMode("visual"));
-  dom.topText?.addEventListener?.("click", () => setTopMode("text"));
+  }
 
   return {
     run,
@@ -411,6 +406,8 @@ export function createTextController({
     cancelRender,
     renderOffscreen,
     invalidateDocuments,
+    previousPage,
+    nextPage,
     totalPages: () => totalPages({ old: state.documents.oldDoc, new: state.documents.newDoc }),
   };
 }

@@ -377,11 +377,6 @@ export function createExportController({
     }
   }
 
-  dom.dlPng?.addEventListener?.("click", saveVisualPng);
-  dom.dlPdf?.addEventListener?.("click", saveVisualPdf);
-  dom.dlTextPng?.addEventListener?.("click", saveTextPng);
-  dom.dlTextPdf?.addEventListener?.("click", saveTextPdf);
-
   return {
     saveVisualPng,
     saveVisualPdf,

@@ -1,4 +1,3 @@
-import { invalidateDocuments } from "../../app/invalidation.js";
 import { PDF_DOCUMENT_OPTIONS } from "../../platform/pdfjs.js";
 
 function setDrop(dropTarget, name) {
@@ -71,6 +70,7 @@ export function createDocumentController({
   onReady,
   onLoadAccepted = () => {},
   confirmDiscard = () => true,
+  invalidateDocuments,
 }) {
   const pendingGeneration = { old: null, new: null };
   const staged = { old: null, new: null };
