@@ -101,6 +101,7 @@ const visualController = createVisualController({
     sideOld: $("sideOld"),
     sideNew: $("sideNew"),
     cancelBoxDrag: () => boxEditorController.cancelDrag(),
+    refreshBoxEditor: () => boxEditorView.refresh(),
     afterCommit() {
       updateAlignButtons();
       updateAlignReadout();

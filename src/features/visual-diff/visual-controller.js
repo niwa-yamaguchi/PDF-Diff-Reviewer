@@ -72,7 +72,6 @@ export function createVisualController({
   function isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide) {
     return ticket.id === state.visual.renderGeneration
       && ticket.documentGeneration === state.documents.generation
-      && snapshot.boxEditor.revision === (state.boxEditor.revisionByPage.get(snapshot.pageIndex) || 0)
       && (!updateCurrentPage || snapshot.mode === state.visual.mode)
       && (
         !updateCurrentPage
@@ -82,6 +81,11 @@ export function createVisualController({
             && pendingFlip.target === snapshot.visual.toggleSide
           : snapshot.visual.toggleSide === state.visual.toggleSide)
       );
+  }
+
+  function boxesAreCurrent(snapshot) {
+    return snapshot.boxEditor.revision
+      === (state.boxEditor.revisionByPage.get(snapshot.pageIndex) || 0);
   }
 
   function finishInteractive(ticket) {
@@ -104,7 +108,13 @@ export function createVisualController({
     dom.sideNew?.classList.toggle("active", state.visual.toggleSide === "new");
   }
 
-  function commitResult(result, snapshot, updateCurrentPage, commitToggleSide) {
+  function commitResult(
+    result,
+    snapshot,
+    updateCurrentPage,
+    commitToggleSide,
+    commitBoxes,
+  ) {
     if (commitToggleSide) state.visual.toggleSide = snapshot.visual.toggleSide;
     commitCanvas(result.canvas);
     state.visual.currentPlan = result.currentPlan;
@@ -114,24 +124,27 @@ export function createVisualController({
     if (result.quadrantGeneration != null) {
       state.visual.quadrantGeneration = result.quadrantGeneration;
     }
-    state.boxEditor.currentBoxes = result.boxes || [];
-    if (result.autoBoxes !== undefined) {
-      state.boxEditor.autoByPage.set(snapshot.pageIndex, result.autoBoxes);
+    if (commitBoxes) {
+      state.boxEditor.currentBoxes = result.boxes || [];
+      if (result.autoBoxes !== undefined) {
+        state.boxEditor.autoByPage.set(snapshot.pageIndex, result.autoBoxes);
+      }
     }
     if (result.cacheEntry) state.visual.pageCache.set(snapshot.pageIndex, result.cacheEntry);
     if (updateCurrentPage) state.documents.currentPage = snapshot.pageIndex;
-    if (updateCurrentPage) state.boxEditor.selectedIndex = -1;
+    if (commitBoxes && updateCurrentPage) state.boxEditor.selectedIndex = -1;
     state.visual.rendered = true;
-    drawBoxes();
+    if (commitBoxes) drawBoxes();
     dom.pageLabel.textContent = result.pageLabel;
     dom.statRm.textContent = result.stats.removed;
     dom.statAd.textContent = result.stats.added;
-    dom.statBox.textContent = result.stats.boxes;
+    if (commitBoxes) dom.statBox.textContent = result.stats.boxes;
     dom.status.textContent = result.status;
     dom.dlPng.disabled = false;
     dom.dlPdf.disabled = false;
     dom.boxToggle.disabled = false;
     updateToggleIndicator();
+    if (!commitBoxes) dom.refreshBoxEditor?.();
     if (updateCurrentPage) dom.afterCommit?.();
   }
 
@@ -177,7 +190,13 @@ export function createVisualController({
       return { committed: false };
     }
     dom.cancelBoxDrag?.();
-    commitResult(result, snapshot, updateCurrentPage, commitToggleSide);
+    commitResult(
+      result,
+      snapshot,
+      updateCurrentPage,
+      commitToggleSide,
+      boxesAreCurrent(snapshot),
+    );
     finishInteractive(ticket);
     return { committed: true };
   }

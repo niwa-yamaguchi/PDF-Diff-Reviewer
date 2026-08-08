@@ -58,6 +58,27 @@ function activeClassList() {
   };
 }
 
+function textElement(initialText = "") {
+  let textContent = initialText;
+  let innerHTML = initialText;
+  return {
+    get textContent() {
+      return textContent;
+    },
+    set textContent(value) {
+      textContent = String(value);
+      innerHTML = textContent;
+    },
+    get innerHTML() {
+      return innerHTML;
+    },
+    set innerHTML(value) {
+      innerHTML = String(value);
+      textContent = innerHTML.replace(/<[^>]*>/g, "");
+    },
+  };
+}
+
 function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) {
   const state = createAppState();
   state.documents.oldDoc = { id: "old", numPages: 2 };
@@ -70,7 +91,7 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
   const dom = {
     out: { width: 10, height: 10, style: { display: "block" }, getContext: () => context },
     placeholder: { style: { display: "none" } },
-    status: { innerHTML: "", textContent: "stable" },
+    status: textElement("stable"),
     pageLabel: { textContent: "1 / 2" },
     statRm: { textContent: "削除 9" },
     statAd: { textContent: "追加 8" },
@@ -136,6 +157,7 @@ function attachBoxEditor(state, dom) {
     confirmDiscard: () => true,
   });
   dom.cancelBoxDrag = event => controller.cancelDrag(event);
+  dom.refreshBoxEditor = () => view.refresh();
   return controller;
 }
 
@@ -158,13 +180,20 @@ test("cancels a drag started during rendering immediately before committing the 
   expect(state.boxEditor.undoByPage.size).toBe(0);
 });
 
-test("discards a pending visual result after a manual box commit on that page", async () => {
+test("commits a normal threshold render shell while preserving a newer manual box edit", async () => {
   const pending = deferred();
   const renderDiffPage = vi.fn(() => pending.promise);
   const { state, dom, context, controller: visualController } = harness({ renderDiffPage });
   const boxController = attachBoxEditor(state, dom);
+  dom.dlPng.disabled = true;
+  dom.dlPdf.disabled = true;
+  dom.boxToggle.disabled = true;
+  state.comparison.threshold = 42;
 
   const rendering = visualController.showPage(0);
+  expect(renderDiffPage).toHaveBeenCalledWith(expect.objectContaining({
+    comparison: expect.objectContaining({ threshold: 42 }),
+  }));
   boxController.pointerDown({ x: 10, y: 10, pointerId: 8, button: 0, preventDefault() {} });
   boxController.pointerMove({ x: 40, y: 40, pointerId: 8 });
   boxController.pointerUp({ x: 40, y: 40, pointerId: 8 });
@@ -172,14 +201,112 @@ test("discards a pending visual result after a manual box commit on that page", 
   expect(editedBoxes).toEqual([{ x: 10, y: 10, w: 30, h: 30 }]);
   expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
   expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
+  const rendered = result(0);
+  pending.resolve(rendered);
+
+  expect(await rendering).toEqual({ committed: true });
+  expect(context.drawImage).toHaveBeenCalledWith(expect.objectContaining({ id: "diff-0" }), 0, 0);
+  expect(state.boxEditor.editsByPage.get(0)).toBe(editedBoxes);
+  expect(state.boxEditor.currentBoxes).toBe(editedBoxes);
+  expect(state.boxEditor.selectedIndex).toBe(0);
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
+  expect(state.visual.currentPlan).toBe(rendered.currentPlan);
+  expect(state.visual.pageCache.get(0)).toBe(rendered.cacheEntry);
+  expect(dom.pageLabel.textContent).toBe(rendered.pageLabel);
+  expect(dom.statRm.textContent).toBe(rendered.stats.removed);
+  expect(dom.statAd.textContent).toBe(rendered.stats.added);
+  expect(dom.status.textContent).toBe(rendered.status);
+  expect(dom.dlPng.disabled).toBe(false);
+  expect(dom.dlPdf.disabled).toBe(false);
+  expect(dom.boxToggle.disabled).toBe(false);
+});
+
+test("settles a pending toggle render after a manual edit without reverting its boxes or stat", async () => {
+  const pending = deferred();
+  const renderTogglePage = vi.fn(() => pending.promise);
+  const { state, dom, context, controller: visualController } = harness({ renderTogglePage });
+  const boxController = attachBoxEditor(state, dom);
+  const originalAuto = state.boxEditor.autoByPage.get(0);
+  state.visual.mode = "toggle";
+  dom.dlPng.disabled = true;
+  dom.dlPdf.disabled = true;
+  dom.boxToggle.disabled = true;
+
+  const rendering = visualController.showPage(0);
+  boxController.pointerDown({ x: 10, y: 10, pointerId: 9, button: 0, preventDefault() {} });
+  boxController.pointerMove({ x: 40, y: 40, pointerId: 9 });
+  boxController.pointerUp({ x: 40, y: 40, pointerId: 9 });
+  const editedBoxes = state.boxEditor.editsByPage.get(0);
+  const rendered = result(0, "toggle");
+  pending.resolve(rendered);
+
+  expect(await rendering).toEqual({ committed: true });
+  expect(context.drawImage).toHaveBeenCalledWith(expect.objectContaining({ id: "toggle-0" }), 0, 0);
+  expect(dom.status.textContent).toBe("新旧切替（OLD表示中）");
+  expect(dom.status.innerHTML).not.toContain("busy");
+  expect(state.boxEditor.editsByPage.get(0)).toBe(editedBoxes);
+  expect(state.boxEditor.currentBoxes).toBe(editedBoxes);
+  expect(state.boxEditor.selectedIndex).toBe(0);
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(state.boxEditor.autoByPage.get(0)).toBe(originalAuto);
+  expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
+  expect(state.visual.currentPlan).toBe(rendered.currentPlan);
+  expect(state.visual.toggleCache).toBe(rendered.toggleCache);
+  expect(state.visual.pageCache.get(0)).toBe(rendered.cacheEntry);
+  expect(dom.pageLabel.textContent).toBe(rendered.pageLabel);
+  expect(dom.statRm.textContent).toBe(rendered.stats.removed);
+  expect(dom.statAd.textContent).toBe(rendered.stats.added);
+  expect(dom.dlPng.disabled).toBe(false);
+  expect(dom.dlPdf.disabled).toBe(false);
+  expect(dom.boxToggle.disabled).toBe(false);
+  expect(dom.sideOld.classList.contains("active")).toBe(true);
+  expect(dom.sideNew.classList.contains("active")).toBe(false);
+});
+
+test("commits a render shell after reset-to-auto without restoring the old manual snapshot", async () => {
+  const pending = deferred();
+  const renderDiffPage = vi.fn(() => pending.promise);
+  const { state, dom, context, controller: visualController } = harness({ renderDiffPage });
+  const boxController = attachBoxEditor(state, dom);
+  const automaticBoxes = [{ x: 2, y: 2, w: 8, h: 8 }];
+  const manualBoxes = [{ x: 20, y: 20, w: 30, h: 30 }];
+  state.boxEditor.autoByPage.set(0, automaticBoxes);
+  state.boxEditor.editsByPage.set(0, manualBoxes);
+  state.boxEditor.currentBoxes = manualBoxes;
+  dom.statBox.textContent = "変更箇所 1（手編集）";
+
+  const rendering = visualController.showPage(0);
+  boxController.resetToAuto();
+  pending.resolve({
+    ...result(0),
+    boxes: manualBoxes.map(box => ({ ...box })),
+    autoBoxes: undefined,
+    stats: { removed: "削除 1", added: "追加 2", boxes: "変更箇所 1（手編集）" },
+  });
+
+  expect(await rendering).toEqual({ committed: true });
+  expect(context.drawImage).toHaveBeenCalledOnce();
+  expect(state.boxEditor.editsByPage.has(0)).toBe(false);
+  expect(state.boxEditor.currentBoxes).toBe(automaticBoxes);
+  expect(state.boxEditor.undoByPage.has(0)).toBe(false);
+  expect(dom.statBox.textContent).toBe("変更箇所 1");
+  expect(dom.status.textContent).toBe("差分を表示中");
+});
+
+test("still discards the whole result when the captured mode is genuinely stale", async () => {
+  const pending = deferred();
+  const renderDiffPage = vi.fn(() => pending.promise);
+  const { state, dom, context, controller } = harness({ renderDiffPage });
+
+  const rendering = controller.showPage(0);
+  state.visual.mode = "toggle";
+  dom.status.textContent = "mode changed";
   pending.resolve(result(0));
 
   expect(await rendering).toEqual({ committed: false });
   expect(context.drawImage).not.toHaveBeenCalled();
-  expect(state.boxEditor.editsByPage.get(0)).toBe(editedBoxes);
-  expect(state.boxEditor.currentBoxes).toBe(editedBoxes);
-  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
-  expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
+  expect(dom.status.textContent).toBe("mode changed");
 });
 
 test("commits only the latest page when an older render finishes last", async () => {
