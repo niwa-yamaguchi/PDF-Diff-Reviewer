@@ -1,11 +1,16 @@
-import { toggleCacheMatchesSnapshot } from "./visual-renderer.js";
+import { toggleCompletedCacheMatchesSnapshot } from "./visual-renderer.js";
 
 function frozenBoxes(boxes) {
   if (!boxes) return null;
   return Object.freeze(boxes.map(box => Object.freeze({ ...box })));
 }
 
-function createSnapshot(state, pageIndex, mode) {
+function createSnapshot(
+  state,
+  pageIndex,
+  mode,
+  toggleSide = state.visual.toggleSide,
+) {
   const manualBoxes = state.boxEditor.editsByPage.get(pageIndex);
   return Object.freeze({
     pageIndex,
@@ -30,8 +35,9 @@ function createSnapshot(state, pageIndex, mode) {
       quadrantManual: new Map(state.comparison.quadrantManual),
     }),
     visual: Object.freeze({
-      toggleSide: state.visual.toggleSide,
+      toggleSide,
       toggleCache: state.visual.toggleCache,
+      renderGeneration: state.visual.renderGeneration,
       currentPlan: state.visual.currentPlan
         ? Object.freeze({ ...state.visual.currentPlan })
         : null,
@@ -59,15 +65,26 @@ export function createVisualController({
   renderTogglePage,
   drawBoxes,
 }) {
-  function isCurrent(ticket, snapshot, updateCurrentPage) {
+  let activeInteractiveTicket = null;
+  let pendingFlip = null;
+
+  function isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide) {
     return ticket.id === state.visual.renderGeneration
       && ticket.documentGeneration === state.documents.generation
       && (!updateCurrentPage || snapshot.mode === state.visual.mode)
       && (
         !updateCurrentPage
         || snapshot.mode !== "toggle"
-        || snapshot.visual.toggleSide === state.visual.toggleSide
+        || (commitToggleSide
+          ? pendingFlip?.ticketId === ticket.id
+            && pendingFlip.target === snapshot.visual.toggleSide
+          : snapshot.visual.toggleSide === state.visual.toggleSide)
       );
+  }
+
+  function finishInteractive(ticket) {
+    if (activeInteractiveTicket === ticket.id) activeInteractiveTicket = null;
+    if (pendingFlip?.ticketId === ticket.id) pendingFlip = null;
   }
 
   function commitCanvas(canvas) {
@@ -85,7 +102,8 @@ export function createVisualController({
     dom.sideNew?.classList.toggle("active", state.visual.toggleSide === "new");
   }
 
-  function commitResult(result, snapshot, updateCurrentPage) {
+  function commitResult(result, snapshot, updateCurrentPage, commitToggleSide) {
+    if (commitToggleSide) state.visual.toggleSide = snapshot.visual.toggleSide;
     commitCanvas(result.canvas);
     state.visual.currentPlan = result.currentPlan;
     replaceMap(state.visual.alignmentCache, result.alignmentCache);
@@ -115,14 +133,28 @@ export function createVisualController({
     if (updateCurrentPage) dom.afterCommit?.();
   }
 
-  async function showPage(pageIndex, { mode = state.visual.mode, updateCurrentPage = true } = {}) {
+  async function showPage(
+    pageIndex,
+    {
+      mode = state.visual.mode,
+      updateCurrentPage = true,
+      toggleSide = state.visual.toggleSide,
+      commitToggleSide = false,
+    } = {},
+  ) {
     if (pageIndex < 0 || pageIndex >= state.documents.pages) return { committed: false };
     const ticket = Object.freeze({
       id: ++state.visual.renderGeneration,
       documentGeneration: state.documents.generation,
       pageIndex,
     });
-    const snapshot = createSnapshot(state, pageIndex, mode);
+    const snapshot = createSnapshot(state, pageIndex, mode, toggleSide);
+    if (updateCurrentPage) {
+      activeInteractiveTicket = ticket.id;
+      pendingFlip = commitToggleSide
+        ? { ticketId: ticket.id, target: toggleSide }
+        : null;
+    }
     dom.cancelBoxDrag?.();
     dom.status.innerHTML = '<span class="busy">レンダリング中…</span>';
     const renderer = mode === "toggle" ? renderTogglePage : renderDiffPage;
@@ -130,12 +162,20 @@ export function createVisualController({
     try {
       result = await renderer(snapshot);
     } catch (error) {
-      if (!isCurrent(ticket, snapshot, updateCurrentPage)) return { committed: false };
+      if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) {
+        finishInteractive(ticket);
+        return { committed: false };
+      }
       dom.reportError?.(error);
+      finishInteractive(ticket);
       return { committed: false, error };
     }
-    if (!isCurrent(ticket, snapshot, updateCurrentPage)) return { committed: false };
-    commitResult(result, snapshot, updateCurrentPage);
+    if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) {
+      finishInteractive(ticket);
+      return { committed: false };
+    }
+    commitResult(result, snapshot, updateCurrentPage, commitToggleSide);
+    finishInteractive(ticket);
     return { committed: true };
   }
 
@@ -150,22 +190,29 @@ export function createVisualController({
   }
 
   async function flipToggleSide() {
-    state.visual.toggleSide = state.visual.toggleSide === "old" ? "new" : "old";
-    state.visual.renderGeneration += 1;
+    const baseSide = pendingFlip?.target ?? state.visual.toggleSide;
+    const targetSide = baseSide === "old" ? "new" : "old";
     const snapshot = createSnapshot(
       state,
       state.documents.currentPage,
       state.visual.mode,
+      targetSide,
     );
     if (
-      snapshot.mode === "toggle"
-      && toggleCacheMatchesSnapshot(snapshot, snapshot.visual.toggleCache)
+      activeInteractiveTicket == null
+      && snapshot.mode === "toggle"
+      && toggleCompletedCacheMatchesSnapshot(snapshot, snapshot.visual.toggleCache)
       && snapshot.visual.toggleCache.sideCanvases?.[snapshot.visual.toggleSide]
     ) {
+      state.visual.toggleSide = targetSide;
       redrawToggleSide();
       return { committed: true };
     }
-    return showPage(state.documents.currentPage);
+    return showPage(state.documents.currentPage, {
+      mode: state.visual.mode,
+      toggleSide: targetSide,
+      commitToggleSide: true,
+    });
   }
 
   async function refreshAfterAlign({

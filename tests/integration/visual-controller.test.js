@@ -92,6 +92,25 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
   return { state, dom, context, drawBoxes, controller, renderDiffPage, renderTogglePage };
 }
 
+function controllerToggleCache(state, sideCanvases) {
+  const rawIdentity = {
+    documentGeneration: state.documents.generation,
+    oldDoc: state.documents.oldDoc,
+    newDoc: state.documents.newDoc,
+    oldIndex: state.documents.oldSequence[state.documents.currentPage],
+    newIndex: state.documents.newSequence[state.documents.currentPage],
+    dpi: state.comparison.dpi,
+    quadrant: 0,
+    framePlan: { ...state.visual.currentPlan },
+  };
+  return {
+    idx: state.documents.currentPage,
+    rawIdentity,
+    completedIdentity: { renderGeneration: state.visual.renderGeneration },
+    sideCanvases,
+  };
+}
+
 test("commits only the latest page when an older render finishes last", async () => {
   const page0 = deferred();
   const page1 = deferred();
@@ -231,20 +250,10 @@ test("flips a fully matching committed toggle cache without invoking a renderer"
   state.visual.toggleSide = "old";
   state.visual.currentPlan = { oldScale: 1, newScale: 1 };
   const newCanvas = { width: 320, height: 240, id: "new-side" };
-  state.visual.toggleCache = {
-    idx: 0,
-    identity: {
-      documentGeneration: state.documents.generation,
-      oldDoc: state.documents.oldDoc,
-      newDoc: state.documents.newDoc,
-      oldIndex: 0,
-      newIndex: 0,
-      dpi: state.comparison.dpi,
-      quadrant: 0,
-      framePlan: { ...state.visual.currentPlan },
-    },
-    sideCanvases: { old: {}, new: newCanvas },
-  };
+  state.visual.toggleCache = controllerToggleCache(
+    state,
+    { old: {}, new: newCanvas },
+  );
 
   expect(await controller.flipToggleSide()).toEqual({ committed: true });
 
@@ -253,6 +262,94 @@ test("flips a fully matching committed toggle cache without invoking a renderer"
   expect(drawBoxes).toHaveBeenCalledOnce();
   expect(renderDiffPage).not.toHaveBeenCalled();
   expect(renderTogglePage).not.toHaveBeenCalled();
+});
+
+test.each([
+  ["manual nudge", state => { state.comparison.dx += 1; }],
+  ["tolerance", state => { state.comparison.tolerancePx += 1; }],
+  ["threshold", state => { state.comparison.threshold += 1; }],
+  ["automatic alignment", state => { state.comparison.autoAlign = true; }],
+])("renders the flipped side with new settings while a %s render is pending", async (_label, change) => {
+  const renders = [];
+  const renderTogglePage = vi.fn(snapshot => {
+    const pending = deferred();
+    renders.push({ snapshot, pending });
+    return pending.promise;
+  });
+  const { state, dom, context, controller } = harness({ renderTogglePage });
+  state.visual.mode = "toggle";
+  state.visual.toggleSide = "old";
+  state.visual.currentPlan = { oldScale: 1, newScale: 1 };
+  const staleNewCanvas = { width: 320, height: 240, id: "stale-new-side" };
+  state.visual.toggleCache = controllerToggleCache(
+    state,
+    { old: { id: "stale-old-side" }, new: staleNewCanvas },
+  );
+  change(state);
+  state.visual.renderGeneration += 1;
+
+  const staleSettingsRender = controller.showPage(0);
+  const flipped = controller.flipToggleSide();
+  await Promise.resolve();
+
+  expect(state.visual.toggleSide).toBe("old");
+  expect(renderTogglePage).toHaveBeenCalledTimes(2);
+  expect(renders[1].snapshot.visual.toggleSide).toBe("new");
+  expect(context.drawImage).not.toHaveBeenCalledWith(staleNewCanvas, 0, 0);
+
+  renders[1].pending.resolve(toggleResult(0, "new"));
+  expect(await flipped).toEqual({ committed: true });
+  renders[0].pending.resolve(toggleResult(0, "old"));
+  expect(await staleSettingsRender).toEqual({ committed: false });
+  expect(state.visual.toggleSide).toBe("new");
+  expect(context.drawImage).toHaveBeenCalledOnce();
+  expect(context.drawImage).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "toggle-new" }),
+    0,
+    0,
+  );
+  expect(dom.status.textContent).toBe("新旧切替（NEW表示中）");
+});
+
+test("keeps the committed side when the current flipped-side renderer rejects", async () => {
+  const error = new Error("new side failed");
+  const renderTogglePage = vi.fn(async () => { throw error; });
+  const { state, dom, context, controller } = harness({ renderTogglePage });
+  state.visual.mode = "toggle";
+  state.visual.toggleSide = "old";
+  dom.sideOld.classList.toggle("active", true);
+
+  const outcome = await controller.flipToggleSide();
+
+  expect(outcome).toEqual({ committed: false, error });
+  expect(state.visual.toggleSide).toBe("old");
+  expect(context.drawImage).not.toHaveBeenCalled();
+  expect(dom.sideOld.classList.contains("active")).toBe(true);
+  expect(dom.sideNew.classList.contains("active")).toBe(false);
+});
+
+test("does not let a stale rejection roll back a newer double flip", async () => {
+  const first = deferred();
+  const second = deferred();
+  const renderTogglePage = vi.fn(snapshot => (
+    snapshot.visual.toggleSide === "new" ? first.promise : second.promise
+  ));
+  const { state, dom, controller } = harness({ renderTogglePage });
+  state.visual.mode = "toggle";
+  state.visual.toggleSide = "old";
+
+  const flipToNew = controller.flipToggleSide();
+  const flipBackToOld = controller.flipToggleSide();
+  first.reject(new Error("stale new side failure"));
+
+  expect(await flipToNew).toEqual({ committed: false });
+  expect(state.visual.toggleSide).toBe("old");
+  expect(dom.reportError).not.toHaveBeenCalled();
+
+  second.resolve(toggleResult(0, "old"));
+  expect(await flipBackToOld).toEqual({ committed: true });
+  expect(state.visual.toggleSide).toBe("old");
+  expect(dom.status.textContent).toBe("新旧切替（OLD表示中）");
 });
 
 test("invalidates alignment and clamps the page before refreshing reordered slots", async () => {
@@ -371,6 +468,7 @@ function rendererSnapshot({ side = "old", toggleCache = null } = {}) {
     visual: Object.freeze({
       toggleSide: side,
       toggleCache,
+      renderGeneration: 1,
       alignmentCache: new Map(),
       quadrantCache: new Map(),
       quadrantGeneration: 0,

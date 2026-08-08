@@ -1,7 +1,8 @@
 import {
   boxStat,
   computeChangeBoxesAligned,
-  createToggleCacheIdentity,
+  createToggleCompletedIdentity,
+  createToggleRawCacheIdentity,
   prepareVisualPage,
 } from "./visual-renderer.js";
 
@@ -33,11 +34,12 @@ export async function renderTogglePage(snapshot, dependencies) {
   const pageCache = {
     idx: snapshot.pageIndex,
     quad: prepared.quadrant,
-    identity: createToggleCacheIdentity(
+    rawIdentity: createToggleRawCacheIdentity(
       snapshot,
       prepared.quadrant,
       prepared.currentPlan,
     ),
+    completedIdentity: createToggleCompletedIdentity(snapshot),
     oldCanvas: prepared.oldCanvas,
     newCanvas: prepared.newCanvas,
     oldWidth: prepared.oldWidth,

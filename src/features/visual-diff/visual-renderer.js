@@ -59,7 +59,7 @@ function sameFramePlan(left, right) {
   return [...keys].every(key => Object.is(left[key], right[key]));
 }
 
-export function createToggleCacheIdentity(snapshot, quadrant, framePlan) {
+export function createToggleRawCacheIdentity(snapshot, quadrant, framePlan) {
   return Object.freeze({
     documentGeneration: snapshot.documents.generation,
     oldDoc: snapshot.documents.oldDoc,
@@ -72,7 +72,7 @@ export function createToggleCacheIdentity(snapshot, quadrant, framePlan) {
   });
 }
 
-export function toggleCacheMatchesSnapshot(
+export function toggleRawCacheMatchesSnapshot(
   snapshot,
   cache,
   {
@@ -80,7 +80,7 @@ export function toggleCacheMatchesSnapshot(
     framePlan = snapshot.visual.currentPlan,
   } = {},
 ) {
-  const identity = cache?.identity;
+  const identity = cache?.rawIdentity;
   return !!identity
     && cache.idx === snapshot.pageIndex
     && identity.documentGeneration === snapshot.documents.generation
@@ -91,6 +91,17 @@ export function toggleCacheMatchesSnapshot(
     && identity.dpi === snapshot.comparison.dpi
     && identity.quadrant === quadrant
     && sameFramePlan(identity.framePlan, framePlan);
+}
+
+export function createToggleCompletedIdentity(snapshot) {
+  return Object.freeze({
+    renderGeneration: snapshot.visual.renderGeneration,
+  });
+}
+
+export function toggleCompletedCacheMatchesSnapshot(snapshot, cache) {
+  return cache?.completedIdentity?.renderGeneration === snapshot.visual.renderGeneration
+    && toggleRawCacheMatchesSnapshot(snapshot, cache);
 }
 
 function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
@@ -233,7 +244,7 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
     rotatedNewSize,
     snapshot.comparison.dpi,
   );
-  const reusablePages = toggleCacheMatchesSnapshot(snapshot, cachedPages, {
+  const reusablePages = toggleRawCacheMatchesSnapshot(snapshot, cachedPages, {
     quadrant,
     framePlan: currentPlan,
   }) ? cachedPages : null;
