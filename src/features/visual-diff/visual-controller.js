@@ -1,3 +1,5 @@
+import { toggleCacheMatchesSnapshot } from "./visual-renderer.js";
+
 function frozenBoxes(boxes) {
   if (!boxes) return null;
   return Object.freeze(boxes.map(box => Object.freeze({ ...box })));
@@ -30,6 +32,9 @@ function createSnapshot(state, pageIndex, mode) {
     visual: Object.freeze({
       toggleSide: state.visual.toggleSide,
       toggleCache: state.visual.toggleCache,
+      currentPlan: state.visual.currentPlan
+        ? Object.freeze({ ...state.visual.currentPlan })
+        : null,
       alignmentCache: new Map(state.visual.alignmentCache),
       quadrantCache: new Map(state.visual.quadrantCache),
       quadrantGeneration: state.visual.quadrantGeneration,
@@ -54,9 +59,15 @@ export function createVisualController({
   renderTogglePage,
   drawBoxes,
 }) {
-  function isCurrent(ticket) {
+  function isCurrent(ticket, snapshot, updateCurrentPage) {
     return ticket.id === state.visual.renderGeneration
-      && ticket.documentGeneration === state.documents.generation;
+      && ticket.documentGeneration === state.documents.generation
+      && (!updateCurrentPage || snapshot.mode === state.visual.mode)
+      && (
+        !updateCurrentPage
+        || snapshot.mode !== "toggle"
+        || snapshot.visual.toggleSide === state.visual.toggleSide
+      );
   }
 
   function commitCanvas(canvas) {
@@ -119,11 +130,11 @@ export function createVisualController({
     try {
       result = await renderer(snapshot);
     } catch (error) {
-      if (!isCurrent(ticket)) return { committed: false };
+      if (!isCurrent(ticket, snapshot, updateCurrentPage)) return { committed: false };
       dom.reportError?.(error);
       return { committed: false, error };
     }
-    if (!isCurrent(ticket)) return { committed: false };
+    if (!isCurrent(ticket, snapshot, updateCurrentPage)) return { committed: false };
     commitResult(result, snapshot, updateCurrentPage);
     return { committed: true };
   }
@@ -136,6 +147,25 @@ export function createVisualController({
     updateToggleIndicator();
     dom.status.textContent = `新旧切替（${state.visual.toggleSide === "old" ? "OLD" : "NEW"}表示中）`;
     return true;
+  }
+
+  async function flipToggleSide() {
+    state.visual.toggleSide = state.visual.toggleSide === "old" ? "new" : "old";
+    state.visual.renderGeneration += 1;
+    const snapshot = createSnapshot(
+      state,
+      state.documents.currentPage,
+      state.visual.mode,
+    );
+    if (
+      snapshot.mode === "toggle"
+      && toggleCacheMatchesSnapshot(snapshot, snapshot.visual.toggleCache)
+      && snapshot.visual.toggleCache.sideCanvases?.[snapshot.visual.toggleSide]
+    ) {
+      redrawToggleSide();
+      return { committed: true };
+    }
+    return showPage(state.documents.currentPage);
   }
 
   async function refreshAfterAlign({
@@ -155,5 +185,5 @@ export function createVisualController({
     return showPage(state.documents.currentPage);
   }
 
-  return { showPage, redrawToggleSide, refreshAfterAlign };
+  return { showPage, flipToggleSide, refreshAfterAlign };
 }

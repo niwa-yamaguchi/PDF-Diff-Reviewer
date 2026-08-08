@@ -406,8 +406,7 @@ function endBoxDrag(e){
 }
 
 function flipSide(){
-  state.visual.toggleSide = state.visual.toggleSide==="old" ? "new" : "old";
-  visualController.redrawToggleSide();
+  visualController.flipToggleSide();
 }
 
 function setModeUI(){

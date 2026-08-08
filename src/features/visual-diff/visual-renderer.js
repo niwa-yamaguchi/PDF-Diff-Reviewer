@@ -53,6 +53,46 @@ export function effectiveQuadrant(snapshot, quadrantCache) {
   return estimate?.applied ? estimate.k : 0;
 }
 
+function sameFramePlan(left, right) {
+  if (!left || !right) return false;
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].every(key => Object.is(left[key], right[key]));
+}
+
+export function createToggleCacheIdentity(snapshot, quadrant, framePlan) {
+  return Object.freeze({
+    documentGeneration: snapshot.documents.generation,
+    oldDoc: snapshot.documents.oldDoc,
+    newDoc: snapshot.documents.newDoc,
+    oldIndex: snapshot.documents.oldSequence[snapshot.pageIndex] ?? null,
+    newIndex: snapshot.documents.newSequence[snapshot.pageIndex] ?? null,
+    dpi: snapshot.comparison.dpi,
+    quadrant,
+    framePlan: Object.freeze({ ...framePlan }),
+  });
+}
+
+export function toggleCacheMatchesSnapshot(
+  snapshot,
+  cache,
+  {
+    quadrant = effectiveQuadrant(snapshot, snapshot.visual.quadrantCache),
+    framePlan = snapshot.visual.currentPlan,
+  } = {},
+) {
+  const identity = cache?.identity;
+  return !!identity
+    && cache.idx === snapshot.pageIndex
+    && identity.documentGeneration === snapshot.documents.generation
+    && identity.oldDoc === snapshot.documents.oldDoc
+    && identity.newDoc === snapshot.documents.newDoc
+    && identity.oldIndex === (snapshot.documents.oldSequence[snapshot.pageIndex] ?? null)
+    && identity.newIndex === (snapshot.documents.newSequence[snapshot.pageIndex] ?? null)
+    && identity.dpi === snapshot.comparison.dpi
+    && identity.quadrant === quadrant
+    && sameFramePlan(identity.framePlan, framePlan);
+}
+
 function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
   if (!snapshot.comparison.autoAlign || cache.has(snapshot.pageIndex)) return;
   const oldGray = dependencies.canvasToGrayF(oldCanvas);
@@ -193,7 +233,10 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
     rotatedNewSize,
     snapshot.comparison.dpi,
   );
-  const reusablePages = cachedPages?.quad === quadrant ? cachedPages : null;
+  const reusablePages = toggleCacheMatchesSnapshot(snapshot, cachedPages, {
+    quadrant,
+    framePlan: currentPlan,
+  }) ? cachedPages : null;
   let oldCanvas = reusablePages?.oldCanvas;
   let newCanvas = reusablePages?.newCanvas;
   if (!reusablePages) {

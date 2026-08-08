@@ -32,6 +32,31 @@ function result(pageIndex, mode = "diff") {
   };
 }
 
+function toggleResult(pageIndex, side) {
+  const rendered = result(pageIndex, "toggle");
+  const canvas = { width: 100 + pageIndex, height: 200 + pageIndex, id: `toggle-${side}` };
+  return {
+    ...rendered,
+    canvas,
+    toggleCache: {
+      idx: pageIndex,
+      sideCanvases: { old: { id: "toggle-old" }, new: { id: "toggle-new" } },
+    },
+    status: `新旧切替（${side === "old" ? "OLD" : "NEW"}表示中）`,
+  };
+}
+
+function activeClassList() {
+  const values = new Set();
+  return {
+    toggle(name, active) {
+      if (active) values.add(name);
+      else values.delete(name);
+    },
+    contains: name => values.has(name),
+  };
+}
+
 function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) {
   const state = createAppState();
   state.documents.oldDoc = { id: "old", numPages: 2 };
@@ -52,6 +77,8 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
     dlPng: { disabled: false },
     dlPdf: { disabled: false },
     boxToggle: { disabled: false },
+    sideOld: { classList: activeClassList() },
+    sideNew: { classList: activeClassList() },
     reportError: vi.fn(),
   };
   const drawBoxes = vi.fn();
@@ -167,16 +194,61 @@ test("updates the full-resolution output for export without changing the reviewe
   expect(dom.out).toMatchObject({ width: 101, height: 201 });
 });
 
-test("redraws a committed toggle side immediately without invoking a renderer", () => {
+test("keeps canvas status indicator and state on the new side when the old side resolves late", async () => {
+  const oldSide = deferred();
+  const renderTogglePage = vi.fn(snapshot => (
+    snapshot.visual.toggleSide === "old"
+      ? oldSide.promise
+      : Promise.resolve(toggleResult(snapshot.pageIndex, "new"))
+  ));
+  const { state, dom, context, controller } = harness({ renderTogglePage });
+  state.visual.mode = "toggle";
+  state.visual.toggleSide = "old";
+
+  const staleOldRender = controller.showPage(0);
+  const flipped = controller.flipToggleSide();
+
+  expect(await flipped).toEqual({ committed: true });
+  oldSide.resolve(toggleResult(0, "old"));
+  expect(await staleOldRender).toEqual({ committed: false });
+  expect(state.visual.toggleSide).toBe("new");
+  expect(context.drawImage).toHaveBeenCalledOnce();
+  expect(context.drawImage).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "toggle-new" }),
+    0,
+    0,
+  );
+  expect(dom.status.textContent).toBe("新旧切替（NEW表示中）");
+  expect(dom.sideNew.classList.contains("active")).toBe(true);
+  expect(dom.sideOld.classList.contains("active")).toBe(false);
+});
+
+test("flips a fully matching committed toggle cache without invoking a renderer", async () => {
   const renderDiffPage = vi.fn();
   const renderTogglePage = vi.fn();
   const { state, context, drawBoxes, controller } = harness({ renderDiffPage, renderTogglePage });
+  state.visual.mode = "toggle";
+  state.visual.toggleSide = "old";
+  state.visual.currentPlan = { oldScale: 1, newScale: 1 };
   const newCanvas = { width: 320, height: 240, id: "new-side" };
-  state.visual.toggleSide = "new";
-  state.visual.toggleCache = { sideCanvases: { old: {}, new: newCanvas } };
+  state.visual.toggleCache = {
+    idx: 0,
+    identity: {
+      documentGeneration: state.documents.generation,
+      oldDoc: state.documents.oldDoc,
+      newDoc: state.documents.newDoc,
+      oldIndex: 0,
+      newIndex: 0,
+      dpi: state.comparison.dpi,
+      quadrant: 0,
+      framePlan: { ...state.visual.currentPlan },
+    },
+    sideCanvases: { old: {}, new: newCanvas },
+  };
 
-  expect(controller.redrawToggleSide()).toBe(true);
+  expect(await controller.flipToggleSide()).toEqual({ committed: true });
 
+  expect(state.visual.toggleSide).toBe("new");
   expect(context.drawImage).toHaveBeenCalledWith(newCanvas, 0, 0);
   expect(drawBoxes).toHaveBeenCalledOnce();
   expect(renderDiffPage).not.toHaveBeenCalled();
@@ -362,19 +434,76 @@ test("renders both toggle sides offscreen and reuses the page-canvas cache", asy
   const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 60, 120]));
   const newCanvas = new MemoryCanvas(3, 1, rgba([20, 80, 140]));
   const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const base = rendererSnapshot();
 
-  const first = await renderTogglePage(rendererSnapshot(), dependencies);
+  const first = await renderTogglePage(base, dependencies);
   expect([...first.toggleCache.sideCanvases.old.data]).toEqual([...oldCanvas.data]);
   expect([...first.toggleCache.sideCanvases.new.data]).toEqual([...newCanvas.data]);
   expect(first.canvas).toBe(first.toggleCache.sideCanvases.old);
   expect(dependencies.renderPageCanvas).toHaveBeenCalledTimes(2);
 
-  const second = await renderTogglePage(
-    rendererSnapshot({ side: "new", toggleCache: first.toggleCache }),
-    dependencies,
-  );
+  const secondSnapshot = Object.freeze({
+    ...base,
+    visual: Object.freeze({
+      ...base.visual,
+      toggleSide: "new",
+      toggleCache: first.toggleCache,
+    }),
+  });
+  const second = await renderTogglePage(secondSnapshot, dependencies);
   expect([...second.canvas.data]).toEqual([...first.toggleCache.sideCanvases.new.data]);
   expect(dependencies.renderPageCanvas).toHaveBeenCalledTimes(2);
+});
+
+test.each([
+  ["document generation and identity", base => ({
+    documents: Object.freeze({
+      ...base.documents,
+      generation: base.documents.generation + 1,
+      oldDoc: { ...base.documents.oldDoc },
+      newDoc: { ...base.documents.newDoc },
+    }),
+  })],
+  ["DPI and frame plan", base => ({
+    comparison: Object.freeze({ ...base.comparison, dpi: 144 }),
+  })],
+  ["page sequence mapping", base => ({
+    documents: Object.freeze({
+      ...base.documents,
+      oldSequence: Object.freeze([1]),
+    }),
+  })],
+])("rerenders toggle page canvases after %s changes", async (label, mutate) => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 60, 120]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([20, 80, 140]));
+  const replacementOld = new MemoryCanvas(3, 1, rgba([10, 70, 130]));
+  const replacementNew = new MemoryCanvas(3, 1, rgba([30, 90, 150]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  let activeOld = oldCanvas;
+  let activeNew = newCanvas;
+  dependencies.framePlan = (oldSize, newSize, dpi) => ({
+    oldScale: dpi / 72,
+    newScale: dpi / 72,
+    normalized: false,
+  });
+  dependencies.renderPageCanvas = vi.fn(async doc => (
+    doc.id === "old" ? activeOld : activeNew
+  ));
+  const base = rendererSnapshot();
+  const first = await renderTogglePage(base, dependencies);
+  activeOld = replacementOld;
+  activeNew = replacementNew;
+  const changed = Object.freeze({
+    ...base,
+    ...mutate(base),
+    visual: Object.freeze({ ...base.visual, toggleCache: first.toggleCache }),
+  });
+
+  const second = await renderTogglePage(changed, dependencies);
+
+  expect(dependencies.renderPageCanvas).toHaveBeenCalledTimes(4);
+  expect(second.toggleCache.oldCanvas).toBe(replacementOld);
+  expect(second.toggleCache.newCanvas).toBe(replacementNew);
 });
 
 test("does not reuse toggle page canvases when the effective automatic quadrant changed", async () => {
