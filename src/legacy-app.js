@@ -3,10 +3,6 @@ import { jsPDF } from "jspdf";
 import { createCanvas, createWhiteCanvas } from "./platform/canvas.js";
 import { downloadBlob } from "./platform/download.js";
 import { pdfjsLib } from "./platform/pdfjs.js";
-import {
-  legendLayout,
-  LG_BORDER_PT,
-} from "./core/legend/layout.js";
 import { createAppState } from "./app/state.js";
 import {
   applyInvalidatingChange,
@@ -31,7 +27,6 @@ import {
 import { createViewerController } from "./features/viewer/viewer-controller.js";
 import { createVisualController } from "./features/visual-diff/visual-controller.js";
 import {
-  DIFF_RGB,
   effectiveQuadrant,
   renderDiffPage,
 } from "./features/visual-diff/visual-renderer.js";
@@ -40,6 +35,8 @@ import { createBoxEditorController } from "./features/box-editor/box-editor-cont
 import { createBoxEditorView } from "./features/box-editor/box-editor-view.js";
 import { createTextController, extractPageTokens } from "./features/text-review/text-controller.js";
 import { createTextRenderer } from "./features/text-review/text-renderer.js";
+import { createExportController } from "./features/export/export-controller.js";
+import { createPdfExporter } from "./features/export/pdf-exporter.js";
 
 const state = createAppState();
 
@@ -177,30 +174,6 @@ const visualController = createVisualController({
   drawBoxes: () => boxEditorView.redraw(),
 });
 
-
-// 変更箇所の囲み枠（色・サイズ）に関する定数とヘルパ
-const BOX_COLOR = "#ff9500";
-const BOX_FILL  = "rgba(255,149,0,0.18)";
-const rgbCss = c => "rgb("+c[0]+","+c[1]+","+c[2]+")";
-const BOX_BASE_DPI = 150;
-
-// 枠をフレーム座標のまま ctx へ描く純粋な描画関数（書き出し用）。lw は線幅(px)。
-function drawBoxesTo(ctx, boxes, lw){
-  if(!boxes || !boxes.length) return;
-  ctx.save();
-  ctx.fillStyle = BOX_FILL;
-  ctx.strokeStyle = BOX_COLOR;
-  ctx.lineWidth = lw;
-  for(const b of boxes){
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-    // 枠線が範囲外に出ないよう半線幅内側に寄せる
-    const h = lw/2;
-    ctx.strokeRect(b.x+h, b.y+h, Math.max(0,b.w-lw), Math.max(0,b.h-lw));
-  }
-  ctx.restore();
-}
-// 書き出し用の線幅。現行 drawBoxes と同じ式（DPIに比例）。
-const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.comparison.dpi / BOX_BASE_DPI));
 
 function flipSide(){
   visualController.flipToggleSide();
@@ -617,232 +590,33 @@ $("alignUndo").addEventListener("click", async ()=>{
 $("prev").addEventListener("click",()=>visualController.showPage(state.documents.currentPage-1));
 $("next").addEventListener("click",()=>visualController.showPage(state.documents.currentPage+1));
 
-// ── 書き出し用の凡例 ──
-// 画面表示のCanvas(out)には描かない（画面はヘッダーのHTML凡例が担う）。書き出し時に
-// 複製したCanvasへだけ重ねるため、パン/ズームやPDFの用紙寸法には影響しない。
-// レイアウト定数は全てpt。unit(=1ptあたりのpx数)を掛けてpxへ変換するので、DPIを
-// 上げても紙面上の凡例の大きさは変わらない。
-// 実測用: 呼び出し側のctx状態を壊さないようsave/restoreで包む
-const ctxMeasurer = ctx => (label, fontPx) => {
-  ctx.save();
-  ctx.font = "bold " + fontPx + "px sans-serif";
-  const w = ctx.measureText(label).width;
-  ctx.restore();
-  return w;
-};
-
-// 描画せずレイアウト一式を返す（配置の衝突判定用）。返り値はそのまま drawLegend の
-// pre 引数へ渡せる。こうしないと「幅ガードで測った寸法」と「実際に描く寸法」が
-// 別計算になり、将来 legendLayout に状態依存が入ったとき両者がズレる。
-function measureLegend(ctx, items, unit, opts){
-  return legendLayout(items, unit, opts, ctxMeasurer(ctx));
-}
-
-// (x,y)を凡例ボックスの左上として描画する。
-// pre に measureLegend の返り値を渡すとレイアウト計算と文字幅実測を再利用する。
-function drawLegend(ctx, items, x, y, unit, opts, pre){
-  const L = pre || legendLayout(items, unit, opts, ctxMeasurer(ctx));
-  // DPI下限72(=unit 1.0)では常に1px以上になるため現状は発火しないが、
-  // 将来DPI下限を下げたときに枠線が消えるのを防ぐ保険
-  const bw = Math.max(1, LG_BORDER_PT * unit);
-  ctx.save();
-  if(L.chrome){
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.fillRect(x, y, L.w, L.h);
-    ctx.strokeStyle = "#999";
-    ctx.lineWidth = bw;
-    ctx.strokeRect(x + bw/2, y + bw/2, L.w - bw, L.h - bw); // 枠線を内側へ寄せる
-  }
-  ctx.font = "bold " + L.fontPx + "px sans-serif";
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left";
-  const top = y + L.pad;
-  L.parts.forEach((p, i) => {
-    const it = items[i];
-    if(it.color){
-      ctx.fillStyle = it.color;
-      ctx.fillRect(x + p.swX, top, L.swPx, L.swPx);
-    } else {
-      ctx.fillStyle = it.fill;
-      ctx.fillRect(x + p.swX, top, L.swPx, L.swPx);
-      ctx.strokeStyle = it.stroke;
-      ctx.lineWidth = bw;
-      ctx.strokeRect(x + p.swX + bw/2, top + bw/2, L.swPx - bw, L.swPx - bw);
-    }
-    ctx.fillStyle = "#222";
-    ctx.fillText(it.label, x + p.textX, top + L.swPx/2);
-  });
-  ctx.restore();
-  return L;
-}
-
-const LG_MARGIN_PT = 10; // 凡例ボックスの左上マージン
-
-// 図面比較の凡例項目。色は buildDiff が実際に塗る DIFF_RGB と同じ定義から作る。
-// 引数 kind は「書き出す画像の中身」であって state.visual.mode ではない。dlPdf は切替モード中に
-// 押されてもループ内で buildDiff を呼ぶため中身は差分画像であり "diff" を渡す。
-// state.visual.mode を関数内で直接読むと、この経路で凡例が「変更枠」だけになり誤りになる。
-function diffLegendItems(kind){
-  const items = [];
-  // 切替モードの画像は旧版/新版そのもの。共通/削除/追加の3色は実在しないので出さない。
-  if(kind !== "toggle") items.push(
-    {color: rgbCss(DIFF_RGB.common),  label: "共通"},
-    {color: rgbCss(DIFF_RGB.removed), label: "削除（旧版のみ）"},
-    {color: rgbCss(DIFF_RGB.added),   label: "追加（新版のみ）"},
-  );
-  // 枠を出していないときに「変更枠」だけ凡例に残ると誤解を招くので連動させる
-  if(state.boxEditor.showBoxes) items.push({stroke: BOX_COLOR, fill: BOX_FILL, label: "変更枠"});
-  return items;
-}
-
-// src と同寸のCanvasへ複製し、複製側にだけ凡例を重ねて返す。src は変更しない。
-// 寸法を変えないので、PDFの用紙寸法(wPt/hPt)は従来と一致する。
-// dest を渡すとそのCanvasを使い回す（全ページPDFで巨大なバッキングストアを毎ページ
-// 確保しないため）。width/height の再代入でCanvasは自動クリアされる。
-function exportCanvasWithLegend(src, kind, dest){
-  const c = dest || createCanvas(0, 0);
-  c.width = src.width; c.height = src.height;
-  const ctx = c.getContext("2d");
-  ctx.drawImage(src, 0, 0);
-  if(state.boxEditor.showBoxes) drawBoxesTo(ctx, state.boxEditor.currentBoxes, exportBoxLineWidth());
-  const unit = state.comparison.dpi / 72;
-  const m = LG_MARGIN_PT * unit;
-  drawLegend(ctx, diffLegendItems(kind), m, m, unit);
-  return c;
-}
-
-$("dlPng").addEventListener("click",()=>{
-  // 切替モードの画像で説明を要する色はオレンジの変更枠だけ。枠OFFなら凡例は不要なので
-  // out をそのまま出す。それ以外（差分モード全般／切替モードで枠ON）は凡例を重ねる。
-  const bare = state.visual.mode==="toggle" && !state.boxEditor.showBoxes;
-  const shot = bare ? out : exportCanvasWithLegend(out, state.visual.mode);
-  shot.toBlob(b=>{
-    const name = state.visual.mode==="toggle"
-      ? (state.visual.toggleSide==="new" ? "new_p"+(state.documents.currentPage+1)+".png" : "old_p"+(state.documents.currentPage+1)+".png")
-      : "diff_p"+(state.documents.currentPage+1)+".png";
-    downloadBlob(b, name);
-  });
-});
-
-$("dlPdf").addEventListener("click",async()=>{
-  $("status").innerHTML='<span class="busy">PDF生成中…</span>';
-  let pdf=null;
-  const scratch=createCanvas(0, 0); // 全ページで使い回す複製先（毎ページ確保するとピークメモリが倍になる）
-  // dlPdf は state.visual.mode に関わらず全ページを buildDiff で描くため、ループ内で書き込まれる
-  // state.boxEditor.autoByPage は差分アルゴリズム由来の値になる。これは書き出し専用の一時的な結果であり
-  // 画面表示（新旧切替モード等）の自動枠を汚してはいけないため、ループの前にMap内容を
-  // 退避して空にし、終了後に同じMapへ戻す。
-  const savedBoxAuto = new Map(state.boxEditor.autoByPage);
-  state.boxEditor.autoByPage.clear();
-  for(let i=0;i<state.documents.pages;i++){
-    const rendered = await visualController.showPage(i, {mode:"diff", updateCurrentPage:false});
-    if(!rendered.committed) throw rendered.error || new Error("差分ページを描画できませんでした");
-    // dlPdf は state.visual.mode に関わらず差分レンダラーを使うため、常に差分用の凡例を付ける
-    const shot=exportCanvasWithLegend(out, "diff", scratch);
-    const img=shot.toDataURL("image/png");
-    const w=shot.width, h=shot.height;
-    // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す。
-    // 用紙サイズ正規化時も「基準ページ(大きい用紙)は必ず dpi/72 で描画する」(framePlan の
-    // frameScale)ため、フレーム寸法を dpi/72 で割ると基準ページのpt実寸が得られる。式は不変。
-    const scale=state.comparison.dpi/72, wPt=w/scale, hPt=h/scale;
-    const orient = w>h ? "l":"p";
-    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
-    else { pdf.addPage([wPt,hPt],orient); }
-    pdf.addImage(img,"PNG",0,0,wPt,hPt);
-  }
-  state.boxEditor.autoByPage.clear();
-  for(const [pageIndex, boxes] of savedBoxAuto) state.boxEditor.autoByPage.set(pageIndex, boxes);
-  pdf.save("diff.pdf");
-  await visualController.showPage(state.documents.currentPage);
-  $("status").textContent="PDFを保存しました";
-});
-
-// テキスト比較のラベル帯(高さ28px・フォント16px固定)に収まる凡例のスケール。
-// 図面側の state.comparison.dpi/72 とは別系統の固定値（帯もフォントもDPIに依存しないため）。
-const TEXT_LG_UNIT = 1.6;
-
-// 旧(上)・新(下)を各ラベル帯付きで縦積み合成（等倍・非伸縮、横中央寄せ）（ページ無し側は白Canvasで代替）
-function composeTextExport(oldC, newC, pageIndex, total){
-  const fallback = (w,h) => createWhiteCanvas(w, h);
-  if(!oldC) oldC = fallback(newC.width, newC.height);
-  if(!newC) newC = fallback(oldC.width, oldC.height);
-
-  const labelH = 28, gap = 24;
-  const W = Math.max(oldC.width, newC.width);
-  const H = labelH + oldC.height + gap + labelH + newC.height;
-  const canvas = createWhiteCanvas(W, H);
-  const ctx = canvas.getContext("2d");
-
-  ctx.font = "bold 16px sans-serif";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = TEXT_HI_COLORS.removed;
-  ctx.textAlign = "left";
-  ctx.fillText("OLD", 4, labelH/2);
-  ctx.fillStyle = "#333";
-  ctx.textAlign = "right";
-  const pageText = "p "+(pageIndex+1)+" / "+total;
-  ctx.fillText(pageText, W-4, labelH/2);
-
-  // 凡例は最上部の帯にのみ。帯は既に白地なので下地・枠(chrome)は描かない。
-  // OLDラベルの右に置き、ページ番号と重なるほど幅が無ければ描画を諦める。
-  const lgItems = [
-    {color: TEXT_HI_COLORS.removed, label: "削除"},
-    {color: TEXT_HI_COLORS.added,   label: "追加"},
-    {color: TEXT_HI_COLORS.changed, label: "変更"},
-  ];
-  const lgOpts = {chrome: false};
-  const lg = measureLegend(ctx, lgItems, TEXT_LG_UNIT, lgOpts);
-  const lgX = 4 + ctx.measureText("OLD").width + 16;
-  const lgLimit = W - 4 - ctx.measureText(pageText).width - 16;
-  if(lgX + lg.w <= lgLimit){
-    // 幅ガードで使った lg をそのまま渡し、描画側で同じレイアウトを再計算させない
-    drawLegend(ctx, lgItems, lgX, labelH/2 - lg.h/2, TEXT_LG_UNIT, lgOpts, lg);
-  }
-
-  ctx.drawImage(oldC, (W-oldC.width)/2, labelH);
-
-  const newLabelY = labelH + oldC.height + gap;
-  ctx.fillStyle = TEXT_HI_COLORS.added;
-  ctx.textAlign = "left";
-  ctx.fillText("NEW", 4, newLabelY + labelH/2);
-  ctx.drawImage(newC, (W-newC.width)/2, newLabelY + labelH);
-  return canvas;
-}
-
-$("dlTextPng").addEventListener("click", async()=>{
-  if(state.ui.topMode!=="text" || !state.textReview.highlights) return;
-  $("textStatus").textContent = "PNG生成中…";
-  const idx = state.textReview.page, total = textController.totalPages();
-  const [oldC, newC] = await Promise.all([
-    textController.renderOffscreen("old", idx),
-    textController.renderOffscreen("new", idx),
-  ]);
-  const canvas = composeTextExport(oldC, newC, idx, total);
-  canvas.toBlob(b=>{
-    downloadBlob(b, "textdiff_p"+(idx+1)+".png");
-    $("textStatus").textContent = "テキスト差分を表示中";
-  });
-});
-
-$("dlTextPdf").addEventListener("click", async()=>{
-  if(state.ui.topMode!=="text" || !state.textReview.highlights) return;
-  const total = textController.totalPages();
-  let pdf=null;
-  for(let i=0;i<total;i++){
-    $("textStatus").innerHTML = '<span class="busy">PDF生成中…（'+(i+1)+"/"+total+"）</span>";
-    const [oldC, newC] = await Promise.all([
-      textController.renderOffscreen("old", i),
-      textController.renderOffscreen("new", i),
-    ]);
-    const canvas = composeTextExport(oldC, newC, i, total);
-    const img = canvas.toDataURL("image/png");
-    const w = canvas.width, h = canvas.height;
-    const scale=state.comparison.dpi/72, wPt=w/scale, hPt=h/scale; // Canvasはdpi/72倍のpx。ページ実寸(pt)に戻して渡す
-    const orient = w>h ? "l":"p";
-    if(i===0){ pdf=new jsPDF({orientation:orient,unit:"pt",format:[wPt,hPt],compress:true}); }
-    else { pdf.addPage([wPt,hPt],orient); }
-    pdf.addImage(img,"PNG",0,0,wPt,hPt);
-  }
-  pdf.save("textdiff.pdf");
-  $("textStatus").textContent = "PDFを保存しました";
+// 出力処理は画面Canvasを作業領域にせず、開始時snapshotとoffscreen rendererだけを使う。
+createExportController({
+  state,
+  dom: {
+    out,
+    oldTextCanvas: $("oldTextCanvas"),
+    newTextCanvas: $("newTextCanvas"),
+    status: $("status"),
+    textStatus: $("textStatus"),
+    dlPng: $("dlPng"),
+    dlPdf: $("dlPdf"),
+    dlTextPng: $("dlTextPng"),
+    dlTextPdf: $("dlTextPdf"),
+  },
+  renderVisualOffscreen: ({ renderSnapshot }) => (
+    renderDiffPage(renderSnapshot, visualRenderDependencies)
+  ),
+  renderTextOffscreen: ({ side, pageIndex, snapshot }) => (
+    textRenderer.renderOffscreen({ side, pageIndex, snapshot })
+  ),
+  pdfExporter: createPdfExporter({ jsPDF }),
+  download: downloadBlob,
+  textColors: TEXT_HI_COLORS,
+  errorReporter: {
+    report(error, message, target) {
+      console.error(message, error);
+      target.textContent = message;
+    },
+  },
 });
