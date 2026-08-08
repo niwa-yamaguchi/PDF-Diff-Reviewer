@@ -121,6 +121,7 @@ export function createDocumentController({
       setDrop(dom.dropNew, staged.new.fileName);
     }
     invalidateDocuments(state, { advanceGeneration: false });
+    closeReadyActions(state, dom);
     if (state.documents.oldDoc && state.documents.newDoc) {
       prepareSequences(state, dom);
       onReady();

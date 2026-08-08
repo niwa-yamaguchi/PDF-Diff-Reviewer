@@ -254,6 +254,54 @@ test("publishes only the complete replacement pair when both existing sides relo
   expect(onReady).toHaveBeenCalledOnce();
 });
 
+test("closes stale visual outputs again when a render finishes before atomic commit", async () => {
+  const state = createAppState();
+  const oldDoc0 = { numPages: 1, id: "old-0" };
+  const newDoc0 = { numPages: 1, id: "new-0" };
+  const oldDoc1 = { numPages: 2, id: "old-1" };
+  const newDoc1 = { numPages: 2, id: "new-1" };
+  state.documents.oldDoc = oldDoc0;
+  state.documents.newDoc = newDoc0;
+  state.documents.oldSequence = [0];
+  state.documents.newSequence = [0];
+  state.documents.pages = 1;
+  state.visual.rendered = true;
+  const dom = createDom();
+  dom.run.disabled = false;
+  dom.runText.disabled = false;
+  const oldParse = deferred();
+  const pdf = {
+    getDocument: vi.fn()
+      .mockReturnValueOnce({ promise: oldParse.promise })
+      .mockReturnValueOnce({ promise: Promise.resolve(newDoc1) }),
+  };
+  const { controller } = createHarness({ state, dom, pdf });
+  const oldFile = { name: "old-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(1)) };
+  const newFile = { name: "new-1.pdf", arrayBuffer: vi.fn(async () => new ArrayBuffer(2)) };
+
+  const oldLoad = controller.load("old", oldFile);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(1));
+  const newLoad = controller.load("new", newFile);
+  await vi.waitFor(() => expect(pdf.getDocument).toHaveBeenCalledTimes(2));
+  await Promise.resolve();
+
+  state.visual.rendered = true;
+  dom.dlPng.disabled = false;
+  dom.dlPdf.disabled = false;
+
+  oldParse.resolve(oldDoc1);
+  expect(await oldLoad).toBe(true);
+  expect(await newLoad).toBe(true);
+
+  expect(state.documents.oldDoc).toBe(oldDoc1);
+  expect(state.documents.newDoc).toBe(newDoc1);
+  expect(state.visual.rendered).toBe(false);
+  expect(dom.dlPng.disabled).toBe(true);
+  expect(dom.dlPdf.disabled).toBe(true);
+  expect(dom.run.disabled).toBe(false);
+  expect(dom.runText.disabled).toBe(false);
+});
+
 test("restores the stable pair and ready state after a single current failure", async () => {
   const state = createAppState();
   const oldDoc0 = { numPages: 1, id: "old-0" };
