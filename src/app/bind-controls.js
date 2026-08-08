@@ -1,3 +1,5 @@
+const activeBindings = new WeakMap();
+
 export function bindControls({
   document,
   window,
@@ -9,9 +11,20 @@ export function bindControls({
   textRenderer,
   exportController,
 }) {
-  const listen = (target, type, handler, options) => (
-    target.addEventListener(type, handler, options)
-  );
+  activeBindings.get(document)?.();
+
+  const removals = [];
+  const listen = (target, type, handler, options) => {
+    target.addEventListener(type, handler, options);
+    removals.push(() => target.removeEventListener(type, handler, options));
+  };
+  let active = true;
+  const unbind = () => {
+    if (!active) return;
+    active = false;
+    for (const remove of removals.reverse()) remove();
+    if (activeBindings.get(document) === unbind) activeBindings.delete(document);
+  };
 
   listen(document, "keydown", event => appController.handleKeyDown(event));
   listen(document, "keyup", event => appController.handleKeyUp(event));
@@ -113,4 +126,7 @@ export function bindControls({
   listen(dom.dlPdf, "click", () => exportController.saveVisualPdf());
   listen(dom.dlTextPng, "click", () => exportController.saveTextPng());
   listen(dom.dlTextPdf, "click", () => exportController.saveTextPdf());
+
+  activeBindings.set(document, unbind);
+  return unbind;
 }

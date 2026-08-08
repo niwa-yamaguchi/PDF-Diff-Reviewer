@@ -16,12 +16,28 @@ const ids = [
 ];
 
 function element(id) {
+  const listeners = new Map();
   return {
     id,
     value: "0",
     dataset: {},
     style: {},
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    listeners,
+    addEventListener(type, handler, options) {
+      const values = listeners.get(type) || [];
+      values.push({ handler, options });
+      listeners.set(type, values);
+    },
+    removeEventListener(type, handler, options) {
+      const values = listeners.get(type) || [];
+      listeners.set(type, values.filter(value => (
+        value.handler !== handler || value.options !== options
+      )));
+    },
+    emit(type, event = {}) {
+      for (const { handler } of listeners.get(type) || []) handler(event);
+    },
   };
 }
 
@@ -30,7 +46,7 @@ function fakeDocument() {
   const canvasWrap = element("canvasWrap");
   const oldTextWrap = element("oldTextWrap");
   const newTextWrap = element("newTextWrap");
-  return {
+  const document = Object.assign(element("document"), {
     getElementById: id => elements.get(id) || null,
     querySelector(selector) {
       return new Map([
@@ -40,15 +56,14 @@ function fakeDocument() {
       ]).get(selector) || null;
     },
     querySelectorAll: selector => [{ ...element(selector), dataset: {} }],
-  };
+  });
+  document.eventTargets = [document, canvasWrap, oldTextWrap, newTextWrap, ...elements.values()];
+  return document;
 }
 
-test("createApp is the sole composition root and binds once after safe construction", () => {
-  const calls = [];
+function fakeDependencies(overrides = {}) {
   const controller = name => Object.freeze({ name });
-  const bindControls = vi.fn(() => calls.push("bind"));
-  const dependencies = {
-    bindControls,
+  return {
     createTextRenderer: vi.fn(() => controller("textRenderer")),
     createViewerController: vi.fn(({ onTransform }) => {
       expect(() => onTransform()).not.toThrow();
@@ -80,7 +95,14 @@ test("createApp is the sole composition root and binds once after safe construct
     invalidateDocuments: vi.fn(), invalidateDpi: vi.fn(), invalidateManualAlignment: vi.fn(),
     invalidatePageAlignment: vi.fn(), invalidateThreshold: vi.fn(), invalidateTolerance: vi.fn(),
     applyInvalidatingChange: vi.fn(() => true),
+    ...overrides,
   };
+}
+
+test("createApp is the sole composition root and binds once after safe construction", () => {
+  const calls = [];
+  const bindControls = vi.fn(() => calls.push("bind"));
+  const dependencies = fakeDependencies({ bindControls });
   const window = {
     confirm: vi.fn(() => true),
     console: { error: vi.fn() },
@@ -96,4 +118,37 @@ test("createApp is the sole composition root and binds once after safe construct
   expect(app.exportController.name).toBe("export");
   expect(bindControls).toHaveBeenCalledTimes(1);
   expect(calls).toEqual(["bind"]);
+});
+
+test("repeated createApp replaces the previous document event owners", () => {
+  const document = fakeDocument();
+  const window = Object.assign(element("window"), {
+    confirm: vi.fn(() => true),
+    console: { error: vi.fn(), log: vi.fn() },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  });
+  const previousViewer = { handleResize: vi.fn() };
+  const latestViewer = { handleResize: vi.fn() };
+  const previousTextRenderer = { handleResize: vi.fn() };
+  const latestTextRenderer = { handleResize: vi.fn() };
+  const viewers = [previousViewer, latestViewer];
+  const textRenderers = [previousTextRenderer, latestTextRenderer];
+  const dependencies = fakeDependencies({
+    createViewerController: vi.fn(() => viewers.shift()),
+    createTextRenderer: vi.fn(() => textRenderers.shift()),
+  });
+
+  createApp({ document, window, dependencies });
+  createApp({ document, window, dependencies });
+  window.emit("resize");
+
+  expect(previousViewer.handleResize).not.toHaveBeenCalled();
+  expect(previousTextRenderer.handleResize).not.toHaveBeenCalled();
+  expect(latestViewer.handleResize).toHaveBeenCalledTimes(1);
+  expect(latestTextRenderer.handleResize).toHaveBeenCalledTimes(1);
+  for (const eventTarget of [window, ...document.eventTargets]) {
+    for (const registrations of eventTarget.listeners.values()) {
+      expect(registrations).toHaveLength(1);
+    }
+  }
 });

@@ -29,6 +29,17 @@ production変更前に次のREDを確認した。
 
 初回E2Eで全操作が起動前に止まった。Viteのbrowser stackから`bind-controls.js:44`を特定し、HTMLの実IDが`zoom1`/`textZoom1`なのにbinderとunit harnessが`zoomOne`/`textZoomOne`を使っていたことを根因と確認した。先にunit harnessを実DOM名へ変更してREDを再現し、binderを修正してGREENを確認した。
 
+### Review fix round 1: repeated composition
+
+レビューで、同一`document`へ`createApp`を反復実行すると旧appのlistenerが残り、イベント所有者が二重になることを確認した。production変更前に`tests/unit/bind-controls.test.js`と`tests/integration/create-app.test.js`へbehavior testを追加し、focused実行で2件ともREDになった。
+
+- binder test: document、window、Canvas、通常button、collection buttonを含む各target/typeの登録数が期待1件に対して2件だった。
+- composition test: 2回目の`createApp`後の`window.resize`が最新viewer/text rendererだけでなく旧viewer/text rendererにも1回届いた。
+
+根因は`bindControls`が`addEventListener`だけを行い、同じ`document`が既に所有するbindingの解放・置換を管理していなかったことにある。
+
+最小修正としてbinder内部に`document`単位のactive binding registryを追加した。各listenerの`target`、`type`、`handler`、`options`を閉包で保持し、次のbind前に全件を`removeEventListener`してから最新ownerを登録する。cleanupは冪等で、registry自身が指すbindingだけを削除する。focused再実行は2 files / 4 tests GREENとなり、旧owner 0回、最新owner 1回、全target/type 1登録、既存single constructionを確認した。
+
 ## Composition and dependency proof
 
 - `src/main.js`は4 CSS import、`createApp` import、`createApp({ document, window })`の1回呼出だけ。
@@ -73,17 +84,18 @@ production変更前に次のREDを確認した。
 
 ## Automated verification
 
-Fresh final results before report:
+Latest fresh results, including review fix round 1:
 
-- `npm.cmd run test`: 30 files / 183 tests passed。
+- `npm.cmd run test`: 30 files / 185 tests passed。
 - `npm.cmd run build`: 228 modules transformed、static copy 185 items、postbuild artifact validator passed。
 - build既知warning: pdf.jsのdirect `eval`、500kB超chunkのみ。
-- Chromium: 9/9 cases `ok`。その後の既知runner-exit hangだけで150秒timeout。
+- Chromium: review fix後の再実行で9/9 cases `ok`、exit 0（17.7秒）。
 - WebKit: 9/9 cases `ok`（`--update-snapshots`）。その後の既知runner-exit hangだけで150秒timeout。
 - WebKit empty-state baseline `empty-state-webkit-win32.png`を生成した。
 - Firefox headless: app suite以前にblank `data:text/html,ok` launch smokeが30秒timeout。`RenderCompositorSWGL failed mapping default framebuffer`を再現した。
 - Firefox headless切り分け: default、`MOZ_WEBRENDER=0`、webrender/software user prefs無効化、headless width/height明示のすべてで同じblank launch failure。アプリへ到達しない環境/browser launch問題と判定した。
 - Firefox headful代替（root実施）: blank smoke成功、workers=1の全9 caseが9/9 `ok`、exit 0（24.9秒）。Firefox empty-state baseline `empty-state-firefox-win32.png`を生成した。
+- review fix round 1は標準DOMの`addEventListener`/`removeEventListener`契約内でbinding ownershipだけを変更し、browser別分岐は追加していない。WebKit/FirefoxはTask 14の上記既存9/9証拠を維持し、代表browserのChromium全9件を再実行した。
 
 ## Build artifact and static inspection
 
