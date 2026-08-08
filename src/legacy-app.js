@@ -127,7 +127,10 @@ const documentController = createDocumentController({
     },
   },
   onReady: () => boxEditorController.syncInvalidated(),
-  onLoadAccepted: ({ documentGeneration }) => textController.invalidateDocuments(documentGeneration),
+  onLoadAccepted: ({ documentGeneration }) => {
+    textController.invalidateDocuments(documentGeneration);
+    exportController.invalidateDocuments(documentGeneration);
+  },
   confirmDiscard: () => boxEditorController.confirmDiscard(),
 });
 const visualRenderDependencies = Object.freeze({
@@ -591,7 +594,7 @@ $("prev").addEventListener("click",()=>visualController.showPage(state.documents
 $("next").addEventListener("click",()=>visualController.showPage(state.documents.currentPage+1));
 
 // 出力処理は画面Canvasを作業領域にせず、開始時snapshotとoffscreen rendererだけを使う。
-createExportController({
+const exportController = createExportController({
   state,
   dom: {
     out,

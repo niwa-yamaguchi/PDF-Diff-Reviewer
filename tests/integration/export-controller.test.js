@@ -221,6 +221,51 @@ describe("visual export snapshots", () => {
     expect(snapshots[0]).toBe(snapshots[1]);
   });
 
+  test("exposes every snapshot Map as read-only without leaking its mutable backing Map", async () => {
+    const { state, dependencies, controller } = harness();
+    const seen = [];
+    dependencies.renderVisualOffscreen.mockImplementation(async ({ snapshot, pageIndex }) => {
+      const maps = [
+        snapshot.comparison.quadrantManual,
+        snapshot.visual.pageCache,
+        snapshot.visual.alignmentCache,
+        snapshot.visual.quadrantCache,
+        snapshot.boxEditor.autoByPage,
+        snapshot.boxEditor.editsByPage,
+        snapshot.boxEditor.revisionByPage,
+        snapshot.highlights.old,
+        snapshot.highlights.new,
+      ];
+      for (const map of maps) {
+        expect(Object.isFrozen(map)).toBe(true);
+        expect(map.set).toBeUndefined();
+        expect(map.delete).toBeUndefined();
+        expect(map.clear).toBeUndefined();
+        expect(() => map.set("sentinel", [])).toThrow(TypeError);
+        expect(() => map.delete(0)).toThrow(TypeError);
+        expect(() => map.clear()).toThrow(TypeError);
+        expect([...map]).toEqual([...map.entries()]);
+        expect([...map.keys()].length).toBe(map.size);
+        expect([...map.values()].length).toBe(map.size);
+        const iterated = [];
+        map.forEach((value, key, owner) => iterated.push([key, value, owner]));
+        expect(iterated.every(entry => entry[2] === map)).toBe(true);
+      }
+      const pair = snapshot.boxEditor.autoByPage.entries().next().value;
+      pair[0] = 99;
+      expect(snapshot.boxEditor.autoByPage.has(0)).toBe(true);
+      expect(Object.isFrozen(snapshot.boxEditor.autoByPage.get(0))).toBe(true);
+      seen.push(maps);
+      return { canvas: canvas(100, 200), boxes: [] };
+    });
+
+    await controller.saveVisualPdf();
+
+    expect(seen).toHaveLength(2);
+    expect(state.boxEditor.autoByPage.has(0)).toBe(true);
+    expect(state.boxEditor.autoByPage.has(99)).toBe(false);
+  });
+
   test("manual page boxes override renderer boxes locally and boxes-off removes box overlay and legend", async () => {
     const { state, dependencies, controller } = harness();
     const composed = [];
@@ -368,6 +413,60 @@ describe("export error and overlap ownership", () => {
     expect(dom.dlPng.disabled).toBe(false);
     expect(dom.dlPdf.disabled).toBe(false);
     expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
+  });
+
+  test("document invalidation abandons a pending export UI lease while preserving later load failure status", async () => {
+    const pending = deferred();
+    const { dom, controller } = harness({
+      pdfExporter: { saveVisual: vi.fn(() => pending.promise), saveText: vi.fn() },
+    });
+
+    const saving = controller.saveVisualPdf();
+    expect(dom.dlPng.disabled).toBe(true);
+    expect(dom.status.classList.contains("busy")).toBe(true);
+
+    expect(controller.invalidateDocuments(10)).toBe(true);
+    expect(dom.status.textContent).toBe("PDF生成中…");
+    expect(dom.status.classList.contains("busy")).toBe(false);
+    expect(dom.dlPng.disabled).toBe(false);
+    expect(dom.dlPdf.disabled).toBe(false);
+    dom.status.textContent = "PDFの読み込みに失敗しました";
+
+    pending.resolve();
+    await saving;
+    expect(dom.status.textContent).toBe("PDFの読み込みに失敗しました");
+    expect(dom.status.classList.contains("busy")).toBe(false);
+    expect(dom.dlPng.disabled).toBe(false);
+    expect(dom.dlPdf.disabled).toBe(false);
+  });
+
+  test("document-owned disabled state survives old export completion and overlapping export tokens", async () => {
+    const first = deferred();
+    const second = deferred();
+    let call = 0;
+    const { dom, controller } = harness({
+      pdfExporter: {
+        saveVisual: vi.fn(() => (++call === 1 ? first.promise : second.promise)),
+        saveText: vi.fn(),
+      },
+    });
+
+    const older = controller.saveVisualPdf();
+    const newer = controller.saveVisualPdf();
+    expect(controller.invalidateDocuments(10)).toBe(true);
+    dom.status.textContent = "準備完了 — 「差分を表示」を押してください";
+    dom.dlPng.disabled = true;
+    dom.dlPdf.disabled = true;
+
+    second.resolve();
+    await newer;
+    first.resolve();
+    await older;
+
+    expect(dom.status.textContent).toBe("準備完了 — 「差分を表示」を押してください");
+    expect(dom.dlPng.disabled).toBe(true);
+    expect(dom.dlPdf.disabled).toBe(true);
+    expect(controller.invalidateDocuments(9)).toBe(false);
   });
 
   test.each([

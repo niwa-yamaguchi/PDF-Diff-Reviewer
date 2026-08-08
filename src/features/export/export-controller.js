@@ -19,7 +19,21 @@ function cloneValue(value) {
 }
 
 function cloneMap(map, clone = cloneValue) {
-  return Object.freeze(new Map([...map].map(([key, value]) => [key, clone(value)])));
+  const backing = new Map([...map].map(([key, value]) => [key, clone(value)]));
+  let readonly;
+  readonly = {
+    get size() { return backing.size; },
+    get: key => backing.get(key),
+    has: key => backing.has(key),
+    entries: () => backing.entries(),
+    keys: () => backing.keys(),
+    values: () => backing.values(),
+    forEach(callback, thisArg) {
+      backing.forEach((value, key) => callback.call(thisArg, value, key, readonly));
+    },
+    [Symbol.iterator]: () => backing[Symbol.iterator](),
+  };
+  return Object.freeze(readonly);
 }
 
 function cloneHighlights(highlights) {
@@ -221,6 +235,31 @@ export function createExportController({
     });
   }
 
+  function abandon(session) {
+    if (active[session.channel] !== session) return false;
+    active[session.channel] = null;
+    if (session.prior.busy) session.ui.status.classList?.add?.("busy");
+    else session.ui.status.classList?.remove?.("busy");
+    session.ui.buttons.forEach((button, index) => {
+      button.disabled = session.prior.disabled[index];
+    });
+    return true;
+  }
+
+  function invalidateDocuments(documentGeneration = state.documents.generation) {
+    let invalidated = false;
+    for (const channel of ["visual", "text"]) {
+      const session = active[channel];
+      if (
+        session
+        && session.snapshot.documents.generation < documentGeneration
+      ) {
+        invalidated = abandon(session) || invalidated;
+      }
+    }
+    return invalidated;
+  }
+
   async function saveVisualPng() {
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PNG生成中…");
@@ -343,5 +382,11 @@ export function createExportController({
   dom.dlTextPng?.addEventListener?.("click", saveTextPng);
   dom.dlTextPdf?.addEventListener?.("click", saveTextPdf);
 
-  return { saveVisualPng, saveVisualPdf, saveTextPng, saveTextPdf };
+  return {
+    saveVisualPng,
+    saveVisualPdf,
+    saveTextPng,
+    saveTextPdf,
+    invalidateDocuments,
+  };
 }

@@ -76,4 +76,30 @@ static grepではexport modulesにon-screen `showPage`、画面Canvas寸法書�
 ## Concerns
 
 - Playwright runnerのprocess-exit hangとbuild warningはTask 13以前から継続している。
-- `Object.freeze(Map)`自体はMapの`set`を禁止しないが、export側は複製Mapを渡し、実visual rendererはさらにlocal Mapへ複製してから計算し、text rendererは読取りだけを行う。state所有Mapはexport経路へ渡していない。
+
+## Review fix round 1
+
+### RED and root causes
+
+レビュー指摘2件をexport/document integrationで再現し、focusedは `48 tests / 4 failed` だった。
+
+1. export開始時の一時disabled状態をdocument controllerがready snapshotへ先に保存していた。accepted-load callbackでexportを破棄しても、invalid PDF failureがその一時状態を復元し、旧exportはdocument generation mismatchでcleanupを行わないため、busy classとdisabled buttonが残り得た。
+2. `Object.freeze(new Map(...))`はMap objectへのproperty追加を防ぐだけで、`set/delete/clear`は実行できた。renderer callbackがexport snapshotを書き換えると後続ページ入力が変化し得た。
+
+追加REDは、invalid load failure statusを旧export完了後も維持しながらbusy/buttonをpriorへ戻す経路、successful loadのdocument-owned disabled維持、overlap token、全snapshot Mapのmutator非公開・読取API・backing非漏洩を固定した。
+
+### Minimal fixes
+
+- export controllerへ`invalidateDocuments(documentGeneration)`を追加した。
+- active visual/text sessionのcaptured generationが通知世代より古い場合だけ、そのsessionのUI leaseをabandonする。status文字列には触れず、exportが所有したbusy classとbutton disabledだけをpriorへ戻す。
+- overlap時はactiveな最新sessionだけが最初のprior UI leaseを持つため、1回だけ復元する。旧async completionはactive token mismatchでUIを変更しない。
+- document controllerの順序を、generation増分、accepted callback、ready snapshot capture、ready action closeへ変更した。callbackのfirst-await前契約とatomic batch semanticsは維持した。
+- legacy accepted callbackからtext controllerとexport controllerの両方へ同じdocument generationを通知する。
+- snapshot Mapは内部Mapをclosureに隠したfrozen read-only iterable facadeへ変更した。`size/get/has/entries/keys/values/forEach/Symbol.iterator`だけを公開し、`set/delete/clear`は存在しない。値は従来どおりdeep clone/freezeされ、`new Map(readonlyFacade)`との互換も維持した。
+
+### Verification
+
+- focused export + document + text: `3 files / 48 tests passed`
+- full Vitest: `25 files / 168 tests passed`
+- E2E: 9 casesすべて`ok`。新export caseを含めた後、既知process-exit hangだけで120秒timeout。全case `ok`後は再実行していない。
+- E2E `debug.log`: DNSHosts warning 4行を確認後、削除済み。

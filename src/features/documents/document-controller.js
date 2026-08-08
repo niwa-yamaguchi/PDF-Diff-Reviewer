@@ -138,10 +138,10 @@ export function createDocumentController({
       resolveStaged(false);
       clearBatch();
     }
-    if (readySnapshot == null) readySnapshot = captureReadyState(state, dom);
     state.documents.generation += 1;
     const generation = state.documents.generation;
     onLoadAccepted({ side, documentGeneration: generation });
+    if (readySnapshot == null) readySnapshot = captureReadyState(state, dom);
     pendingGeneration[side] = generation;
     resolveStage(staged[side], false);
     staged[side] = null;

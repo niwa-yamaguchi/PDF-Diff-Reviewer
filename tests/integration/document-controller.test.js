@@ -134,6 +134,49 @@ test("notifies an accepted document generation before reading and never notifies
   expect(cancelled.state.documents.generation).toBe(0);
 });
 
+test("captures ready controls after accepted-load listeners release temporary export ownership", async () => {
+  const state = createAppState();
+  state.documents.oldDoc = { numPages: 1 };
+  state.documents.newDoc = { numPages: 1 };
+  state.visual.rendered = true;
+  const dom = createDom();
+  dom.run.disabled = false;
+  dom.runText.disabled = false;
+  dom.dlPng.disabled = true;
+  dom.dlPdf.disabled = true;
+  dom.dlTextPng.disabled = true;
+  dom.dlTextPdf.disabled = true;
+  const parseError = new Error("invalid PDF");
+  const errorReporter = {
+    report: vi.fn((_error, message) => { dom.status.textContent = message; }),
+  };
+  const onLoadAccepted = vi.fn(() => {
+    dom.dlPng.disabled = false;
+    dom.dlPdf.disabled = false;
+    dom.dlTextPng.disabled = false;
+    dom.dlTextPdf.disabled = false;
+  });
+  const { controller } = createHarness({
+    state,
+    dom,
+    errorReporter,
+    onLoadAccepted,
+    pdf: { getDocument: vi.fn(() => ({ promise: Promise.reject(parseError) })) },
+  });
+
+  expect(await controller.load("old", {
+    name: "invalid.pdf",
+    arrayBuffer: vi.fn(async () => new ArrayBuffer(1)),
+  })).toBe(false);
+
+  expect(onLoadAccepted).toHaveBeenCalledWith({ side: "old", documentGeneration: 1 });
+  expect(dom.status.textContent).toBe("PDFの読み込みに失敗しました");
+  expect(dom.dlPng.disabled).toBe(false);
+  expect(dom.dlPdf.disabled).toBe(false);
+  expect(dom.dlTextPng.disabled).toBe(false);
+  expect(dom.dlTextPdf.disabled).toBe(false);
+});
+
 test("commits only the newest result from overlapping accepted loads", async () => {
   const firstParse = deferred();
   const firstDoc = { numPages: 1, id: "first" };
