@@ -2,6 +2,7 @@ function clearBoxes(state) {
   state.boxEditor.autoByPage.clear();
   state.boxEditor.editsByPage.clear();
   state.boxEditor.undoByPage.clear();
+  state.boxEditor.revisionByPage.clear();
   state.boxEditor.currentBoxes = null;
 }
 

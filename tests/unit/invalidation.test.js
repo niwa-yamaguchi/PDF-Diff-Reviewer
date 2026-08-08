@@ -22,6 +22,7 @@ function populatedState() {
   state.boxEditor.autoByPage.set(0, [{ x: 0, y: 0, w: 1, h: 1 }]);
   state.boxEditor.editsByPage.set(0, [{ x: 1, y: 1, w: 1, h: 1 }]);
   state.boxEditor.undoByPage.set(0, [[]]);
+  state.boxEditor.revisionByPage.set(0, 4);
   state.boxEditor.currentBoxes = [{ x: 1, y: 1, w: 1, h: 1 }];
   state.textReview.scale = 2;
   state.textReview.extraction = { old: [], new: [] };
@@ -45,6 +46,7 @@ function expectBoxesCleared(state) {
   expect(state.boxEditor.autoByPage.size).toBe(0);
   expect(state.boxEditor.editsByPage.size).toBe(0);
   expect(state.boxEditor.undoByPage.size).toBe(0);
+  expect(state.boxEditor.revisionByPage.size).toBe(0);
   expect(state.boxEditor.currentBoxes).toBeNull();
 }
 
@@ -144,6 +146,7 @@ test("cancelled invalidating change keeps the setting and every cache untouched"
   expect(state.visual.alignmentCache.size).toBe(1);
   expect(state.visual.quadrantCache.size).toBe(1);
   expect(state.boxEditor.editsByPage.size).toBe(1);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(4);
   expect(state.visual.renderGeneration).toBe(0);
 });
 

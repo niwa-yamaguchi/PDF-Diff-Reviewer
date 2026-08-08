@@ -51,10 +51,22 @@ test("reverse create normalizes and clamps the committed box, then undo restores
     { x: 80, y: 70, w: 20, h: 30 },
   ]);
   expect(state.boxEditor.selectedIndex).toBe(1);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
   controller.undo();
   expect(state.boxEditor.editsByPage.get(0)).toEqual([{ x: 1, y: 1, w: 5, h: 5 }]);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(2);
   state.boxEditor.currentBoxes[0].x = 88;
   expect(state.boxEditor.autoByPage.get(0)[0].x).toBe(1);
+});
+
+test("applies the screen minimum before clamping an outside create like the legacy editor", () => {
+  const { state, controller } = harness();
+
+  drag(controller, { x: 120, y: 10 }, { x: 140, y: 30 });
+
+  expect(state.boxEditor.editsByPage.get(0)).toEqual([{ x: 120, y: 10, w: 0, h: 20 }]);
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
 });
 
 test("selects the topmost box and a click without movement adds no undo snapshot", () => {
@@ -69,6 +81,7 @@ test("selects the topmost box and a click without movement adds no undo snapshot
   expect(state.boxEditor.selectedIndex).toBe(1);
   expect(state.boxEditor.editsByPage.size).toBe(0);
   expect(state.boxEditor.undoByPage.size).toBe(0);
+  expect(state.boxEditor.revisionByPage.size).toBe(0);
 });
 
 test("moves a box without changing its size and clamps it inside the frame", () => {
@@ -78,6 +91,7 @@ test("moves a box without changing its size and clamps it inside the frame", () 
 
   expect(state.boxEditor.editsByPage.get(0)).toEqual([{ x: 70, y: 80, w: 30, h: 20 }]);
   expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
 });
 
 describe.each([
@@ -97,6 +111,7 @@ describe.each([
     drag(controller, from, to);
 
     expect(state.boxEditor.editsByPage.get(0)).toEqual([expected]);
+    expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
   });
 });
 
@@ -106,12 +121,14 @@ test("too-small create and resize plus right-click do not materialize edits or h
   created.controller.pointerDown({ x: 10, y: 10, pointerId: 2, button: 2, preventDefault() {} });
   expect(created.state.boxEditor.editsByPage.size).toBe(0);
   expect(created.state.boxEditor.undoByPage.size).toBe(0);
+  expect(created.state.boxEditor.revisionByPage.size).toBe(0);
 
   const resized = harness({ boxes: [{ x: 20, y: 20, w: 40, h: 40 }], scale: 1 });
   resized.state.boxEditor.selectedIndex = 0;
   drag(resized.controller, { x: 60, y: 40 }, { x: 22, y: 40 });
   expect(resized.state.boxEditor.editsByPage.size).toBe(0);
   expect(resized.state.boxEditor.currentBoxes).toEqual([{ x: 20, y: 20, w: 40, h: 40 }]);
+  expect(resized.state.boxEditor.revisionByPage.size).toBe(0);
 });
 
 test("ignores movement, pointerup, and cancellation from another pointer", () => {
@@ -127,6 +144,7 @@ test("ignores movement, pointerup, and cancellation from another pointer", () =>
   controller.pointerMove({ x: 50, y: 50, pointerId: 7 });
   controller.pointerUp({ x: 50, y: 50, pointerId: 7 });
   expect(state.boxEditor.editsByPage.get(0)).toEqual([{ x: 10, y: 10, w: 40, h: 40 }]);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
 });
 
 test("does not commit a create or target operation after the page changes", () => {
@@ -136,6 +154,7 @@ test("does not commit a create or target operation after the page changes", () =
   created.state.documents.currentPage = 1;
   created.controller.pointerUp({ x: 50, y: 50, pointerId: 1 });
   expect(created.state.boxEditor.editsByPage.size).toBe(0);
+  expect(created.state.boxEditor.revisionByPage.size).toBe(0);
 
   const moved = harness({ boxes: [{ x: 10, y: 10, w: 20, h: 20 }] });
   moved.controller.pointerDown({ x: 15, y: 15, pointerId: 2, button: 0, preventDefault() {} });
@@ -143,6 +162,7 @@ test("does not commit a create or target operation after the page changes", () =
   moved.state.documents.currentPage = 1;
   moved.controller.pointerUp({ x: 40, y: 40, pointerId: 2 });
   expect(moved.state.boxEditor.editsByPage.size).toBe(0);
+  expect(moved.state.boxEditor.revisionByPage.size).toBe(0);
 });
 
 test("delete, undo, reset-to-auto, and page histories remain page-local", () => {
@@ -150,16 +170,20 @@ test("delete, undo, reset-to-auto, and page histories remain page-local", () => 
   state.boxEditor.selectedIndex = 0;
   controller.deleteSelected();
   expect(state.boxEditor.editsByPage.get(0)).toEqual([]);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
   controller.undo();
   expect(state.boxEditor.editsByPage.get(0)).toEqual([{ x: 10, y: 10, w: 20, h: 20 }]);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(2);
 
   state.documents.currentPage = 1;
   state.boxEditor.currentBoxes = [];
   state.boxEditor.autoByPage.set(1, []);
   drag(controller, { x: 40, y: 40 }, { x: 60, y: 60 }, 2);
   expect(state.boxEditor.undoByPage.get(1).size).toBe(1);
+  expect(state.boxEditor.revisionByPage.get(1)).toBe(1);
   controller.undo();
   expect(state.boxEditor.editsByPage.get(1)).toEqual([]);
+  expect(state.boxEditor.revisionByPage.get(1)).toBe(2);
   expect(state.boxEditor.editsByPage.get(0)).toEqual([{ x: 10, y: 10, w: 20, h: 20 }]);
 
   state.documents.currentPage = 0;
@@ -168,6 +192,7 @@ test("delete, undo, reset-to-auto, and page histories remain page-local", () => 
   expect(state.boxEditor.editsByPage.has(0)).toBe(false);
   expect(state.boxEditor.undoByPage.has(0)).toBe(false);
   expect(state.boxEditor.currentBoxes).toBe(state.boxEditor.autoByPage.get(0));
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(3);
 });
 
 test("discard confirmation and clear edits preserve cancellation and clear all derived editor state", () => {
@@ -184,4 +209,5 @@ test("discard confirmation and clear edits preserve cancellation and clear all d
   expect(state.boxEditor.undoByPage.size).toBe(0);
   expect(state.boxEditor.selectedIndex).toBe(-1);
   expect(state.boxEditor.drag).toBeNull();
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
 });

@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
+import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 import { renderDiffPage } from "../../src/features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "../../src/features/visual-diff/toggle-renderer.js";
 
@@ -110,6 +111,76 @@ function controllerToggleCache(state, sideCanvases) {
     sideCanvases,
   };
 }
+
+function attachBoxEditor(state, dom) {
+  state.visual.rendered = true;
+  state.boxEditor.editMode = true;
+  state.boxEditor.currentBoxes = [];
+  state.boxEditor.autoByPage.set(0, []);
+  const view = {
+    toImagePoint: point => ({ x: point.x, y: point.y }),
+    getScale: () => 1,
+    getFrameSize: () => ({ width: 100, height: 100 }),
+    capturePointer: vi.fn(),
+    releasePointer: vi.fn(),
+    refresh() {
+      const boxes = state.boxEditor.currentBoxes || [];
+      const edited = state.boxEditor.editsByPage.has(state.documents.currentPage);
+      dom.statBox.textContent = `変更箇所 ${boxes.length}${edited ? "（手編集）" : ""}`;
+    },
+  };
+  const controller = createBoxEditorController({
+    state,
+    dom: {},
+    view,
+    confirmDiscard: () => true,
+  });
+  dom.cancelBoxDrag = event => controller.cancelDrag(event);
+  return controller;
+}
+
+test("cancels a drag started during rendering immediately before committing the current result", async () => {
+  const pending = deferred();
+  const renderDiffPage = vi.fn(() => pending.promise);
+  const { state, dom, controller: visualController } = harness({ renderDiffPage });
+  const boxController = attachBoxEditor(state, dom);
+
+  const rendering = visualController.showPage(0);
+  boxController.pointerDown({ x: 10, y: 10, pointerId: 7, button: 0, preventDefault() {} });
+  boxController.pointerMove({ x: 40, y: 40, pointerId: 7 });
+  expect(state.boxEditor.drag).not.toBeNull();
+  pending.resolve(result(0));
+
+  expect(await rendering).toEqual({ committed: true });
+  expect(state.boxEditor.drag).toBeNull();
+  boxController.pointerUp({ x: 40, y: 40, pointerId: 7 });
+  expect(state.boxEditor.editsByPage.size).toBe(0);
+  expect(state.boxEditor.undoByPage.size).toBe(0);
+});
+
+test("discards a pending visual result after a manual box commit on that page", async () => {
+  const pending = deferred();
+  const renderDiffPage = vi.fn(() => pending.promise);
+  const { state, dom, context, controller: visualController } = harness({ renderDiffPage });
+  const boxController = attachBoxEditor(state, dom);
+
+  const rendering = visualController.showPage(0);
+  boxController.pointerDown({ x: 10, y: 10, pointerId: 8, button: 0, preventDefault() {} });
+  boxController.pointerMove({ x: 40, y: 40, pointerId: 8 });
+  boxController.pointerUp({ x: 40, y: 40, pointerId: 8 });
+  const editedBoxes = state.boxEditor.editsByPage.get(0);
+  expect(editedBoxes).toEqual([{ x: 10, y: 10, w: 30, h: 30 }]);
+  expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
+  expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
+  pending.resolve(result(0));
+
+  expect(await rendering).toEqual({ committed: false });
+  expect(context.drawImage).not.toHaveBeenCalled();
+  expect(state.boxEditor.editsByPage.get(0)).toBe(editedBoxes);
+  expect(state.boxEditor.currentBoxes).toBe(editedBoxes);
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
+});
 
 test("commits only the latest page when an older render finishes last", async () => {
   const page0 = deferred();

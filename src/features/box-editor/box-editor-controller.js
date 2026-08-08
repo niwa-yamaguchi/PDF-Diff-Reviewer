@@ -54,6 +54,11 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     historyFor(pageIndex).push(boxes);
   }
 
+  function bumpRevision(pageIndex) {
+    const current = state.boxEditor.revisionByPage.get(pageIndex) || 0;
+    state.boxEditor.revisionByPage.set(pageIndex, current + 1);
+  }
+
   function materializeEdits(pageIndex = state.documents.currentPage) {
     if (!state.boxEditor.editsByPage.has(pageIndex)) {
       const source = pageIndex === state.documents.currentPage
@@ -192,11 +197,12 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     const { width, height } = frameSize();
 
     if (drag.kind === "create") {
-      const box = clampBox(normalizeRect(drag.x0, drag.y0, drag.x1, drag.y1), width, height);
-      if (!isTooSmall(box)) {
+      const draggedBox = normalizeRect(drag.x0, drag.y0, drag.x1, drag.y1);
+      if (!isTooSmall(draggedBox)) {
         pushUndo(page, state.boxEditor.currentBoxes || []);
         const edits = materializeEdits(page);
-        edits.push(box);
+        edits.push(clampBox(draggedBox, width, height));
+        bumpRevision(page);
         state.boxEditor.selectedIndex = edits.length - 1;
       }
     } else {
@@ -210,6 +216,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
         if (changed && !(drag.kind === "resize" && isTooSmall(next))) {
           pushUndo(page, boxes);
           materializeEdits(page)[drag.i] = { ...next };
+          bumpRevision(page);
         }
       }
     }
@@ -258,6 +265,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     if (!snapshot) return false;
     state.boxEditor.editsByPage.set(page, cloneBoxes(snapshot));
     state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(page);
+    bumpRevision(page);
     state.boxEditor.selectedIndex = -1;
     refresh();
     return true;
@@ -271,6 +279,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     const page = state.documents.currentPage;
     pushUndo(page, boxes);
     materializeEdits(page).splice(index, 1);
+    bumpRevision(page);
     state.boxEditor.selectedIndex = -1;
     refresh();
     return true;
@@ -282,6 +291,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     if (!state.boxEditor.editsByPage.has(page)) return false;
     state.boxEditor.editsByPage.delete(page);
     state.boxEditor.undoByPage.delete(page);
+    bumpRevision(page);
     state.boxEditor.selectedIndex = -1;
     if (state.boxEditor.autoByPage.has(page)) {
       state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(page);
@@ -294,6 +304,8 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
 
   function clearEdits() {
     cancelDrag();
+    const editedPages = [...state.boxEditor.editsByPage.keys()];
+    for (const page of editedPages) bumpRevision(page);
     state.boxEditor.editsByPage.clear();
     state.boxEditor.undoByPage.clear();
     state.boxEditor.selectedIndex = -1;

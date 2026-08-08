@@ -48,6 +48,7 @@ function createSnapshot(
     boxEditor: Object.freeze({
       showBoxes: state.boxEditor.showBoxes,
       manualBoxes: frozenBoxes(manualBoxes),
+      revision: state.boxEditor.revisionByPage.get(pageIndex) || 0,
     }),
   });
 }
@@ -71,6 +72,7 @@ export function createVisualController({
   function isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide) {
     return ticket.id === state.visual.renderGeneration
       && ticket.documentGeneration === state.documents.generation
+      && snapshot.boxEditor.revision === (state.boxEditor.revisionByPage.get(snapshot.pageIndex) || 0)
       && (!updateCurrentPage || snapshot.mode === state.visual.mode)
       && (
         !updateCurrentPage
@@ -174,6 +176,7 @@ export function createVisualController({
       finishInteractive(ticket);
       return { committed: false };
     }
+    dom.cancelBoxDrag?.();
     commitResult(result, snapshot, updateCurrentPage, commitToggleSide);
     finishInteractive(ticket);
     return { committed: true };
