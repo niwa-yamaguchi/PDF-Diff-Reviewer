@@ -130,6 +130,7 @@ const documentController = createDocumentController({
     },
   },
   onReady: () => boxEditorController.syncInvalidated(),
+  onLoadAccepted: ({ documentGeneration }) => textController.invalidateDocuments(documentGeneration),
   confirmDiscard: () => boxEditorController.confirmDiscard(),
 });
 const visualRenderDependencies = Object.freeze({

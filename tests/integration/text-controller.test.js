@@ -370,6 +370,58 @@ describe("text page render controller", () => {
     expect(dom.dlTextPdf.disabled).toBe(true);
   });
 
+  test("explicit document invalidation clears a restoration candidate after its run already returned", async () => {
+    const pending = deferred();
+    const renderPage = vi.fn(() => pending.promise);
+    const { state, dom, controller } = makeHarness({
+      extract: vi.fn().mockResolvedValue(lines("candidate")),
+      renderPage,
+    });
+    state.textReview.extraction = { old: [lines("prior")], new: [lines("prior")] };
+    state.textReview.highlights = { old: new Map(), new: new Map() };
+
+    const running = controller.run({ force: true });
+    await vi.waitFor(() => expect(renderPage).toHaveBeenCalledTimes(2));
+    await controller.setTopMode("visual");
+    pending.resolve(canvas(70, 80));
+    expect(await running).toBe(false);
+    expect(dom.textStatus.classList.contains("busy")).toBe(true);
+
+    state.documents.generation += 1;
+    dom.textStatus.textContent = "new documents ready";
+    dom.dlTextPng.disabled = true;
+    dom.dlTextPdf.disabled = true;
+    expect(controller.invalidateDocuments(state.documents.generation)).toBe(true);
+
+    expect(dom.textStatus.textContent).toBe("new documents ready");
+    expect(dom.textStatus.classList.contains("busy")).toBe(false);
+    expect(dom.dlTextPng.disabled).toBe(true);
+    expect(dom.dlTextPdf.disabled).toBe(true);
+    state.textReview.highlights = null;
+    const calls = renderPage.mock.calls.length;
+    await controller.setTopMode("text");
+    expect(renderPage).toHaveBeenCalledTimes(calls);
+  });
+
+  test("an older document notification cannot abandon a newer text session", async () => {
+    const extraction = deferred();
+    const { state, dom, controller } = makeHarness({ extract: vi.fn(() => extraction.promise) });
+    state.documents.generation = 8;
+    const newer = controller.run({ force: true });
+    const status = dom.textStatus.textContent;
+
+    expect(controller.invalidateDocuments(7)).toBe(false);
+    expect(dom.textStatus.classList.contains("busy")).toBe(true);
+    expect(dom.textStatus.textContent).toBe(status);
+
+    state.documents.generation = 9;
+    state.textReview.extractGeneration += 1;
+    expect(controller.invalidateDocuments(9)).toBe(true);
+    extraction.resolve(lines("stale"));
+    expect(await newer).toBe(false);
+    expect(dom.textStatus.classList.contains("busy")).toBe(false);
+  });
+
   test("shares one ticket across both panes and discards a late older page atomically", async () => {
     const page0Old = deferred();
     const page0New = deferred();

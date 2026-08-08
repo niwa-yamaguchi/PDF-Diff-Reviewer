@@ -69,6 +69,7 @@ export function createDocumentController({
   pdf,
   errorReporter,
   onReady,
+  onLoadAccepted = () => {},
   confirmDiscard = () => true,
 }) {
   const pendingGeneration = { old: null, new: null };
@@ -140,6 +141,7 @@ export function createDocumentController({
     if (readySnapshot == null) readySnapshot = captureReadyState(state, dom);
     state.documents.generation += 1;
     const generation = state.documents.generation;
+    onLoadAccepted({ side, documentGeneration: generation });
     pendingGeneration[side] = generation;
     resolveStage(staged[side], false);
     staged[side] = null;

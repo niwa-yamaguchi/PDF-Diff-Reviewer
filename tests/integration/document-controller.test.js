@@ -31,15 +31,17 @@ function createHarness(overrides = {}) {
   const dom = overrides.dom ?? createDom();
   const errorReporter = overrides.errorReporter ?? { report: vi.fn() };
   const onReady = overrides.onReady ?? vi.fn();
+  const onLoadAccepted = overrides.onLoadAccepted ?? vi.fn();
   const controller = createDocumentController({
     state,
     dom,
     pdf: overrides.pdf,
     errorReporter,
     onReady,
+    onLoadAccepted,
     confirmDiscard: overrides.confirmDiscard,
   });
-  return { state, dom, errorReporter, onReady, controller };
+  return { state, dom, errorReporter, onReady, onLoadAccepted, controller };
 }
 
 function deferred() {
@@ -101,6 +103,35 @@ test("rejecting discard leaves the file state DOM and caches untouched", async (
   expect(dom.dropOld.classList.add).not.toHaveBeenCalled();
   expect(errorReporter.report).not.toHaveBeenCalled();
   expect(onReady).not.toHaveBeenCalled();
+});
+
+test("notifies an accepted document generation before reading and never notifies a cancelled load", async () => {
+  const buffer = deferred();
+  const file = { name: "accepted.pdf", arrayBuffer: vi.fn(() => buffer.promise) };
+  const pdf = { getDocument: vi.fn(() => ({ promise: Promise.resolve({ numPages: 1 }) })) };
+  const onLoadAccepted = vi.fn();
+  const accepted = createHarness({ pdf, onLoadAccepted });
+
+  const loading = accepted.controller.load("old", file);
+
+  expect(accepted.state.documents.generation).toBe(1);
+  expect(onLoadAccepted).toHaveBeenCalledOnce();
+  expect(onLoadAccepted).toHaveBeenCalledWith({ side: "old", documentGeneration: 1 });
+  expect(file.arrayBuffer).toHaveBeenCalledOnce();
+  expect(pdf.getDocument).not.toHaveBeenCalled();
+  buffer.resolve(new ArrayBuffer(4));
+  expect(await loading).toBe(true);
+  expect(onLoadAccepted).toHaveBeenCalledOnce();
+
+  const cancelledNotification = vi.fn();
+  const cancelled = createHarness({
+    pdf,
+    onLoadAccepted: cancelledNotification,
+    confirmDiscard: () => false,
+  });
+  expect(await cancelled.controller.load("new", { name: "cancelled.pdf", arrayBuffer: vi.fn() })).toBe(false);
+  expect(cancelledNotification).not.toHaveBeenCalled();
+  expect(cancelled.state.documents.generation).toBe(0);
 });
 
 test("commits only the newest result from overlapping accepted loads", async () => {

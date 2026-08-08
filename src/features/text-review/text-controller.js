@@ -380,6 +380,14 @@ export function createTextController({
     return renderer.renderOffscreen({ side, pageIndex, snapshot });
   }
 
+  function invalidateDocuments(documentGeneration = state.documents.generation) {
+    const session = pendingSession;
+    if (!session) return false;
+    if (session.extractionTicket.documentGeneration >= documentGeneration) return false;
+    abandonSession(session);
+    return true;
+  }
+
   dom.runText?.addEventListener?.("click", () => run());
   dom.textPrev?.addEventListener?.("click", () => {
     if (state.ui.topMode === "text") {
@@ -402,6 +410,7 @@ export function createTextController({
     setTopMode,
     cancelRender,
     renderOffscreen,
+    invalidateDocuments,
     totalPages: () => totalPages({ old: state.documents.oldDoc, new: state.documents.newDoc }),
   };
 }
