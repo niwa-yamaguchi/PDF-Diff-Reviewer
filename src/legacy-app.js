@@ -3,7 +3,6 @@ import { jsPDF } from "jspdf";
 import { createCanvas, createWhiteCanvas } from "./platform/canvas.js";
 import { downloadBlob } from "./platform/download.js";
 import { pdfjsLib } from "./platform/pdfjs.js";
-import { clampBox, normalizeRect as normRect } from "./core/geometry/rectangles.js";
 import { assembleFromLeaves, reconstructLinesInItemOrder } from "./core/text-diff/tokens.js";
 import { xyCut } from "./core/text-diff/xy-cut.js";
 import { buildTextHighlights } from "./core/text-diff/highlights.js";
@@ -41,12 +40,16 @@ import {
   renderDiffPage,
 } from "./features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "./features/visual-diff/toggle-renderer.js";
+import { createBoxEditorController } from "./features/box-editor/box-editor-controller.js";
+import { createBoxEditorView } from "./features/box-editor/box-editor-view.js";
 
 const state = createAppState();
 
 const $ = id => document.getElementById(id);
 const out = $("out"), octx = out.getContext("2d");
-const boxLayer = $("boxLayer"), bctx = boxLayer.getContext("2d");
+const boxLayer = $("boxLayer");
+let boxEditorController;
+let boxEditorView;
 const documentController = createDocumentController({
   state,
   dom: {
@@ -68,8 +71,8 @@ const documentController = createDocumentController({
       $("status").textContent = message;
     },
   },
-  onReady: syncInvalidatedBoxEditor,
-  confirmDiscard: confirmDiscardBoxEdits,
+  onReady: () => boxEditorController.syncInvalidated(),
+  confirmDiscard: () => boxEditorController.confirmDiscard(),
 });
 const visualRenderDependencies = Object.freeze({
   sequenceIndex,
@@ -97,12 +100,12 @@ const visualController = createVisualController({
     boxToggle: $("boxToggle"),
     sideOld: $("sideOld"),
     sideNew: $("sideNew"),
-    cancelBoxDrag,
+    cancelBoxDrag: () => boxEditorController.cancelDrag(),
     afterCommit() {
       updateAlignButtons();
       updateAlignReadout();
       updateManualAlignReadout();
-      setBoxEditUI();
+      boxEditorView.updateControls();
     },
     reportError(error) {
       console.error("レンダリングに失敗しました", error);
@@ -111,7 +114,7 @@ const visualController = createVisualController({
   },
   renderDiffPage: snapshot => renderDiffPage(snapshot, visualRenderDependencies),
   renderTogglePage: snapshot => renderTogglePage(snapshot, visualRenderDependencies),
-  drawBoxes: drawBoxLayer,
+  drawBoxes: () => boxEditorView.redraw(),
 });
 
 
@@ -139,272 +142,6 @@ function drawBoxesTo(ctx, boxes, lw){
 // 書き出し用の線幅。現行 drawBoxes と同じ式（DPIに比例）。
 const exportBoxLineWidth = () => Math.max(2, Math.round(3 * state.comparison.dpi / BOX_BASE_DPI));
 
-let boxDrag = null; // ドラッグ中の枠操作。{kind:"create"|"move"|"resize", ...} か null
-// マウスを押したままキー操作（取り消し/削除/モード終了）が割り込むと state.boxEditor.selectedIndex が
-// -1 や別indexへ変わり得る。endBoxDrag 側で state.boxEditor.selectedIndex の妥当性を見て確定するのではなく、
-// 割り込みが起きた時点でドラッグそのものを破棄する（原因側で止める）。
-function cancelBoxDrag(){
-  if(!boxDrag) return;
-  boxDrag = null;
-  drawBoxLayer(); // プレビューが残らないよう消す
-}
-const HANDLE = 5; // リサイズハンドルの半径（画面px固定。拡大率に依らず掴みやすさを一定にする）
-// 8ハンドルの伸縮方向。handlePoints の並びと1対1で対応させること。
-const HANDLE_DIRS = [[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0]];
-const HANDLE_CURSORS = ["nwse-resize","ns-resize","nesw-resize","ew-resize","nwse-resize","ns-resize","nesw-resize","ew-resize"];
-// 8ハンドルの中心（画面座標）。左上から時計回り。
-function handlePoints(x,y,w,h){
-  return [[x,y],[x+w/2,y],[x+w,y],[x+w,y+h/2],[x+w,y+h],[x+w/2,y+h],[x,y+h],[x,y+h/2]];
-}
-// ポインタイベント→フレーム座標（out のピクセル座標）
-function toFrame(e){
-  const r = wrap.getBoundingClientRect();
-  const view = viewerController.getView();
-  return {x:(e.clientX-r.left-view.tx)/view.scale, y:(e.clientY-r.top-view.ty)/view.scale};
-}
-// 手前(リスト後方)から探して最初に当たった枠のindex。無ければ -1。
-function hitBox(p){
-  const bs = state.boxEditor.currentBoxes || [];
-  for(let i=bs.length-1;i>=0;i--){
-    const b = bs[i];
-    if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h) return i;
-  }
-  return -1;
-}
-// 選択枠のハンドルに当たっていればそのindex、外れていれば -1。判定は画面px基準。
-function hitHandle(p){
-  if(state.boxEditor.selectedIndex<0 || !state.boxEditor.currentBoxes || state.boxEditor.selectedIndex>=state.boxEditor.currentBoxes.length) return -1;
-  const b = state.boxEditor.currentBoxes[state.boxEditor.selectedIndex], s = viewerController.getView().scale;
-  const pts = handlePoints(b.x, b.y, b.w, b.h);
-  const r = HANDLE/s; // 画面px半径をフレーム座標へ換算
-  for(let i=0;i<pts.length;i++){
-    if(Math.abs(p.x-pts[i][0])<=r && Math.abs(p.y-pts[i][1])<=r) return i;
-  }
-  return -1;
-}
-// 反転ドラッグ（右下→左上）を正の w/h へ正規化する
-
-// 画面解像度のオーバーレイへ枠を描く。CSS transform は掛けず view 変換を自前で適用するため、
-// 枠線は画面px固定になり拡大しても太らない。out の実データには一切触れない。
-function drawBoxLayer(){
-  const W = wrap.clientWidth, H = wrap.clientHeight;
-  if(boxLayer.width !== W || boxLayer.height !== H){ boxLayer.width = W; boxLayer.height = H; }
-  bctx.clearRect(0,0,W,H);
-  if(!state.visual.rendered || out.style.display === "none") return;
-  if(!state.boxEditor.showBoxes) return;
-  const hasBoxes = state.boxEditor.currentBoxes && state.boxEditor.currentBoxes.length;
-  if(!hasBoxes && !boxDrag) return;
-  const view = viewerController.getView(), s = view.scale;
-  bctx.save();
-  bctx.fillStyle = BOX_FILL;
-  bctx.strokeStyle = BOX_COLOR;
-  bctx.lineWidth = 2;
-  // プレビューはドラッグ対象（boxDrag.i/page）に紐づける。選択（state.boxEditor.selectedIndex）とは別物 —
-  // 非同期の再描画等で選択が変わってもドラッグ中のプレビュー位置がずれないようにするため。
-  const prev = (boxDrag && boxDrag.preview && boxDrag.page===state.documents.currentPage) ? boxDrag.preview : null;
-  const boxes = state.boxEditor.currentBoxes || [];
-  for(let i=0;i<boxes.length;i++){
-    const b = (prev && i===boxDrag.i) ? prev : boxes[i];
-    const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
-    bctx.fillRect(x, y, w, h);
-    bctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
-  }
-  if(state.boxEditor.editMode && state.boxEditor.selectedIndex>=0 && state.boxEditor.selectedIndex<boxes.length){
-    const b = (prev && boxDrag.i===state.boxEditor.selectedIndex) ? prev : boxes[state.boxEditor.selectedIndex];
-    const x = view.tx + b.x*s, y = view.ty + b.y*s, w = b.w*s, h = b.h*s;
-    bctx.setLineDash([5,4]);
-    bctx.strokeStyle = "#fff"; bctx.lineWidth = 1;
-    bctx.strokeRect(x, y, w, h);
-    bctx.setLineDash([]);
-    for(const [hx,hy] of handlePoints(x,y,w,h)){
-      bctx.fillStyle = "#fff"; bctx.fillRect(hx-HANDLE, hy-HANDLE, HANDLE*2, HANDLE*2);
-      bctx.strokeStyle = BOX_COLOR; bctx.strokeRect(hx-HANDLE, hy-HANDLE, HANDLE*2, HANDLE*2);
-    }
-  }
-  if(boxDrag && boxDrag.kind==="create"){
-    const r = normRect(boxDrag.x0, boxDrag.y0, boxDrag.x1, boxDrag.y1);
-    bctx.setLineDash([4,3]);
-    bctx.strokeStyle = BOX_COLOR; bctx.lineWidth = 2;
-    bctx.strokeRect(view.tx + r.x*s, view.ty + r.y*s, r.w*s, r.h*s);
-    bctx.setLineDash([]);
-  }
-  bctx.restore();
-}
-
-// 変更箇所の件数表示。新旧切替モードで枠OFFのときだけ従来どおり「—」を出す。
-function updateBoxStat(){
-  if(state.visual.mode==="toggle" && !state.boxEditor.showBoxes){ $("statBox").textContent = "変更箇所 —"; return; }
-  const n = state.boxEditor.currentBoxes ? state.boxEditor.currentBoxes.length : 0;
-  const edited = state.boxEditor.editsByPage.has(state.documents.currentPage);
-  $("statBox").textContent = "変更箇所 " + n.toLocaleString() + (edited ? "（手編集）" : "");
-}
-
-// 枠のON/OFF切替。Canvasへ焼かないためレイヤの描き直しだけで済む。
-// 新旧切替モードで枠OFFのまま構築されたページだけは枠が未算出なので、ONにするとき再構築する。
-function toggleBoxes(){
-  if(!state.visual.rendered) return;
-  state.boxEditor.showBoxes = !state.boxEditor.showBoxes;
-  $("boxToggle").classList.toggle("active", state.boxEditor.showBoxes);
-  if(!state.boxEditor.showBoxes && state.boxEditor.editMode) setBoxEditMode(false);
-  if(state.boxEditor.showBoxes && !state.boxEditor.editsByPage.has(state.documents.currentPage) && !state.boxEditor.autoByPage.has(state.documents.currentPage)){
-    visualController.showPage(state.documents.currentPage);   // 未算出のページのみ通常経路で算出させる
-    return;
-  }
-  if(!state.boxEditor.editsByPage.has(state.documents.currentPage) && state.boxEditor.autoByPage.has(state.documents.currentPage)){
-    state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(state.documents.currentPage);
-  }
-  updateBoxStat();
-  drawBoxLayer();
-}
-
-// 無効化関数が枠キャッシュを捨てた後、選択状態と画面表示を同期する。
-// （直後に再描画しない経路でも、古い枠・古い「（手編集）」表示を残さない。）
-function syncInvalidatedBoxEditor(){
-  state.boxEditor.selectedIndex = -1;
-  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
-}
-// 手編集した枠は差分の前提（DPI・しきい値・位置合わせ等）が変わると意味を失うため、
-// 前提を変える操作の直前に確認して破棄する。
-// 破棄を了承しなければ false を返し、呼び出し側は操作自体を中止すること。
-function confirmDiscardBoxEdits(){
-  return state.boxEditor.editsByPage.size === 0 ||
-    confirm("手編集した変更枠があります。この操作で破棄されます。よろしいですか？");
-}
-
-function applyComparisonSettingChange(update, invalidate){
-  const applied = applyInvalidatingChange(state, {
-    confirmDiscard: confirmDiscardBoxEdits,
-    update,
-    invalidate,
-  });
-  if(applied) syncInvalidatedBoxEditor();
-  return applied;
-}
-
-// 枠編集モードのボタン状態・カーソル・補助ボタンの出し入れ
-function setBoxEditUI(){
-  const on = state.boxEditor.editMode;
-  $("boxEdit").disabled = !state.visual.rendered;
-  $("boxEdit").classList.toggle("active", on);
-  wrap.classList.toggle("boxedit", on);
-  $("boxDel").style.display = on ? "" : "none";
-  $("boxReset").style.display = on ? "" : "none";
-  $("boxDel").disabled = state.boxEditor.selectedIndex < 0;
-  $("boxReset").disabled = !state.boxEditor.editsByPage.has(state.documents.currentPage);
-}
-// 枠が見えないと編集できないため、ONにするとき強調がOFFなら自動でONにする。
-function setBoxEditMode(on){
-  if(on && !state.visual.rendered) return;
-  state.boxEditor.editMode = on;
-  // ONで入るときは進行中のドラッグは存在し得ないので、OFF時だけキャンセルすれば足りる。
-  if(!on){ cancelBoxDrag(); wrap.style.cursor = ""; }
-  state.boxEditor.selectedIndex = -1;
-  if(on && !state.boxEditor.showBoxes){ toggleBoxes(); }
-  setBoxEditUI();
-  drawBoxLayer();
-}
-
-// 手編集リストを確定させる。初回は自動算出の枠を複製して materialize する。
-// 以後 state.boxEditor.currentBoxes は editsByPage.get(cur) と同一の配列を指す。
-function ensureBoxEdits(){
-  const i = state.documents.currentPage;
-  if(!state.boxEditor.editsByPage.has(i)){
-    state.boxEditor.editsByPage.set(i, (state.boxEditor.currentBoxes||[]).map(b=>({...b})));
-  }
-  state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(i);
-  return state.boxEditor.currentBoxes;
-}
-// 変更の直前に呼ぶ。現在の枠リストの複製を取り消しスタックへ積む（深さ50）。
-function pushBoxUndo(){
-  const i = state.documents.currentPage;
-  if(!state.boxEditor.undoByPage.has(i)) state.boxEditor.undoByPage.set(i, []);
-  const st = state.boxEditor.undoByPage.get(i);
-  st.push((state.boxEditor.editsByPage.get(i) || state.boxEditor.currentBoxes || []).map(b=>({...b})));
-  if(st.length>50) st.shift();
-}
-// 直前の編集を取り消す。取り消しで自動算出と同じ内容へ戻っても boxEdits は残る
-// （＝「手編集」表示のまま）。完全に自動へ戻したいときは「自動検出に戻す」を使う。
-function undoBoxEdit(){
-  cancelBoxDrag(); // ドラッグ中に取り消しが割り込んだ場合、そのドラッグは無かったことにする
-  const i = state.documents.currentPage, st = state.boxEditor.undoByPage.get(i);
-  if(!st || !st.length) return;
-  state.boxEditor.editsByPage.set(i, st.pop());
-  state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(i);
-  state.boxEditor.selectedIndex = -1;
-  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
-}
-// 選択中の枠を削除する
-function deleteSelectedBox(){
-  cancelBoxDrag(); // ドラッグ中に削除が割り込んだ場合、そのドラッグは無かったことにする
-  if(state.boxEditor.selectedIndex<0) return;
-  pushBoxUndo();
-  const list = ensureBoxEdits();
-  list.splice(state.boxEditor.selectedIndex,1);
-  state.boxEditor.selectedIndex = -1;
-  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
-}
-
-// 新規作成・move/resize確定の最小サイズは画面px基準（フレームpx固定だと拡大表示時に
-// 画面上は十分な大きさのドラッグでも「小さすぎ」判定で捨てられてしまうため）。
-// フレーム座標の幅・高さに view.scale を掛けて画面pxへ直してから比較する。
-const MIN_DRAG_SCREEN_PX = 4; // これ未満のドラッグ距離はクリック扱いで捨てる（画面px）。
-function isDragTooSmall(w, h){ return w*viewerController.getView().scale < MIN_DRAG_SCREEN_PX || h*viewerController.getView().scale < MIN_DRAG_SCREEN_PX; }
-
-// 編集モード中の押下。ハンドル→枠→背景の順に判定する。
-function boxEditPointerDown(e){
-  if(e.button===2) return; // 右クリック（コンテキストメニュー用）は枠編集の対象にしない
-  e.preventDefault();
-  wrap.setPointerCapture(e.pointerId);
-  const p = toFrame(e);
-  const hs = hitHandle(p);
-  if(hs>=0){
-    boxDrag = {kind:"resize", h:hs, i:state.boxEditor.selectedIndex, page:state.documents.currentPage, orig:{...state.boxEditor.currentBoxes[state.boxEditor.selectedIndex]}, preview:null};
-    drawBoxLayer();
-    return;
-  }
-  const hit = hitBox(p);
-  if(hit>=0){
-    state.boxEditor.selectedIndex = hit;
-    boxDrag = {kind:"move", i:hit, page:state.documents.currentPage, ox:p.x, oy:p.y, orig:{...state.boxEditor.currentBoxes[hit]}, preview:null};
-  } else {
-    state.boxEditor.selectedIndex = -1;
-    boxDrag = {kind:"create", x0:p.x, y0:p.y, x1:p.x, y1:p.y};
-  }
-  setBoxEditUI();
-  drawBoxLayer();
-}
-// ドラッグ確定。小さすぎる作成はクリック扱いで捨てる。
-// move/resize は「押した時点のあの枠」（d.i, d.page）に対する操作。確定時点の state.boxEditor.selectedIndex
-// （非同期の show() やボタン操作で書き換わり得る）は見ない — cancelBoxDrag() で止めきれない
-// 割り込み経路（DPI変更再描画中のドラッグ確定など）に対する二重の保険。
-function endBoxDrag(e){
-  if(!boxDrag) return;
-  const d = boxDrag; boxDrag = null;
-  try{ wrap.releasePointerCapture(e.pointerId); }catch(_){}
-  if(d.kind==="create"){
-    const r = normRect(d.x0, d.y0, d.x1, d.y1);
-    if(isDragTooSmall(r.w, r.h)){ drawBoxLayer(); return; }
-    pushBoxUndo();
-    const list = ensureBoxEdits();
-    list.push(clampBox(r, out.width, out.height));
-    state.boxEditor.selectedIndex = list.length-1;
-  }
-  if(d.kind==="move" || d.kind==="resize"){
-    // 対象ページが変わっている／対象indexがもう存在しないなら、このドラッグは確定させない。
-    if(d.page!==state.documents.currentPage || d.i<0 || !state.boxEditor.currentBoxes || d.i>=state.boxEditor.currentBoxes.length){ drawBoxLayer(); return; }
-    const nb = d.preview;
-    const changed = nb && (nb.x!==d.orig.x || nb.y!==d.orig.y || nb.w!==d.orig.w || nb.h!==d.orig.h);
-    // 動いていない（＝ただのクリック）なら取り消しスタックを汚さない。
-    // リサイズで潰れた場合も確定せず元のまま残す。
-    if(changed && !(d.kind==="resize" && isDragTooSmall(nb.w, nb.h))){
-      pushBoxUndo();
-      const list = ensureBoxEdits();
-      list[d.i] = nb;
-    }
-  }
-  updateBoxStat(); setBoxEditUI(); drawBoxLayer();
-}
-
 function flipSide(){
   visualController.flipToggleSide();
 }
@@ -415,7 +152,7 @@ function setModeUI(){
   $("toggleInd").style.display = state.visual.mode==="toggle" ? "flex" : "none";
   $("th").disabled = state.visual.mode==="toggle";
   $("boxToggle").disabled = !state.visual.rendered;
-  setBoxEditUI();
+  boxEditorView.updateControls();
 }
 
 function updateAlignButtons(){
@@ -499,43 +236,59 @@ const viewerController = createViewerController({
     zoomOne: $("zoom1"),
     hasImage,
     isSpaceHeld: () => spaceHeld,
-    onBoxPointerDown: boxEditPointerDown,
+    onBoxPointerDown: event => boxEditorController.pointerDown(event),
   },
   window,
-  onTransform: drawBoxLayer,
+  onTransform: () => boxEditorView.redraw(),
 });
-// 枠編集モードのドラッグ（作成/移動/リサイズ）。パン用ハンドラとは boxDrag/panning のフラグで排他になる。
-wrap.addEventListener("pointermove", e=>{
-  if(!boxDrag) return;
-  const p = toFrame(e);
-  if(boxDrag.kind==="create"){
-    boxDrag.x1=p.x; boxDrag.y1=p.y;
-  } else if(boxDrag.kind==="move"){
-    // 移動はサイズを変えない。枠ごとフレーム内へ収まるよう平行移動量の方をクランプする。
-    const o = boxDrag.orig;
-    const maxX = Math.max(0, out.width - o.w), maxY = Math.max(0, out.height - o.h);
-    const nx = Math.min(Math.max(0, o.x + (p.x-boxDrag.ox)), maxX);
-    const ny = Math.min(Math.max(0, o.y + (p.y-boxDrag.oy)), maxY);
-    boxDrag.preview = {x:nx, y:ny, w:o.w, h:o.h};
-  } else if(boxDrag.kind==="resize"){
-    const [sx,sy] = HANDLE_DIRS[boxDrag.h];
-    let {x,y,w,h} = boxDrag.orig;
-    if(sx<0){ const r=x+w; x=p.x; w=r-x; } else if(sx>0){ w=p.x-x; }
-    if(sy<0){ const b=y+h; y=p.y; h=b-y; } else if(sy>0){ h=p.y-y; }
-    boxDrag.preview = clampBox(normRect(x, y, x+w, y+h), out.width, out.height);
-  }
-  drawBoxLayer();
+boxEditorView = createBoxEditorView({
+  state,
+  dom: {
+    canvas: boxLayer,
+    out,
+    wrap,
+    statBox: $("statBox"),
+    boxToggle: $("boxToggle"),
+    boxEdit: $("boxEdit"),
+    boxDelete: $("boxDel"),
+    boxReset: $("boxReset"),
+  },
+  getView: () => viewerController.getView(),
 });
-// ドラッグしていないときのカーソル表示（ハンドル＝リサイズ方向、枠内＝move）
-wrap.addEventListener("pointermove", e=>{
-  if(!state.boxEditor.editMode || boxDrag) return;
-  const p = toFrame(e);
-  const hs = hitHandle(p);
-  if(hs>=0){ wrap.style.cursor = HANDLE_CURSORS[hs]; return; }
-  wrap.style.cursor = hitBox(p)>=0 ? "move" : "";
+boxEditorController = createBoxEditorController({
+  state,
+  dom: {
+    onBoxesShown() {
+      const page = state.documents.currentPage;
+      if (!state.boxEditor.editsByPage.has(page) && !state.boxEditor.autoByPage.has(page)) {
+        visualController.showPage(page);
+      }
+    },
+    onAutoMissing() {
+      visualController.showPage(state.documents.currentPage);
+    },
+  },
+  view: boxEditorView,
+  confirmDiscard: () => confirm("手編集した変更枠があります。この操作で破棄されます。よろしいですか？"),
 });
-wrap.addEventListener("pointerup", endBoxDrag);
-wrap.addEventListener("pointercancel", endBoxDrag);
+
+const confirmDiscardBoxEdits = () => boxEditorController.confirmDiscard();
+const syncInvalidatedBoxEditor = () => boxEditorController.syncInvalidated();
+function applyComparisonSettingChange(update, invalidate){
+  const applied = applyInvalidatingChange(state, {
+    confirmDiscard: confirmDiscardBoxEdits,
+    update,
+    invalidate,
+  });
+  if(applied) syncInvalidatedBoxEditor();
+  return applied;
+}
+
+// 枠編集モードのドラッグは controller の pointerId/page gate を通す。
+wrap.addEventListener("pointermove", event => boxEditorController.pointerMove(event));
+wrap.addEventListener("pointermove", event => boxEditorController.updateCursor(event));
+wrap.addEventListener("pointerup", event => boxEditorController.pointerUp(event));
+wrap.addEventListener("pointercancel", event => boxEditorController.pointerCancel(event));
 
 // ── モード切替（差分 / 新旧切替） ──
 $("modeDiff").addEventListener("click", async ()=>{
@@ -550,22 +303,12 @@ $("modeToggle").addEventListener("click", async ()=>{
   if(state.documents.pages) await visualController.showPage(state.documents.currentPage);
 });
 $("toggleFlip").addEventListener("click", flipSide);
-$("boxToggle").addEventListener("click", toggleBoxes);
-$("boxEdit").addEventListener("click", ()=>setBoxEditMode(!state.boxEditor.editMode));
-$("boxDel").addEventListener("click", deleteSelectedBox);
+$("boxToggle").addEventListener("click", () => boxEditorController.toggleBoxes());
+$("boxEdit").addEventListener("click", () => boxEditorController.setEditMode(!state.boxEditor.editMode));
+$("boxDel").addEventListener("click", () => boxEditorController.deleteSelected());
 // このページの手編集を破棄して自動算出の原本へ戻す。原本があるため差分の再計算は要らない。
 $("boxReset").addEventListener("click", ()=>{
-  const i = state.documents.currentPage;
-  if(!state.boxEditor.editsByPage.has(i)) return;
-  state.boxEditor.editsByPage.delete(i);
-  state.boxEditor.undoByPage.delete(i);
-  state.boxEditor.selectedIndex = -1;
-  if(state.boxEditor.autoByPage.has(i)){
-    state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(i);
-    updateBoxStat(); setBoxEditUI(); drawBoxLayer();
-  } else {
-    visualController.showPage(state.documents.currentPage); // 原本が無い場合だけ算出し直す
-  }
+  boxEditorController.resetToAuto();
 });
 
 // 文字入力中の要素にフォーカスがある間はショートカットキーを奪わないためのガード。複数のkeydownリスナーで共用する。
@@ -602,26 +345,24 @@ document.addEventListener("keydown", e=>{
     if(e.ctrlKey||e.metaKey||e.altKey) return;
     if(!state.visual.rendered) return;
     e.preventDefault();
-    setBoxEditMode(!state.boxEditor.editMode);
+    boxEditorController.setEditMode(!state.boxEditor.editMode);
     return;
   }
   if(!state.boxEditor.editMode) return;
   if(e.key==="Escape"){
     e.preventDefault();
-    // 選択解除はここで直接 state.boxEditor.selectedIndex を変えるため、setBoxEditMode(false) を経由しない。
-    // ドラッグ中に割り込んだ場合はここでもキャンセルしないと endBoxDrag が旧selで確定してしまう。
-    if(state.boxEditor.selectedIndex>=0){ cancelBoxDrag(); state.boxEditor.selectedIndex=-1; setBoxEditUI(); drawBoxLayer(); }
-    else setBoxEditMode(false);
+    if(state.boxEditor.selectedIndex>=0) boxEditorController.clearSelection();
+    else boxEditorController.setEditMode(false);
     return;
   }
   if(e.key==="Delete" || e.key==="Backspace"){
     e.preventDefault();
-    deleteSelectedBox();
+    boxEditorController.deleteSelected();
     return;
   }
   if((e.ctrlKey||e.metaKey) && (e.key==="z"||e.key==="Z")){
     e.preventDefault();
-    undoBoxEdit();
+    boxEditorController.undo();
   }
 });
 
@@ -959,7 +700,7 @@ $("dlPdf").addEventListener("click",async()=>{
 // ── トップモード切替（図面比較 / テキスト比較） ──
 function applyTopMode(){
   const visual = state.ui.topMode==="visual";
-  if(!visual && state.boxEditor.editMode) setBoxEditMode(false);
+  if(!visual && state.boxEditor.editMode) boxEditorController.setEditMode(false);
   $("topVisual").classList.toggle("active", visual);
   $("topText").classList.toggle("active", !visual);
   $("visualCtrl").style.display = visual ? "flex" : "none";
@@ -971,7 +712,7 @@ function applyTopMode(){
     if(state.visual.rendered) out.style.display = "block"; // 描画済みならCanvas表示を復元
     // テキストモード中は .canvas-wrap が display:none で幅0のため、resizeイベントで
     // boxLayer が0×0に潰れている。visual復帰時にここで寸法を取り直して枠を出し直す。
-    drawBoxLayer();
+    boxEditorView.redraw();
   } else { out.style.display = "none"; } // hasImage() 誤判定・パン/ズームの誤発火を防ぐ
   if(!visual && state.textReview.highlights){
     // テキスト側は描画済みハイライトがあれば現在ページを再描画（往復時の表示復元）
