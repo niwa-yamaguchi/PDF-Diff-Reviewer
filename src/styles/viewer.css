@@ -1,0 +1,59 @@
+  section.view{position:relative;overflow:auto;background:var(--ink);
+    display:flex;flex-direction:column;min-width:0}
+  .canvas-wrap{
+    flex:1;overflow:hidden;position:relative;
+    background-image:
+      linear-gradient(var(--panel) 1px,transparent 1px),
+      linear-gradient(90deg,var(--panel) 1px,transparent 1px);
+    background-size:22px 22px;background-position:center;
+    cursor:grab;touch-action:none;
+  }
+  .canvas-wrap.panning{cursor:grabbing}
+  #out{
+    position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;
+    background:#fff;box-shadow:0 8px 40px rgba(0,0,0,.55);
+    image-rendering:crisp-edges;
+  }
+  #boxLayer{
+    position:absolute;left:0;top:0;pointer-events:none;
+  }
+  .canvas-wrap.boxedit{cursor:crosshair}
+  .placeholder{
+    position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;
+    text-align:center;font-family:var(--mono);color:var(--muted);
+    font-size:12px;line-height:1.9;letter-spacing:.04em;
+  }
+  .placeholder .mark{
+    font-size:30px;color:var(--line-bright);margin-bottom:10px;letter-spacing:.3em;
+  }
+  /* ── テキスト比較パネル（ページ上ハイライト方式） ── */
+  .text-panel{
+    flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;
+  }
+  #textStatus{margin-left:auto}
+  #textStatus.busy{color:var(--signal)}
+  .viewbar .text-legend{
+    display:flex;align-items:center;gap:14px;padding-left:14px;
+    border-left:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);
+  }
+  .viewbar .text-legend .k{display:flex;align-items:center;gap:6px}
+  #textView{flex:1;display:flex;overflow:hidden;min-height:0}
+  .text-pane{flex:1 1 50%;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
+  .text-pane:last-child{border-right:none}
+  .text-pane-label{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);
+  }
+  .text-canvas-wrap{
+    flex:1;overflow:hidden;position:relative;
+    background-image:
+      linear-gradient(var(--panel) 1px,transparent 1px),
+      linear-gradient(90deg,var(--panel) 1px,transparent 1px);
+    background-size:22px 22px;background-position:center;
+    cursor:grab;touch-action:none;
+  }
+  .text-canvas-wrap.panning{cursor:grabbing}
+  .text-canvas-wrap canvas{
+    position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;
+    background:#fff;box-shadow:0 8px 40px rgba(0,0,0,.55);image-rendering:crisp-edges;
+  }
