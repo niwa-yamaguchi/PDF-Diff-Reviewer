@@ -68,5 +68,5 @@ export function createWorkerLane({ createWorker }) {
     settleWithError(cancelledError());
   }
 
-  return { run, cancel, dispose: destroy };
+  return { run, cancel };
 }
