@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { afterAll, expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
@@ -691,6 +691,19 @@ test("invalidates alignment and clamps the page before refreshing reordered slot
   );
 });
 
+// Node には ImageData が無い。renderDiffPage は結果バッファを再確保せず
+// そのまま包むため、包み先の最小実装を用意する。
+class MemoryImageData {
+  constructor(data, width, height) {
+    this.data = data;
+    this.width = width;
+    this.height = height;
+  }
+}
+
+vi.stubGlobal("ImageData", MemoryImageData);
+afterAll(() => vi.unstubAllGlobals());
+
 class MemoryCanvas {
   constructor(width, height, pixels) {
     this.width = width;
@@ -709,10 +722,6 @@ class MemoryContext {
   constructor(canvas) {
     this.canvas = canvas;
     this.fillStyle = "#fff";
-  }
-
-  createImageData(width, height) {
-    return { width, height, data: new Uint8ClampedArray(width * height * 4) };
   }
 
   getImageData(x, y, width, height) {
@@ -852,6 +861,85 @@ test("renders the exact legacy common removed and added pixels offscreen", async
   ]);
   expect(rendered.cacheEntry).toEqual({ rm: 1, ad: 1, bx: rendered.boxes.length });
   expect(rendered.status).toBe("差分を表示中");
+});
+
+test("puts the computed buffer straight onto the canvas without a second full-size copy", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const compute = dependencies.computeDiff;
+  let computedImage = null;
+  dependencies.computeDiff = async (payload, options) => {
+    const computed = await compute(payload, options);
+    computedImage = computed.image;
+    return computed;
+  };
+  const placed = [];
+  dependencies.createCanvas = (width, height) => {
+    const canvas = new MemoryCanvas(width, height);
+    const put = canvas.context.putImageData.bind(canvas.context);
+    canvas.context.putImageData = (image, x, y) => {
+      placed.push(image);
+      put(image, x, y);
+    };
+    return canvas;
+  };
+
+  await renderDiffPage(rendererSnapshot(), dependencies);
+
+  expect(placed).toHaveLength(1);
+  expect(placed[0]).toBeInstanceOf(MemoryImageData);
+  expect(placed[0].data).toBe(computedImage);
+  expect([placed[0].width, placed[0].height]).toEqual([3, 1]);
+});
+
+test("skips the alignment phase report while automatic alignment is off", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const phases = [];
+
+  await renderDiffPage(rendererSnapshot(), dependencies, {
+    onProgress: value => phases.push(value.phase),
+  });
+
+  expect(phases).toContain("render");
+  expect(phases).not.toContain("align");
+  expect(phases).toContain("diff");
+});
+
+test("reports the alignment phase while automatic alignment is on", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const base = rendererSnapshot();
+  const snapshot = Object.freeze({
+    ...base,
+    comparison: Object.freeze({ ...base.comparison, autoAlign: true }),
+  });
+  const phases = [];
+
+  await renderDiffPage(snapshot, dependencies, {
+    onProgress: value => phases.push(value.phase),
+  });
+
+  expect(phases).toContain("align");
+});
+
+test("reports diff progress while the toggle mode computes its change boxes", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 60, 120]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([20, 80, 140]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const reports = [];
+
+  await renderTogglePage(rendererSnapshot(), dependencies, {
+    onProgress: value => reports.push(value),
+  });
+
+  const diffReports = reports.filter(value => value.phase === "diff");
+  expect(diffReports.length).toBeGreaterThan(0);
+  expect(diffReports.at(-1).ratio).toBe(1);
+  expect(reports.some(value => value.phase === "align")).toBe(false);
 });
 
 test("applies one shared downscale factor to both canvases before alignment", async () => {

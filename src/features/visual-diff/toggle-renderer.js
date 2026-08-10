@@ -49,7 +49,7 @@ export async function renderTogglePage(snapshot, dependencies, { onProgress = nu
   const boxes = snapshot.boxEditor.manualBoxes != null
     ? snapshot.boxEditor.manualBoxes.map(box => ({ ...box }))
     : snapshot.boxEditor.showBoxes
-      ? await computeChangeBoxesAligned(snapshot, prepared, dependencies)
+      ? await computeChangeBoxesAligned(snapshot, prepared, dependencies, { onProgress })
       : [];
   const autoBoxes = snapshot.boxEditor.manualBoxes == null && snapshot.boxEditor.showBoxes
     ? boxes

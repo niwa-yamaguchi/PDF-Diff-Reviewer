@@ -270,7 +270,7 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
     oldCanvas = renderedOld;
     newCanvas = dependencies.rotateCanvas90(renderedNew, quadrant);
   }
-  onProgress?.({ phase: "align" });
+  if (snapshot.comparison.autoAlign) onProgress?.({ phase: "align" });
   await ensureAlignment(snapshot, oldCanvas, newCanvas, alignmentCache, dependencies);
   const frame = workFrame(
     oldCanvas,
@@ -322,26 +322,51 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
   };
 }
 
-export async function computeChangeBoxesAligned(snapshot, prepared, dependencies) {
-  const { comparison } = snapshot;
+function diffRequest(comparison, prepared, { needsImage, needsBoxes }) {
   const oldData = prepared.oldImage?.data ?? null;
   const newData = prepared.alignedNewImage.data;
   const transfer = [newData.buffer];
   if (oldData) transfer.push(oldData.buffer);
-  const computed = await dependencies.computeDiff({
-    oldData,
-    oldWidth: prepared.oldWidth,
-    oldHeight: prepared.oldHeight,
-    newData,
-    width: prepared.width,
-    height: prepared.height,
-    threshold: comparison.threshold,
-    radius: toleranceRadiusPx(comparison),
-    block: blockSize(comparison),
-    minBlocks: BOX_MIN_BLOCKS,
-    needsImage: false,
-    needsBoxes: true,
-  }, { transfer });
+  return {
+    payload: {
+      oldData,
+      oldWidth: prepared.oldWidth,
+      oldHeight: prepared.oldHeight,
+      newData,
+      width: prepared.width,
+      height: prepared.height,
+      threshold: comparison.threshold,
+      radius: toleranceRadiusPx(comparison),
+      block: blockSize(comparison),
+      minBlocks: BOX_MIN_BLOCKS,
+      needsImage,
+      needsBoxes,
+    },
+    transfer,
+  };
+}
+
+function runDiff(snapshot, prepared, dependencies, flags, onProgress) {
+  const { payload, transfer } = diffRequest(snapshot.comparison, prepared, flags);
+  return dependencies.computeDiff(payload, {
+    transfer,
+    onProgress: onProgress ? ratio => onProgress({ phase: "diff", ratio }) : null,
+  });
+}
+
+export async function computeChangeBoxesAligned(
+  snapshot,
+  prepared,
+  dependencies,
+  { onProgress = null } = {},
+) {
+  const computed = await runDiff(
+    snapshot,
+    prepared,
+    dependencies,
+    { needsImage: false, needsBoxes: true },
+    onProgress,
+  );
   return computed.boxes;
 }
 
@@ -355,27 +380,18 @@ export async function renderDiffPage(snapshot, dependencies, { onProgress = null
   const canvas = dependencies.createCanvas(prepared.width, prepared.height);
   const context = canvas.getContext("2d");
   const needsBoxes = snapshot.boxEditor.manualBoxes == null;
-  const oldData = prepared.oldImage?.data ?? null;
-  const newData = prepared.alignedNewImage.data;
-  const transfer = [newData.buffer];
-  if (oldData) transfer.push(oldData.buffer);
-  const computed = await dependencies.computeDiff({
-    oldData,
-    oldWidth: prepared.oldWidth,
-    oldHeight: prepared.oldHeight,
-    newData,
-    width: prepared.width,
-    height: prepared.height,
-    threshold: snapshot.comparison.threshold,
-    radius: toleranceRadiusPx(snapshot.comparison),
-    block: blockSize(snapshot.comparison),
-    minBlocks: BOX_MIN_BLOCKS,
-    needsImage: true,
-    needsBoxes,
-  }, { transfer, onProgress: ratio => onProgress?.({ phase: "diff", ratio }) });
-  const image = context.createImageData(prepared.width, prepared.height);
-  image.data.set(computed.image);
-  context.putImageData(image, 0, 0);
+  const computed = await runDiff(
+    snapshot,
+    prepared,
+    dependencies,
+    { needsImage: true, needsBoxes },
+    onProgress,
+  );
+  context.putImageData(
+    new ImageData(computed.image, prepared.width, prepared.height),
+    0,
+    0,
+  );
   const removedCount = computed.removed;
   const addedCount = computed.added;
   const autoBoxes = needsBoxes ? computed.boxes : undefined;
