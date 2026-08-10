@@ -445,6 +445,49 @@ test("does not report an error when a second render starts while the worker lane
   expect(dom.reportError).not.toHaveBeenCalled();
 });
 
+// create-app と同じ配り方。描画1回につき1セッションを取る。
+function laneRenderDependencies(lane) {
+  const run = lane.session();
+  return { computeDiff: (payload, options) => run("diff", payload, options) };
+}
+
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test("cancels a render that only reaches the worker lane after a newer render started", async () => {
+  const workers = [];
+  const lane = createWorkerLane({ createWorker: () => new FakeLaneWorker(workers) });
+  const rasterized = [deferred(), deferred()];
+  const render = vi.fn(async (snapshot, dependencies) => {
+    await rasterized[snapshot.pageIndex].promise;
+    await dependencies.computeDiff({ pageIndex: snapshot.pageIndex });
+    return result(snapshot.pageIndex);
+  });
+  const { controller, dom } = harness({
+    renderDiffPage: (snapshot, options) => render(snapshot, laneRenderDependencies(lane), options),
+  });
+  dom.cancelRender = () => lane.cancel();
+
+  const stale = controller.showPage(0);
+  const fresh = controller.showPage(1);
+  expect(workers).toHaveLength(0);
+
+  // 古い描画のラスタライズが先に終わってもレーンは奪われない。
+  rasterized[0].resolve();
+  await flush();
+  expect(workers).toHaveLength(0);
+  await expect(stale).resolves.toMatchObject({ committed: false });
+
+  rasterized[1].resolve();
+  await flush();
+  expect(workers).toHaveLength(1);
+  expect(workers[0].posted[0].payload).toEqual({ pageIndex: 1 });
+  const { id } = workers[0].posted[0];
+  workers[0].emit({ id, type: "done", result: null });
+
+  await expect(fresh).resolves.toMatchObject({ committed: true });
+  expect(dom.reportError).not.toHaveBeenCalled();
+});
+
 test("discards a pending result when the document generation changes", async () => {
   const pending = deferred();
   const renderDiffPage = vi.fn(() => pending.promise);

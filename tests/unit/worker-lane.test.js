@@ -135,10 +135,48 @@ test("rejects the running job when the worker reports an error", async () => {
   expect(workers[0].terminated).toBe(true);
 });
 
-test("refuses to start a second job while one is running", () => {
+test("refuses a second job while one is running without throwing synchronously", async () => {
   const { subject } = lane();
 
   subject.run("diff", {});
 
-  expect(() => subject.run("diff", {})).toThrow(/busy/i);
+  const refused = subject.run("diff", {});
+  expect(refused).toBeInstanceOf(Promise);
+  await expect(refused).rejects.toSatisfy(isRenderCancelled);
+});
+
+test("rejects a job from a session opened before a cancel", async () => {
+  const { workers, subject } = lane();
+  const stale = subject.session();
+
+  subject.cancel();
+
+  await expect(stale("diff", {})).rejects.toSatisfy(isRenderCancelled);
+  expect(workers).toHaveLength(0);
+});
+
+test("lets the session opened after a cancel take the lane", async () => {
+  const { workers, subject } = lane();
+  const stale = subject.session();
+  subject.cancel();
+  const fresh = subject.session();
+
+  const refused = stale("diff", { page: 0 });
+  const running = fresh("diff", { page: 1 });
+
+  await expect(refused).rejects.toSatisfy(isRenderCancelled);
+  expect(workers).toHaveLength(1);
+  expect(workers[0].posted[0].payload).toEqual({ page: 1 });
+  const { id } = workers[0].posted[0];
+  workers[0].emit({ id, type: "done", result: "fresh" });
+  await expect(running).resolves.toBe("fresh");
+});
+
+test("keeps forwarding the transfer list through a session", () => {
+  const { workers, subject } = lane();
+  const buffer = new ArrayBuffer(8);
+
+  subject.session()("diff", { buffer }, { transfer: [buffer] });
+
+  expect(workers[0].posted[0]).toMatchObject({ type: "diff", payload: { buffer } });
 });

@@ -250,11 +250,16 @@ export function createApp({ document, window, dependencies = {} }) {
   const interactiveLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
   const exportLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
 
-  const laneCompute = lane => Object.freeze({
-    computeDiff: (payload, options) => lane.run("diff", payload, options),
-    computeAlignment: (payload, options) => lane.run("align", payload, options),
-    computeQuadrant: (payload, options) => lane.run("quadrant", payload, options),
-  });
+  // 描画1回につき1セッション。cancel() 以前に始まった描画からのジョブは
+  // レーンへ到達した時点で RenderCancelled となり、現行の描画がレーンを取れる。
+  const laneCompute = lane => {
+    const run = lane.session();
+    return Object.freeze({
+      computeDiff: (payload, options) => run("diff", payload, options),
+      computeAlignment: (payload, options) => run("align", payload, options),
+      computeQuadrant: (payload, options) => run("quadrant", payload, options),
+    });
+  };
 
   const sharedRenderDependencies = Object.freeze({
     sequenceIndex: deps.sequenceIndex,
@@ -270,12 +275,12 @@ export function createApp({ document, window, dependencies = {} }) {
     pageLabelText: deps.pageLabelText,
   });
 
-  const visualRenderDependencies = Object.freeze({
+  const visualRenderDependencies = () => Object.freeze({
     ...sharedRenderDependencies,
     ...laneCompute(interactiveLane),
   });
 
-  const exportRenderDependencies = Object.freeze({
+  const exportRenderDependencies = () => Object.freeze({
     ...sharedRenderDependencies,
     ...laneCompute(exportLane),
   });
@@ -306,8 +311,12 @@ export function createApp({ document, window, dependencies = {} }) {
       },
       reportError: error => errorReporter.report(error, "レンダリングに失敗しました"),
     },
-    renderDiffPage: (snapshot, options) => deps.renderDiffPage(snapshot, visualRenderDependencies, options),
-    renderTogglePage: (snapshot, options) => deps.renderTogglePage(snapshot, visualRenderDependencies, options),
+    renderDiffPage: (snapshot, options) => (
+      deps.renderDiffPage(snapshot, visualRenderDependencies(), options)
+    ),
+    renderTogglePage: (snapshot, options) => (
+      deps.renderTogglePage(snapshot, visualRenderDependencies(), options)
+    ),
     drawBoxes: () => boxEditorView?.redraw?.(),
   });
 
@@ -359,9 +368,15 @@ export function createApp({ document, window, dependencies = {} }) {
       dlTextPng: dom.dlTextPng,
       dlTextPdf: dom.dlTextPdf,
     },
-    renderVisualOffscreen: ({ renderSnapshot }) => (
-      deps.renderDiffPage(renderSnapshot, exportRenderDependencies)
-    ),
+    // 1回のPDF出力で1セッション。読み込み直しで打ち切られた出力ループが
+    // 次の出力からレーンを奪わないようにする。
+    createVisualRenderSession: () => {
+      const dependencies = exportRenderDependencies();
+      return Object.freeze({
+        render: ({ renderSnapshot }) => deps.renderDiffPage(renderSnapshot, dependencies),
+        cancel: () => exportLane.cancel(),
+      });
+    },
     renderTextOffscreen: ({ side, pageIndex, snapshot }) => (
       textRenderer.renderOffscreen({ side, pageIndex, snapshot })
     ),

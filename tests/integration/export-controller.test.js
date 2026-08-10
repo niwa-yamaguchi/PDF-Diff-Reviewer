@@ -90,10 +90,21 @@ function harness(overrides = {}) {
     dlTextPng: { disabled: false },
     dlTextPdf: { disabled: false },
   };
+  const renderVisualOffscreen = vi.fn(async () => ({ canvas: canvas(100, 200), boxes: [] }));
+  const visualRenderSessions = [];
   const dependencies = {
     state,
     dom,
-    renderVisualOffscreen: vi.fn(async () => ({ canvas: canvas(100, 200), boxes: [] })),
+    renderVisualOffscreen,
+    visualRenderSessions,
+    createVisualRenderSession: vi.fn(() => {
+      const session = {
+        render: (...args) => dependencies.renderVisualOffscreen(...args),
+        cancel: vi.fn(),
+      };
+      visualRenderSessions.push(session);
+      return session;
+    }),
     renderTextOffscreen: vi.fn(async () => canvas(100, 200)),
     pdfExporter: {
       saveVisual: vi.fn(async ({ pageCount, renderPage }) => {
@@ -438,6 +449,28 @@ describe("export error and overlap ownership", () => {
     expect(dom.status.classList.contains("busy")).toBe(false);
     expect(dom.dlPng.disabled).toBe(false);
     expect(dom.dlPdf.disabled).toBe(false);
+  });
+
+  test("document invalidation cancels the abandoned export render session and the next export opens a fresh one", async () => {
+    const pending = deferred();
+    const { dependencies, controller } = harness({
+      pdfExporter: { saveVisual: vi.fn(() => pending.promise), saveText: vi.fn() },
+    });
+
+    const saving = controller.saveVisualPdf();
+    expect(dependencies.visualRenderSessions).toHaveLength(1);
+    expect(dependencies.visualRenderSessions[0].cancel).not.toHaveBeenCalled();
+
+    expect(controller.invalidateDocuments(10)).toBe(true);
+    expect(dependencies.visualRenderSessions[0].cancel).toHaveBeenCalledTimes(1);
+
+    pending.resolve();
+    await saving;
+
+    await controller.saveVisualPdf();
+    expect(dependencies.visualRenderSessions).toHaveLength(2);
+    expect(dependencies.visualRenderSessions[1]).not.toBe(dependencies.visualRenderSessions[0]);
+    expect(dependencies.visualRenderSessions[1].cancel).not.toHaveBeenCalled();
   });
 
   test("document-owned disabled state survives old export completion and overlapping export tokens", async () => {

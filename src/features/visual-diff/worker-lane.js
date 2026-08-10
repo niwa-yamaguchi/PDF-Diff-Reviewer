@@ -14,6 +14,7 @@ export function createWorkerLane({ createWorker }) {
   let worker = null;
   let pending = null;
   let nextId = 1;
+  let epoch = 0;
 
   function destroy() {
     worker?.terminate();
@@ -52,8 +53,8 @@ export function createWorkerLane({ createWorker }) {
     return worker;
   }
 
-  function run(type, payload, { transfer = [], onProgress = null } = {}) {
-    if (pending) throw new Error("Worker lane is busy");
+  function run(type, payload, { transfer = [], onProgress = null, epoch: at = epoch } = {}) {
+    if (at !== epoch || pending) return Promise.reject(cancelledError());
     const id = nextId;
     nextId += 1;
     const target = ensureWorker();
@@ -63,10 +64,16 @@ export function createWorkerLane({ createWorker }) {
     });
   }
 
+  function session() {
+    const at = epoch;
+    return (type, payload, options) => run(type, payload, { ...options, epoch: at });
+  }
+
   function cancel() {
+    epoch += 1;
     if (!pending) return;
     settleWithError(cancelledError());
   }
 
-  return { run, cancel };
+  return { run, session, cancel };
 }

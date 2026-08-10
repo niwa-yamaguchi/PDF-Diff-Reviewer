@@ -163,7 +163,7 @@ function toBlob(canvas) {
 export function createExportController({
   state,
   dom,
-  renderVisualOffscreen,
+  createVisualRenderSession,
   renderTextOffscreen,
   pdfExporter,
   download,
@@ -194,6 +194,7 @@ export function createExportController({
       ui,
       prior,
       lastStatus: busyText,
+      renderSession: null,
     };
     active[channel] = session;
     ui.status.textContent = busyText;
@@ -238,6 +239,7 @@ export function createExportController({
   function abandon(session) {
     if (active[session.channel] !== session) return false;
     active[session.channel] = null;
+    session.renderSession?.cancel();
     if (session.prior.busy) session.ui.status.classList?.add?.("busy");
     else session.ui.status.classList?.remove?.("busy");
     session.ui.buttons.forEach((button, index) => {
@@ -289,13 +291,14 @@ export function createExportController({
   async function saveVisualPdf() {
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PDF生成中…");
+    session.renderSession = createVisualRenderSession();
     try {
       await pdfExporter.saveVisual({
         pageCount: snapshot.documents.pages,
         dpi: snapshot.comparison.dpi,
         filename: "diff.pdf",
         renderPage: async pageIndex => {
-          const result = await renderVisualOffscreen({
+          const result = await session.renderSession.render({
             snapshot,
             pageIndex,
             renderSnapshot: visualRenderSnapshot(snapshot, pageIndex),
