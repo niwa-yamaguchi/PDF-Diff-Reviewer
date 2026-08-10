@@ -681,6 +681,12 @@ function rendererSnapshot({ side = "old", toggleCache = null } = {}) {
   });
 }
 
+function detachAll(options) {
+  for (const buffer of options?.transfer ?? []) {
+    structuredClone(buffer, { transfer: [buffer] });
+  }
+}
+
 function rendererDependencies(oldCanvas, newCanvas) {
   return {
     sequenceIndex: sequence => sequence[0],
@@ -693,9 +699,21 @@ function rendererDependencies(oldCanvas, newCanvas) {
       : null),
     alignProbeScale: () => 1,
     downscaleCanvas: canvas => canvas,
-    computeDiff: async payload => computeDiff(payload),
-    computeAlignment: async payload => computeAlignment(payload),
-    computeQuadrant: async payload => computeQuadrant(payload),
+    computeDiff: async (payload, options) => {
+      const result = computeDiff({ ...payload, onProgress: options?.onProgress });
+      detachAll(options);
+      return result;
+    },
+    computeAlignment: async (payload, options) => {
+      const result = computeAlignment(payload);
+      detachAll(options);
+      return result;
+    },
+    computeQuadrant: async (payload, options) => {
+      const result = computeQuadrant(payload);
+      detachAll(options);
+      return result;
+    },
     createCanvas: (width, height) => new MemoryCanvas(width, height),
     createWhiteCanvas: (width, height) => {
       const canvas = new MemoryCanvas(width, height);

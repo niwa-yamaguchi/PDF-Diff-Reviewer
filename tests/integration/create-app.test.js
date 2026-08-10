@@ -92,7 +92,6 @@ function fakeDependencies(overrides = {}) {
     renderDiffPage: vi.fn(), renderTogglePage: vi.fn(), extractPageTokens: vi.fn(),
     framePlan: vi.fn(), pageLabelText: vi.fn(), sequenceIndex: vi.fn(),
     canvasToRgba: vi.fn(), alignProbeScale: vi.fn(), downscaleCanvas: vi.fn(),
-    computeAlignment: vi.fn(), computeQuadrant: vi.fn(),
     pageSizePt: vi.fn(), renderPageCanvas: vi.fn(), rotateCanvas90: vi.fn(),
     invalidateDocuments: vi.fn(), invalidateDpi: vi.fn(), invalidateManualAlignment: vi.fn(),
     invalidatePageAlignment: vi.fn(), invalidateThreshold: vi.fn(), invalidateTolerance: vi.fn(),
