@@ -296,6 +296,7 @@ export function createApp({ document, window, dependencies = {} }) {
       sideOld: dom.sideOld,
       sideNew: dom.sideNew,
       cancelBoxDrag: () => boxEditorController?.cancelDrag?.(),
+      cancelRender: () => interactiveLane.cancel(),
       refreshBoxEditor: () => boxEditorView?.refresh?.(),
       afterCommit() {
         updateAlignButtons();

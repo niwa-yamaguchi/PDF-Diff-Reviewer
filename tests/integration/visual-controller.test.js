@@ -4,6 +4,7 @@ import { createVisualController } from "../../src/features/visual-diff/visual-co
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 import { renderDiffPage } from "../../src/features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "../../src/features/visual-diff/toggle-renderer.js";
+import { createWorkerLane } from "../../src/features/visual-diff/worker-lane.js";
 import { computeDiff } from "../../src/core/image-diff/diff-compute.js";
 import { computeAlignment, computeQuadrant } from "../../src/core/alignment/align-compute.js";
 
@@ -104,6 +105,7 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
     sideOld: { classList: activeClassList() },
     sideNew: { classList: activeClassList() },
     reportError: vi.fn(),
+    cancelRender: vi.fn(),
   };
   const drawBoxes = vi.fn();
   const controller = createVisualController({
@@ -332,6 +334,73 @@ test("commits only the latest page when an older render finishes last", async ()
   expect(context.drawImage).toHaveBeenCalledOnce();
   expect(state.visual.pageCache.has(0)).toBe(false);
   expect(state.visual.pageCache.get(1)).toEqual({ rm: 2, ad: 3, bx: 1 });
+});
+
+test("cancels the previous render before starting a new one", async () => {
+  const first = deferred();
+  const renderDiffPage = vi.fn()
+    .mockReturnValueOnce(first.promise)
+    .mockResolvedValueOnce(result(1));
+  const { controller, dom } = harness({ renderDiffPage });
+
+  const pending = controller.showPage(0);
+  expect(dom.cancelRender).toHaveBeenCalledTimes(1);
+
+  const second = controller.showPage(1);
+  expect(dom.cancelRender).toHaveBeenCalledTimes(2);
+
+  const cancelled = new Error("描画を打ち切りました");
+  cancelled.name = "RenderCancelled";
+  first.reject(cancelled);
+
+  await expect(pending).resolves.toMatchObject({ committed: false });
+  await expect(second).resolves.toMatchObject({ committed: true });
+  expect(dom.reportError).not.toHaveBeenCalled();
+});
+
+class FakeLaneWorker {
+  constructor(registry) {
+    this.posted = [];
+    this.terminated = false;
+    this.onmessage = null;
+    registry.push(this);
+  }
+
+  postMessage(message) {
+    this.posted.push(message);
+  }
+
+  terminate() {
+    this.terminated = true;
+  }
+
+  emit(data) {
+    this.onmessage?.({ data });
+  }
+}
+
+test("does not report an error when a second render starts while the worker lane is still busy", async () => {
+  const workers = [];
+  const lane = createWorkerLane({ createWorker: () => new FakeLaneWorker(workers) });
+  const renderDiffPage = vi.fn(async snapshot => {
+    await lane.run("diff", { pageIndex: snapshot.pageIndex });
+    return result(snapshot.pageIndex);
+  });
+  const { controller, dom } = harness({ renderDiffPage });
+  dom.cancelRender = () => lane.cancel();
+
+  const pending = controller.showPage(0);
+  expect(workers).toHaveLength(1);
+  const second = controller.showPage(1);
+
+  expect(workers).toHaveLength(2);
+  expect(workers[0].terminated).toBe(true);
+  const { id } = workers[1].posted[0];
+  workers[1].emit({ id, type: "done", result: null });
+
+  await expect(pending).resolves.toMatchObject({ committed: false });
+  await expect(second).resolves.toMatchObject({ committed: true });
+  expect(dom.reportError).not.toHaveBeenCalled();
 });
 
 test("discards a pending result when the document generation changes", async () => {

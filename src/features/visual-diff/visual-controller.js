@@ -1,4 +1,5 @@
 import { toggleCompletedCacheMatchesSnapshot } from "./visual-renderer.js";
+import { isRenderCancelled } from "./worker-lane.js";
 
 function frozenBoxes(boxes) {
   if (!boxes) return null;
@@ -158,6 +159,7 @@ export function createVisualController({
     } = {},
   ) {
     if (pageIndex < 0 || pageIndex >= state.documents.pages) return { committed: false };
+    dom.cancelRender?.();
     const ticket = Object.freeze({
       id: ++state.visual.renderGeneration,
       documentGeneration: state.documents.generation,
@@ -181,7 +183,7 @@ export function createVisualController({
         finishInteractive(ticket);
         return { committed: false };
       }
-      dom.reportError?.(error);
+      if (!isRenderCancelled(error)) dom.reportError?.(error);
       finishInteractive(ticket);
       return { committed: false, error };
     }
