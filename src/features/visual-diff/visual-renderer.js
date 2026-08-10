@@ -1,4 +1,4 @@
-import { DIFF_RGB, computeDiff } from "../../core/image-diff/diff-compute.js";
+import { DIFF_RGB } from "../../core/image-diff/diff-compute.js";
 
 const QUAD_PROBE_LONG = 512;
 const BOX_BASE_DPI = 150;
@@ -31,7 +31,7 @@ async function ensureQuadrant(snapshot, indexes, sizes, cache, dependencies) {
     cache.set(pageIndex, { k: 0, scores: [1, 0, 0, 0], applied: false, blank: true });
     return;
   }
-  cache.set(pageIndex, dependencies.computeQuadrant({
+  cache.set(pageIndex, await dependencies.computeQuadrant({
     oldData: oldRgba.data,
     oldWidth: oldRgba.width,
     oldHeight: oldRgba.height,
@@ -39,7 +39,7 @@ async function ensureQuadrant(snapshot, indexes, sizes, cache, dependencies) {
     newWidth: newRgba.width,
     newHeight: newRgba.height,
     threshold: comparison.threshold,
-  }));
+  }, { transfer: [oldRgba.data.buffer, newRgba.data.buffer] }));
 }
 
 export function effectiveQuadrant(snapshot, quadrantCache) {
@@ -101,7 +101,7 @@ export function toggleCompletedCacheMatchesSnapshot(snapshot, cache) {
     && toggleRawCacheMatchesSnapshot(snapshot, cache);
 }
 
-function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
+async function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
   if (!snapshot.comparison.autoAlign || cache.has(snapshot.pageIndex)) return;
   const scale = dependencies.alignProbeScale([oldCanvas, newCanvas]);
   const oldRgba = dependencies.canvasToRgba(dependencies.downscaleCanvas(oldCanvas, scale));
@@ -120,7 +120,7 @@ function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
     });
     return;
   }
-  cache.set(snapshot.pageIndex, dependencies.computeAlignment({
+  cache.set(snapshot.pageIndex, await dependencies.computeAlignment({
     oldData: oldRgba.data,
     oldWidth: oldRgba.width,
     oldHeight: oldRgba.height,
@@ -128,7 +128,7 @@ function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
     newWidth: newRgba.width,
     newHeight: newRgba.height,
     threshold: snapshot.comparison.threshold,
-  }));
+  }, { transfer: [oldRgba.data.buffer, newRgba.data.buffer] }));
 }
 
 function alignmentMatrix(snapshot, cache, oldWidth, oldHeight, newWidth, newHeight) {
@@ -225,7 +225,8 @@ function workFrame(oldCanvas, newCanvas, matrix, comparison) {
   };
 }
 
-export async function prepareVisualPage(snapshot, dependencies, cachedPages = null) {
+export async function prepareVisualPage(snapshot, dependencies, cachedPages = null, onProgress = null) {
+  onProgress?.({ phase: "render" });
   const quadrantCache = new Map(snapshot.visual.quadrantCache);
   const alignmentCache = new Map(snapshot.visual.alignmentCache);
   const indexes = {
@@ -269,7 +270,8 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
     oldCanvas = renderedOld;
     newCanvas = dependencies.rotateCanvas90(renderedNew, quadrant);
   }
-  ensureAlignment(snapshot, oldCanvas, newCanvas, alignmentCache, dependencies);
+  onProgress?.({ phase: "align" });
+  await ensureAlignment(snapshot, oldCanvas, newCanvas, alignmentCache, dependencies);
   const frame = workFrame(
     oldCanvas,
     newCanvas,
@@ -320,13 +322,17 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
   };
 }
 
-export function computeChangeBoxesAligned(snapshot, prepared) {
+export async function computeChangeBoxesAligned(snapshot, prepared, dependencies) {
   const { comparison } = snapshot;
-  return computeDiff({
-    oldData: prepared.oldImage?.data ?? null,
+  const oldData = prepared.oldImage?.data ?? null;
+  const newData = prepared.alignedNewImage.data;
+  const transfer = [newData.buffer];
+  if (oldData) transfer.push(oldData.buffer);
+  const computed = await dependencies.computeDiff({
+    oldData,
     oldWidth: prepared.oldWidth,
     oldHeight: prepared.oldHeight,
-    newData: prepared.alignedNewImage.data,
+    newData,
     width: prepared.width,
     height: prepared.height,
     threshold: comparison.threshold,
@@ -335,7 +341,8 @@ export function computeChangeBoxesAligned(snapshot, prepared) {
     minBlocks: BOX_MIN_BLOCKS,
     needsImage: false,
     needsBoxes: true,
-  }).boxes;
+  }, { transfer });
+  return computed.boxes;
 }
 
 function boxStat(snapshot, boxes) {
@@ -343,16 +350,20 @@ function boxStat(snapshot, boxes) {
   return `変更箇所 ${boxes.length.toLocaleString()}${edited ? "（手編集）" : ""}`;
 }
 
-export async function renderDiffPage(snapshot, dependencies) {
-  const prepared = await prepareVisualPage(snapshot, dependencies);
+export async function renderDiffPage(snapshot, dependencies, { onProgress = null } = {}) {
+  const prepared = await prepareVisualPage(snapshot, dependencies, null, onProgress);
   const canvas = dependencies.createCanvas(prepared.width, prepared.height);
   const context = canvas.getContext("2d");
   const needsBoxes = snapshot.boxEditor.manualBoxes == null;
-  const computed = computeDiff({
-    oldData: prepared.oldImage?.data ?? null,
+  const oldData = prepared.oldImage?.data ?? null;
+  const newData = prepared.alignedNewImage.data;
+  const transfer = [newData.buffer];
+  if (oldData) transfer.push(oldData.buffer);
+  const computed = await dependencies.computeDiff({
+    oldData,
     oldWidth: prepared.oldWidth,
     oldHeight: prepared.oldHeight,
-    newData: prepared.alignedNewImage.data,
+    newData,
     width: prepared.width,
     height: prepared.height,
     threshold: snapshot.comparison.threshold,
@@ -361,7 +372,7 @@ export async function renderDiffPage(snapshot, dependencies) {
     minBlocks: BOX_MIN_BLOCKS,
     needsImage: true,
     needsBoxes,
-  });
+  }, { transfer, onProgress: ratio => onProgress?.({ phase: "diff", ratio }) });
   const image = context.createImageData(prepared.width, prepared.height);
   image.data.set(computed.image);
   context.putImageData(image, 0, 0);

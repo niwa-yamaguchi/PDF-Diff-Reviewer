@@ -25,7 +25,8 @@ import {
   renderPageCanvas,
   rotateCanvas90,
 } from "../features/documents/page-renderer.js";
-import { computeAlignment, computeQuadrant } from "../core/alignment/align-compute.js";
+import { createDiffWorker } from "../platform/diff-worker.js";
+import { createWorkerLane } from "../features/visual-diff/worker-lane.js";
 import { createViewerController } from "../features/viewer/viewer-controller.js";
 import { createVisualController } from "../features/visual-diff/visual-controller.js";
 import { effectiveQuadrant, renderDiffPage } from "../features/visual-diff/visual-renderer.js";
@@ -52,8 +53,8 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   sequenceIndex,
   alignProbeScale,
   canvasToRgba,
-  computeAlignment,
-  computeQuadrant,
+  createDiffWorker,
+  createWorkerLane,
   downscaleCanvas,
   pageSizePt,
   renderPageCanvas,
@@ -246,20 +247,37 @@ export function createApp({ document, window, dependencies = {} }) {
     boxEditorView.updateControls();
   }
 
-  const visualRenderDependencies = Object.freeze({
+  const interactiveLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
+  const exportLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
+
+  const laneCompute = lane => Object.freeze({
+    computeDiff: (payload, options) => lane.run("diff", payload, options),
+    computeAlignment: (payload, options) => lane.run("align", payload, options),
+    computeQuadrant: (payload, options) => lane.run("quadrant", payload, options),
+  });
+
+  const sharedRenderDependencies = Object.freeze({
     sequenceIndex: deps.sequenceIndex,
     pageSizePt: deps.pageSizePt,
     framePlan: deps.framePlan,
     renderPageCanvas: deps.renderPageCanvas,
     rotateCanvas90: deps.rotateCanvas90,
-    alignProbeScale: deps.alignProbeScale,
     canvasToRgba: deps.canvasToRgba,
-    computeAlignment: deps.computeAlignment,
-    computeQuadrant: deps.computeQuadrant,
+    alignProbeScale: deps.alignProbeScale,
     downscaleCanvas: deps.downscaleCanvas,
     createCanvas: deps.createCanvas,
     createWhiteCanvas: deps.createWhiteCanvas,
     pageLabelText: deps.pageLabelText,
+  });
+
+  const visualRenderDependencies = Object.freeze({
+    ...sharedRenderDependencies,
+    ...laneCompute(interactiveLane),
+  });
+
+  const exportRenderDependencies = Object.freeze({
+    ...sharedRenderDependencies,
+    ...laneCompute(exportLane),
   });
 
   visualController = deps.createVisualController({
@@ -287,8 +305,8 @@ export function createApp({ document, window, dependencies = {} }) {
       },
       reportError: error => errorReporter.report(error, "レンダリングに失敗しました"),
     },
-    renderDiffPage: snapshot => deps.renderDiffPage(snapshot, visualRenderDependencies),
-    renderTogglePage: snapshot => deps.renderTogglePage(snapshot, visualRenderDependencies),
+    renderDiffPage: (snapshot, options) => deps.renderDiffPage(snapshot, visualRenderDependencies, options),
+    renderTogglePage: (snapshot, options) => deps.renderTogglePage(snapshot, visualRenderDependencies, options),
     drawBoxes: () => boxEditorView?.redraw?.(),
   });
 
@@ -341,7 +359,7 @@ export function createApp({ document, window, dependencies = {} }) {
       dlTextPdf: dom.dlTextPdf,
     },
     renderVisualOffscreen: ({ renderSnapshot }) => (
-      deps.renderDiffPage(renderSnapshot, visualRenderDependencies)
+      deps.renderDiffPage(renderSnapshot, exportRenderDependencies)
     ),
     renderTextOffscreen: ({ side, pageIndex, snapshot }) => (
       textRenderer.renderOffscreen({ side, pageIndex, snapshot })

@@ -23,14 +23,10 @@ export function drawToggleSide(snapshot, cache, dependencies) {
   return canvas;
 }
 
-export async function renderTogglePage(snapshot, dependencies) {
+export async function renderTogglePage(snapshot, dependencies, { onProgress = null } = {}) {
   const previous = snapshot.visual.toggleCache;
   const cachedPages = previous?.idx === snapshot.pageIndex ? previous : null;
-  const prepared = await prepareVisualPage(
-    snapshot,
-    dependencies,
-    cachedPages,
-  );
+  const prepared = await prepareVisualPage(snapshot, dependencies, cachedPages, onProgress);
   const pageCache = {
     idx: snapshot.pageIndex,
     quad: prepared.quadrant,
@@ -46,7 +42,6 @@ export async function renderTogglePage(snapshot, dependencies) {
     oldHeight: prepared.oldHeight,
     newWidth: prepared.newWidth,
     newHeight: prepared.newHeight,
-    oldImage: prepared.oldImage,
     alignedNewCanvas: prepared.alignedNewCanvas,
     width: prepared.width,
     height: prepared.height,
@@ -54,7 +49,7 @@ export async function renderTogglePage(snapshot, dependencies) {
   const boxes = snapshot.boxEditor.manualBoxes != null
     ? snapshot.boxEditor.manualBoxes.map(box => ({ ...box }))
     : snapshot.boxEditor.showBoxes
-      ? computeChangeBoxesAligned(snapshot, prepared)
+      ? await computeChangeBoxesAligned(snapshot, prepared, dependencies)
       : [];
   const autoBoxes = snapshot.boxEditor.manualBoxes == null && snapshot.boxEditor.showBoxes
     ? boxes

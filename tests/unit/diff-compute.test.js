@@ -149,6 +149,24 @@ test("reports monotonically increasing progress ending at one", () => {
   expect([...ratios].sort((a, b) => a - b)).toEqual(ratios);
 });
 
+test("reports monotonically increasing progress ending at one with tolerance radius", () => {
+  const ratios = [];
+  computeDiff(base({
+    width: 4,
+    height: 64,
+    oldWidth: 4,
+    oldHeight: 64,
+    oldData: new Uint8ClampedArray(4 * 64 * 4),
+    newData: new Uint8ClampedArray(4 * 64 * 4).fill(255),
+    radius: 1,
+    onProgress: ratio => ratios.push(ratio),
+  }));
+
+  expect(ratios.length).toBeGreaterThan(0);
+  expect(ratios.at(-1)).toBe(1);
+  expect([...ratios].sort((a, b) => a - b)).toEqual(ratios);
+});
+
 test("exposes the diff palette", () => {
   expect(DIFF_RGB.common).toEqual([60, 60, 60]);
   expect(DIFF_RGB.removed).toEqual([255, 91, 87]);

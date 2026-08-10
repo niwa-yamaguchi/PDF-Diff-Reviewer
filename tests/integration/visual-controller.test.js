@@ -4,6 +4,8 @@ import { createVisualController } from "../../src/features/visual-diff/visual-co
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 import { renderDiffPage } from "../../src/features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "../../src/features/visual-diff/toggle-renderer.js";
+import { computeDiff } from "../../src/core/image-diff/diff-compute.js";
+import { computeAlignment, computeQuadrant } from "../../src/core/alignment/align-compute.js";
 
 function deferred() {
   let resolve;
@@ -691,8 +693,9 @@ function rendererDependencies(oldCanvas, newCanvas) {
       : null),
     alignProbeScale: () => 1,
     downscaleCanvas: canvas => canvas,
-    computeAlignment: vi.fn(),
-    computeQuadrant: vi.fn(),
+    computeDiff: async payload => computeDiff(payload),
+    computeAlignment: async payload => computeAlignment(payload),
+    computeQuadrant: async payload => computeQuadrant(payload),
     createCanvas: (width, height) => new MemoryCanvas(width, height),
     createWhiteCanvas: (width, height) => {
       const canvas = new MemoryCanvas(width, height);
