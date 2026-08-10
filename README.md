@@ -92,7 +92,7 @@ npm run build
 npm run preview
 ```
 
-ソースは `src/app/`（組み立てと状態）、`src/features/`（画面機能）、`src/core/`（純粋計算）、`src/platform/`（ブラウザ基盤）へ分割しています。PDF、差分結果、ログは外部へ送信せず、処理はすべてブラウザ内で完結します。外部API、テレメトリ、実行時CDNは使用しません。
+ソースは `src/app/`（組み立てと状態）、`src/features/`（画面機能）、`src/core/`（純粋計算）、`src/platform/`（ブラウザ基盤）、`src/workers/`（Web Workerの入口）へ分割しています。PDF、差分結果、ログは外部へ送信せず、処理はすべてブラウザ内で完結します。外部API、テレメトリ、実行時CDNは使用しません。
 
 ## 素材
 

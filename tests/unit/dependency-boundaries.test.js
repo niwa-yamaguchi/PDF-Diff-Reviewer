@@ -37,6 +37,18 @@ test("feature modules do not import app or another feature directory", async () 
   }
 });
 
+test("workers import core only and stay free of browser document globals", async () => {
+  const paths = (await filesUnder("src/workers")).filter(path => extname(path) === ".js");
+  expect(paths.length).toBeGreaterThan(0);
+  for (const path of paths) {
+    const source = await readFile(path, "utf8");
+    for (const match of source.matchAll(/from\s+["']([^"']+)["']/g)) {
+      expect(match[1], path).toMatch(/^\.\.\/core\//);
+    }
+    expect(source, path).not.toMatch(/\b(?:document|window|pdfjsLib)\b/);
+  }
+});
+
 test("migration bridge has been removed", async () => {
   await expect(access("src/legacy-app.js", constants.F_OK)).rejects.toThrow();
 });
