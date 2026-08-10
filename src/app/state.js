@@ -11,7 +11,7 @@ export function createAppState() {
       generation: 0,
     },
     comparison: {
-      dpi: 150,
+      dpi: 300,
       threshold: 128,
       tolerancePx: 0,
       dx: 0,

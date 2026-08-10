@@ -284,7 +284,7 @@ describe("text page render controller", () => {
     expect(await controller.showPage(1)).toBe(true);
 
     expect(state.textReview.extraction.old).toEqual([lines("candidate"), lines("candidate")]);
-    expect(state.textReview.scale).toBe(150 / 72);
+    expect(state.textReview.scale).toBe(300 / 72);
     expect(state.textReview.page).toBe(1);
     expect(dom.oldTextCanvas.width).toBe(210);
     expect(dom.newTextCanvas.width).toBe(220);

@@ -28,7 +28,7 @@ test("index is module-only and carries the final refactoring date", async () => 
   expect(html).not.toMatch(/<style[\s>]/i);
   expect(html).not.toMatch(/<script(?![^>]*type="module")[^>]*>/i);
   expect(html).toContain('<script type="module" src="/src/main.js"></script>');
-  expect(html).toContain("UPDATED 2026-08-09");
+  expect(html).toContain("UPDATED 2026-08-10");
   expect(html).not.toContain("1ファイル運用");
   expect(html).not.toMatch(/\son\w+\s*=/i);
 });
