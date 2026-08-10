@@ -1,20 +1,11 @@
 import { bestAlignment } from "../../core/alignment/similarity.js";
 import { bestQuadrant } from "../../core/alignment/quadrant.js";
-import { computeBoxes } from "../../core/change-boxes/detect.js";
-import { clampBoxes } from "../../core/geometry/rectangles.js";
-import { luminanceAt } from "../../core/image-diff/luminance.js";
-import { toleratedDiffMasks } from "../../core/image-diff/masks.js";
+import { DIFF_RGB, computeDiff } from "../../core/image-diff/diff-compute.js";
 
 const QUAD_PROBE_LONG = 512;
 const BOX_BASE_DPI = 150;
 const BOX_BASE = 16;
 const BOX_MIN_BLOCKS = 2;
-
-export const DIFF_RGB = Object.freeze({
-  common: Object.freeze([60, 60, 60]),
-  removed: Object.freeze([255, 91, 87]),
-  added: Object.freeze([77, 141, 255]),
-});
 
 function blockSize(comparison) {
   return Math.max(4, Math.round(BOX_BASE * comparison.dpi / BOX_BASE_DPI));
@@ -319,59 +310,20 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
 
 export function computeChangeBoxesAligned(snapshot, prepared) {
   const { comparison } = snapshot;
-  const {
-    oldImage,
-    oldWidth,
-    oldHeight,
-    alignedNewImage,
-    width,
-    height,
-  } = prepared;
-  const block = blockSize(comparison);
-  const columns = Math.ceil(width / block);
-  const rows = Math.ceil(height / block);
-  const flags = new Uint8Array(columns * rows);
-  const radius = toleranceRadiusPx(comparison);
-  if (radius > 0) {
-    const oldMask = new Uint8Array(width * height);
-    const newMask = new Uint8Array(width * height);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const index = y * width + x;
-        if (oldImage && x < oldWidth && y < oldHeight) {
-          oldMask[index] = luminanceAt(oldImage.data, (y * oldWidth + x) * 4) < comparison.threshold ? 1 : 0;
-        }
-        newMask[index] = luminanceAt(alignedNewImage.data, index * 4) < comparison.threshold ? 1 : 0;
-      }
-    }
-    const { removed, added } = toleratedDiffMasks(oldMask, newMask, width, height, radius);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const index = y * width + x;
-        if (removed[index] || added[index]) {
-          flags[Math.floor(y / block) * columns + Math.floor(x / block)] = 1;
-        }
-      }
-    }
-  } else {
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const oldInk = !!oldImage
-          && x < oldWidth
-          && y < oldHeight
-          && luminanceAt(oldImage.data, (y * oldWidth + x) * 4) < comparison.threshold;
-        const newInk = luminanceAt(alignedNewImage.data, (y * width + x) * 4) < comparison.threshold;
-        if (oldInk !== newInk) {
-          flags[Math.floor(y / block) * columns + Math.floor(x / block)] = 1;
-        }
-      }
-    }
-  }
-  return clampBoxes(
-    computeBoxes(flags, columns, rows, block, BOX_MIN_BLOCKS),
-    width,
-    height,
-  );
+  return computeDiff({
+    oldData: prepared.oldImage?.data ?? null,
+    oldWidth: prepared.oldWidth,
+    oldHeight: prepared.oldHeight,
+    newData: prepared.alignedNewImage.data,
+    width: prepared.width,
+    height: prepared.height,
+    threshold: comparison.threshold,
+    radius: toleranceRadiusPx(comparison),
+    block: blockSize(comparison),
+    minBlocks: BOX_MIN_BLOCKS,
+    needsImage: false,
+    needsBoxes: true,
+  }).boxes;
 }
 
 function boxStat(snapshot, boxes) {
@@ -383,113 +335,28 @@ export async function renderDiffPage(snapshot, dependencies) {
   const prepared = await prepareVisualPage(snapshot, dependencies);
   const canvas = dependencies.createCanvas(prepared.width, prepared.height);
   const context = canvas.getContext("2d");
+  const needsBoxes = snapshot.boxEditor.manualBoxes == null;
+  const computed = computeDiff({
+    oldData: prepared.oldImage?.data ?? null,
+    oldWidth: prepared.oldWidth,
+    oldHeight: prepared.oldHeight,
+    newData: prepared.alignedNewImage.data,
+    width: prepared.width,
+    height: prepared.height,
+    threshold: snapshot.comparison.threshold,
+    radius: toleranceRadiusPx(snapshot.comparison),
+    block: blockSize(snapshot.comparison),
+    minBlocks: BOX_MIN_BLOCKS,
+    needsImage: true,
+    needsBoxes,
+  });
   const image = context.createImageData(prepared.width, prepared.height);
-  image.data.fill(255);
-  const block = blockSize(snapshot.comparison);
-  const columns = Math.ceil(prepared.width / block);
-  const rows = Math.ceil(prepared.height / block);
-  const flags = new Uint8Array(columns * rows);
-  const radius = toleranceRadiusPx(snapshot.comparison);
-  const [commonRed, commonGreen, commonBlue] = DIFF_RGB.common;
-  const [removedRed, removedGreen, removedBlue] = DIFF_RGB.removed;
-  const [addedRed, addedGreen, addedBlue] = DIFF_RGB.added;
-  let removedCount = 0;
-  let addedCount = 0;
-
-  if (radius > 0) {
-    const oldMask = new Uint8Array(prepared.width * prepared.height);
-    const newMask = new Uint8Array(prepared.width * prepared.height);
-    for (let y = 0; y < prepared.height; y += 1) {
-      for (let x = 0; x < prepared.width; x += 1) {
-        const index = y * prepared.width + x;
-        if (prepared.oldImage && x < prepared.oldWidth && y < prepared.oldHeight) {
-          oldMask[index] = luminanceAt(
-            prepared.oldImage.data,
-            (y * prepared.oldWidth + x) * 4,
-          ) < snapshot.comparison.threshold ? 1 : 0;
-        }
-        newMask[index] = luminanceAt(
-          prepared.alignedNewImage.data,
-          index * 4,
-        ) < snapshot.comparison.threshold ? 1 : 0;
-      }
-    }
-    const { removed, added } = toleratedDiffMasks(
-      oldMask,
-      newMask,
-      prepared.width,
-      prepared.height,
-      radius,
-    );
-    for (let y = 0; y < prepared.height; y += 1) {
-      for (let x = 0; x < prepared.width; x += 1) {
-        const index = y * prepared.width + x;
-        if (!(oldMask[index] || newMask[index])) continue;
-        const pixel = index * 4;
-        if (removed[index]) {
-          image.data[pixel] = removedRed;
-          image.data[pixel + 1] = removedGreen;
-          image.data[pixel + 2] = removedBlue;
-          removedCount += 1;
-          flags[Math.floor(y / block) * columns + Math.floor(x / block)] = 1;
-        } else if (added[index]) {
-          image.data[pixel] = addedRed;
-          image.data[pixel + 1] = addedGreen;
-          image.data[pixel + 2] = addedBlue;
-          addedCount += 1;
-          flags[Math.floor(y / block) * columns + Math.floor(x / block)] = 1;
-        } else {
-          image.data[pixel] = commonRed;
-          image.data[pixel + 1] = commonGreen;
-          image.data[pixel + 2] = commonBlue;
-        }
-      }
-    }
-  } else {
-    for (let y = 0; y < prepared.height; y += 1) {
-      for (let x = 0; x < prepared.width; x += 1) {
-        const oldInk = !!prepared.oldImage
-          && x < prepared.oldWidth
-          && y < prepared.oldHeight
-          && luminanceAt(
-            prepared.oldImage.data,
-            (y * prepared.oldWidth + x) * 4,
-          ) < snapshot.comparison.threshold;
-        const newInk = luminanceAt(
-          prepared.alignedNewImage.data,
-          (y * prepared.width + x) * 4,
-        ) < snapshot.comparison.threshold;
-        if (!(oldInk || newInk)) continue;
-        const pixel = (y * prepared.width + x) * 4;
-        if (oldInk && newInk) {
-          image.data[pixel] = commonRed;
-          image.data[pixel + 1] = commonGreen;
-          image.data[pixel + 2] = commonBlue;
-        } else if (oldInk) {
-          image.data[pixel] = removedRed;
-          image.data[pixel + 1] = removedGreen;
-          image.data[pixel + 2] = removedBlue;
-          removedCount += 1;
-          flags[Math.floor(y / block) * columns + Math.floor(x / block)] = 1;
-        } else {
-          image.data[pixel] = addedRed;
-          image.data[pixel + 1] = addedGreen;
-          image.data[pixel + 2] = addedBlue;
-          addedCount += 1;
-          flags[Math.floor(y / block) * columns + Math.floor(x / block)] = 1;
-        }
-      }
-    }
-  }
+  image.data.set(computed.image);
   context.putImageData(image, 0, 0);
-  const autoBoxes = snapshot.boxEditor.manualBoxes == null
-    ? clampBoxes(
-      computeBoxes(flags, columns, rows, block, BOX_MIN_BLOCKS),
-      prepared.width,
-      prepared.height,
-    )
-    : undefined;
-  const boxes = snapshot.boxEditor.manualBoxes == null
+  const removedCount = computed.removed;
+  const addedCount = computed.added;
+  const autoBoxes = needsBoxes ? computed.boxes : undefined;
+  const boxes = needsBoxes
     ? autoBoxes
     : snapshot.boxEditor.manualBoxes.map(box => ({ ...box }));
   return {
@@ -511,4 +378,4 @@ export async function renderDiffPage(snapshot, dependencies) {
   };
 }
 
-export { boxStat };
+export { DIFF_RGB, boxStat };
