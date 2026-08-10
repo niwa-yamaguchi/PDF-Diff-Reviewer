@@ -174,10 +174,19 @@ export function createVisualController({
     }
     dom.cancelBoxDrag?.();
     dom.status.innerHTML = '<span class="busy">レンダリング中…</span>';
+    const phaseLabel = ({ phase, ratio }) => {
+      if (phase === "render") return "ページを描画中…";
+      if (phase === "align") return "位置合わせ中…";
+      return `差分を計算中… ${Math.round((ratio ?? 0) * 100)}%`;
+    };
+    const onProgress = value => {
+      if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) return;
+      dom.status.innerHTML = `<span class="busy">${phaseLabel(value)}</span>`;
+    };
     const renderer = mode === "toggle" ? renderTogglePage : renderDiffPage;
     let result;
     try {
-      result = await renderer(snapshot);
+      result = await renderer(snapshot, { onProgress });
     } catch (error) {
       if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) {
         finishInteractive(ticket);

@@ -197,7 +197,7 @@ test("commits a normal threshold render shell while preserving a newer manual bo
   const rendering = visualController.showPage(0);
   expect(renderDiffPage).toHaveBeenCalledWith(expect.objectContaining({
     comparison: expect.objectContaining({ threshold: 42 }),
-  }));
+  }), expect.objectContaining({ onProgress: expect.any(Function) }));
   boxController.pointerDown({ x: 10, y: 10, pointerId: 8, button: 0, preventDefault() {} });
   boxController.pointerMove({ x: 40, y: 40, pointerId: 8 });
   boxController.pointerUp({ x: 40, y: 40, pointerId: 8 });
@@ -356,6 +356,48 @@ test("cancels the previous render before starting a new one", async () => {
   await expect(pending).resolves.toMatchObject({ committed: false });
   await expect(second).resolves.toMatchObject({ committed: true });
   expect(dom.reportError).not.toHaveBeenCalled();
+});
+
+test("shows each rendering phase in the status line", async () => {
+  const pending = deferred();
+  let report;
+  const renderDiffPage = vi.fn((snapshot, options) => {
+    report = options.onProgress;
+    return pending.promise;
+  });
+  const { controller, dom } = harness({ renderDiffPage });
+
+  const running = controller.showPage(0);
+  report({ phase: "render" });
+  expect(dom.status.textContent).toBe("ページを描画中…");
+  report({ phase: "align" });
+  expect(dom.status.textContent).toBe("位置合わせ中…");
+  report({ phase: "diff", ratio: 0.45 });
+  expect(dom.status.textContent).toBe("差分を計算中… 45%");
+
+  pending.resolve(result(0));
+  await running;
+  expect(dom.status.textContent).toBe("差分を表示中");
+});
+
+test("ignores progress from a superseded render", async () => {
+  const first = deferred();
+  const reports = [];
+  const renderDiffPage = vi.fn((snapshot, options) => {
+    reports.push(options.onProgress);
+    return reports.length === 1 ? first.promise : Promise.resolve(result(1));
+  });
+  const { controller, dom } = harness({ renderDiffPage });
+
+  const stale = controller.showPage(0);
+  const fresh = controller.showPage(1);
+  await fresh;
+
+  reports[0]({ phase: "diff", ratio: 0.9 });
+  expect(dom.status.textContent).toBe("差分を表示中");
+
+  first.resolve(result(0));
+  await stale;
 });
 
 class FakeLaneWorker {
@@ -643,7 +685,10 @@ test("invalidates alignment and clamps the page before refreshing reordered slot
   expect(state.documents.currentPage).toBe(0);
   expect(invalidatePageAlignment).toHaveBeenCalledWith(state);
   expect(syncInvalidatedBoxEditor).toHaveBeenCalledOnce();
-  expect(renderDiffPage).toHaveBeenCalledWith(expect.objectContaining({ pageIndex: 0 }));
+  expect(renderDiffPage).toHaveBeenCalledWith(
+    expect.objectContaining({ pageIndex: 0 }),
+    expect.objectContaining({ onProgress: expect.any(Function) }),
+  );
 });
 
 class MemoryCanvas {
