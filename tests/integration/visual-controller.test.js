@@ -719,6 +719,33 @@ test("renders the exact legacy common removed and added pixels offscreen", async
   expect(rendered.status).toBe("差分を表示中");
 });
 
+test("applies one shared downscale factor to both canvases before alignment", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  dependencies.alignProbeScale = vi.fn(() => 0.5);
+  dependencies.downscaleCanvas = vi.fn(canvas => canvas);
+  dependencies.computeAlignment = vi.fn(() => ({
+    angle: 0, scale: 1, txFrac: 0, tyFrac: 0, applied: false,
+    method: "identity", scoreBase: 1, scoreBest: 1,
+  }));
+  const base = rendererSnapshot();
+  const snapshot = Object.freeze({
+    ...base,
+    comparison: Object.freeze({ ...base.comparison, autoAlign: true }),
+  });
+
+  await renderDiffPage(snapshot, dependencies);
+
+  expect(dependencies.alignProbeScale).toHaveBeenCalledTimes(1);
+  expect(dependencies.alignProbeScale).toHaveBeenCalledWith([oldCanvas, newCanvas]);
+
+  expect(dependencies.downscaleCanvas).toHaveBeenCalledTimes(2);
+  const [oldCall, newCall] = dependencies.downscaleCanvas.mock.calls;
+  expect(oldCall).toEqual([oldCanvas, 0.5]);
+  expect(newCall).toEqual([newCanvas, 0.5]);
+});
+
 test("requests old and new page dimensions concurrently", async () => {
   const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
   const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
