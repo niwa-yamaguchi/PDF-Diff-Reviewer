@@ -92,7 +92,8 @@ canvas本体はデタッチされないため、新旧切替モードの表示�
 | `src/core/image-diff/diff-compute.js` | 差分の画素計算本体 |
 | `src/core/alignment/align-compute.js` | RGBAバッファを入力とする位置合わせ |
 | `src/workers/diff-worker.js` | Workerのメッセージハンドラ |
-| `src/features/visual-diff/diff-worker-client.js` | Workerレーンの生成、ジョブ管理、打ち切り |
+| `src/features/visual-diff/worker-lane.js` | Workerレーンの生成、ジョブ管理、打ち切り |
+| `src/platform/diff-worker.js` | モジュールWorkerの生成 |
 
 `diff-compute.js` は、現行の `renderDiffPage` の二重ループと `computeChangeBoxesAligned` を1つの関数へ統合する。
 両者は同じ判定を行っており、前者が着色を伴う点だけが異なる。
@@ -203,7 +204,7 @@ Workerの生成に失敗した場合は、その旨をステータスへ表示�
 |---|---|
 | `diff-compute.js` | 純関数として直接テストする。既存の差分色、集計、変更枠の期待値を流用する |
 | `align-compute.js` | 既知の平行移動と回転を与えて検出できることを検証する。縮小サンプリングを含む新規テスト |
-| `diff-worker-client.js` | 疑似Workerを用い、ジョブ対応、進捗中継、打ち切り時の棄却、再生成を検証する |
+| `worker-lane.js` | 疑似Workerを用い、ジョブ対応、進捗中継、打ち切り時の棄却、再生成を検証する |
 | `visual-renderer.js` | `dependencies` へcoreを直接呼ぶ同期アダプタを注入する |
 | `diff-worker.js` | ロジックを持たない薄さで担保し、単体テストの対象外とする |
 | 実Worker経路 | Playwrightによるブラウザテストで通す |
