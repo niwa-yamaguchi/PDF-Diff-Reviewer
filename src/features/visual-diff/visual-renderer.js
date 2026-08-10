@@ -1,5 +1,3 @@
-import { bestAlignment } from "../../core/alignment/similarity.js";
-import { bestQuadrant } from "../../core/alignment/quadrant.js";
 import { DIFF_RGB, computeDiff } from "../../core/image-diff/diff-compute.js";
 
 const QUAD_PROBE_LONG = 512;
@@ -27,13 +25,21 @@ async function ensureQuadrant(snapshot, indexes, sizes, cache, dependencies) {
     dependencies.renderPageCanvas(documents.oldDoc, indexes.old, probeScale(sizes.old)),
     dependencies.renderPageCanvas(documents.newDoc, indexes.new, probeScale(sizes.new)),
   ]);
-  const oldGray = dependencies.canvasToGrayF(oldCanvas);
-  const newGray = dependencies.canvasToGrayF(newCanvas);
-  if (!oldGray || !newGray) {
+  const oldRgba = dependencies.canvasToRgba(oldCanvas);
+  const newRgba = dependencies.canvasToRgba(newCanvas);
+  if (!oldRgba || !newRgba) {
     cache.set(pageIndex, { k: 0, scores: [1, 0, 0, 0], applied: false, blank: true });
     return;
   }
-  cache.set(pageIndex, bestQuadrant(oldGray, newGray, comparison.threshold));
+  cache.set(pageIndex, dependencies.computeQuadrant({
+    oldData: oldRgba.data,
+    oldWidth: oldRgba.width,
+    oldHeight: oldRgba.height,
+    newData: newRgba.data,
+    newWidth: newRgba.width,
+    newHeight: newRgba.height,
+    threshold: comparison.threshold,
+  }));
 }
 
 export function effectiveQuadrant(snapshot, quadrantCache) {
@@ -97,9 +103,10 @@ export function toggleCompletedCacheMatchesSnapshot(snapshot, cache) {
 
 function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
   if (!snapshot.comparison.autoAlign || cache.has(snapshot.pageIndex)) return;
-  const oldGray = dependencies.canvasToGrayF(oldCanvas);
-  const newGray = dependencies.canvasToGrayF(newCanvas);
-  if (!oldGray || !newGray) {
+  const scale = dependencies.alignProbeScale([oldCanvas, newCanvas]);
+  const oldRgba = dependencies.canvasToRgba(dependencies.downscaleCanvas(oldCanvas, scale));
+  const newRgba = dependencies.canvasToRgba(dependencies.downscaleCanvas(newCanvas, scale));
+  if (!oldRgba || !newRgba) {
     cache.set(snapshot.pageIndex, {
       angle: 0,
       scale: 1,
@@ -113,10 +120,15 @@ function ensureAlignment(snapshot, oldCanvas, newCanvas, cache, dependencies) {
     });
     return;
   }
-  cache.set(
-    snapshot.pageIndex,
-    bestAlignment(oldGray, newGray, snapshot.comparison.threshold),
-  );
+  cache.set(snapshot.pageIndex, dependencies.computeAlignment({
+    oldData: oldRgba.data,
+    oldWidth: oldRgba.width,
+    oldHeight: oldRgba.height,
+    newData: newRgba.data,
+    newWidth: newRgba.width,
+    newHeight: newRgba.height,
+    threshold: snapshot.comparison.threshold,
+  }));
 }
 
 function alignmentMatrix(snapshot, cache, oldWidth, oldHeight, newWidth, newHeight) {

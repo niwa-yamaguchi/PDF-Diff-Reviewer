@@ -18,11 +18,14 @@ import { pdfjsLib } from "../platform/pdfjs.js";
 import { createDocumentController } from "../features/documents/document-controller.js";
 import { framePlan, pageLabelText, sequenceIndex } from "../features/documents/page-layout.js";
 import {
-  canvasToGrayF,
+  alignProbeScale,
+  canvasToRgba,
+  downscaleCanvas,
   pageSizePt,
   renderPageCanvas,
   rotateCanvas90,
 } from "../features/documents/page-renderer.js";
+import { computeAlignment, computeQuadrant } from "../core/alignment/align-compute.js";
 import { createViewerController } from "../features/viewer/viewer-controller.js";
 import { createVisualController } from "../features/visual-diff/visual-controller.js";
 import { effectiveQuadrant, renderDiffPage } from "../features/visual-diff/visual-renderer.js";
@@ -47,7 +50,11 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   framePlan,
   pageLabelText,
   sequenceIndex,
-  canvasToGrayF,
+  alignProbeScale,
+  canvasToRgba,
+  computeAlignment,
+  computeQuadrant,
+  downscaleCanvas,
   pageSizePt,
   renderPageCanvas,
   rotateCanvas90,
@@ -245,7 +252,11 @@ export function createApp({ document, window, dependencies = {} }) {
     framePlan: deps.framePlan,
     renderPageCanvas: deps.renderPageCanvas,
     rotateCanvas90: deps.rotateCanvas90,
-    canvasToGrayF: deps.canvasToGrayF,
+    alignProbeScale: deps.alignProbeScale,
+    canvasToRgba: deps.canvasToRgba,
+    computeAlignment: deps.computeAlignment,
+    computeQuadrant: deps.computeQuadrant,
+    downscaleCanvas: deps.downscaleCanvas,
     createCanvas: deps.createCanvas,
     createWhiteCanvas: deps.createWhiteCanvas,
     pageLabelText: deps.pageLabelText,

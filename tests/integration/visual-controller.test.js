@@ -616,13 +616,17 @@ class MemoryContext {
     }
   }
 
-  drawImage(source, dx = 0, dy = 0) {
-    for (let y = 0; y < source.height; y += 1) {
-      for (let x = 0; x < source.width; x += 1) {
+  drawImage(source, dx = 0, dy = 0, dw = source.width, dh = source.height) {
+    const scaleX = source.width / dw;
+    const scaleY = source.height / dh;
+    for (let y = 0; y < dh; y += 1) {
+      for (let x = 0; x < dw; x += 1) {
         const targetX = x + dx;
         const targetY = y + dy;
         if (targetX < 0 || targetY < 0 || targetX >= this.canvas.width || targetY >= this.canvas.height) continue;
-        const sourceOffset = (y * source.width + x) * 4;
+        const sourceX = Math.min(source.width - 1, Math.floor(x * scaleX));
+        const sourceY = Math.min(source.height - 1, Math.floor(y * scaleY));
+        const sourceOffset = (sourceY * source.width + sourceX) * 4;
         const targetOffset = (targetY * this.canvas.width + targetX) * 4;
         this.canvas.data.set(source.data.subarray(sourceOffset, sourceOffset + 4), targetOffset);
       }
@@ -682,7 +686,13 @@ function rendererDependencies(oldCanvas, newCanvas) {
     framePlan: () => ({ oldScale: 1, newScale: 1, normalized: false }),
     renderPageCanvas: vi.fn(async doc => doc.id === "old" ? oldCanvas : newCanvas),
     rotateCanvas90: canvas => canvas,
-    canvasToGrayF: vi.fn(),
+    canvasToRgba: canvas => (canvas
+      ? { data: new Uint8ClampedArray(canvas.data), width: canvas.width, height: canvas.height }
+      : null),
+    alignProbeScale: () => 1,
+    downscaleCanvas: canvas => canvas,
+    computeAlignment: vi.fn(),
+    computeQuadrant: vi.fn(),
     createCanvas: (width, height) => new MemoryCanvas(width, height),
     createWhiteCanvas: (width, height) => {
       const canvas = new MemoryCanvas(width, height);

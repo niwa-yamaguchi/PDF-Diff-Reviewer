@@ -17,15 +17,35 @@ export async function renderPageCanvas(doc, pageIndex, scale) {
   return canvas;
 }
 
-export function canvasToGrayF(canvas) {
+export const ALIGN_PROBE_LONG = 512;
+
+export function canvasToRgba(canvas) {
   if (!canvas) return null;
   const { width, height } = canvas;
-  const data = canvas.getContext("2d").getImageData(0, 0, width, height).data;
-  const gray = new Float64Array(width * height);
-  for (let index = 0, pixel = 0; index < gray.length; index += 1, pixel += 4) {
-    gray[index] = 0.299 * data[pixel] + 0.587 * data[pixel + 1] + 0.114 * data[pixel + 2];
+  const { data } = canvas.getContext("2d").getImageData(0, 0, width, height);
+  return { data, width, height };
+}
+
+export function alignProbeScale(canvases, longEdge = ALIGN_PROBE_LONG) {
+  let long = 0;
+  for (const canvas of canvases) {
+    if (!canvas) continue;
+    long = Math.max(long, canvas.width, canvas.height);
   }
-  return { g: gray, w: width, h: height };
+  return long > longEdge ? longEdge / long : 1;
+}
+
+export function downscaleCanvas(canvas, scale) {
+  if (!canvas || scale >= 1) return canvas;
+  const target = createWhiteCanvas(
+    Math.max(1, Math.round(canvas.width * scale)),
+    Math.max(1, Math.round(canvas.height * scale)),
+  );
+  const context = target.getContext("2d");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(canvas, 0, 0, target.width, target.height);
+  return target;
 }
 
 export function rotateCanvas90(canvas, quarterTurns) {
