@@ -1,9 +1,12 @@
-import { expect, test, vi } from "vitest";
+import { afterAll, expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 import { renderDiffPage } from "../../src/features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "../../src/features/visual-diff/toggle-renderer.js";
+import { createWorkerLane } from "../../src/features/visual-diff/worker-lane.js";
+import { computeDiff } from "../../src/core/image-diff/diff-compute.js";
+import { computeAlignment, computeQuadrant } from "../../src/core/alignment/align-compute.js";
 
 function deferred() {
   let resolve;
@@ -102,6 +105,7 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
     sideOld: { classList: activeClassList() },
     sideNew: { classList: activeClassList() },
     reportError: vi.fn(),
+    cancelRender: vi.fn(),
   };
   const drawBoxes = vi.fn();
   const controller = createVisualController({
@@ -193,7 +197,7 @@ test("commits a normal threshold render shell while preserving a newer manual bo
   const rendering = visualController.showPage(0);
   expect(renderDiffPage).toHaveBeenCalledWith(expect.objectContaining({
     comparison: expect.objectContaining({ threshold: 42 }),
-  }));
+  }), expect.objectContaining({ onProgress: expect.any(Function) }));
   boxController.pointerDown({ x: 10, y: 10, pointerId: 8, button: 0, preventDefault() {} });
   boxController.pointerMove({ x: 40, y: 40, pointerId: 8 });
   boxController.pointerUp({ x: 40, y: 40, pointerId: 8 });
@@ -330,6 +334,158 @@ test("commits only the latest page when an older render finishes last", async ()
   expect(context.drawImage).toHaveBeenCalledOnce();
   expect(state.visual.pageCache.has(0)).toBe(false);
   expect(state.visual.pageCache.get(1)).toEqual({ rm: 2, ad: 3, bx: 1 });
+});
+
+test("cancels the previous render before starting a new one", async () => {
+  const first = deferred();
+  const renderDiffPage = vi.fn()
+    .mockReturnValueOnce(first.promise)
+    .mockResolvedValueOnce(result(1));
+  const { controller, dom } = harness({ renderDiffPage });
+
+  const pending = controller.showPage(0);
+  expect(dom.cancelRender).toHaveBeenCalledTimes(1);
+
+  const second = controller.showPage(1);
+  expect(dom.cancelRender).toHaveBeenCalledTimes(2);
+
+  const cancelled = new Error("描画を打ち切りました");
+  cancelled.name = "RenderCancelled";
+  first.reject(cancelled);
+
+  await expect(pending).resolves.toMatchObject({ committed: false });
+  await expect(second).resolves.toMatchObject({ committed: true });
+  expect(dom.reportError).not.toHaveBeenCalled();
+});
+
+test("shows each rendering phase in the status line", async () => {
+  const pending = deferred();
+  let report;
+  const renderDiffPage = vi.fn((snapshot, options) => {
+    report = options.onProgress;
+    return pending.promise;
+  });
+  const { controller, dom } = harness({ renderDiffPage });
+
+  const running = controller.showPage(0);
+  report({ phase: "render" });
+  expect(dom.status.textContent).toBe("ページを描画中…");
+  report({ phase: "align" });
+  expect(dom.status.textContent).toBe("位置合わせ中…");
+  report({ phase: "diff", ratio: 0.45 });
+  expect(dom.status.textContent).toBe("差分を計算中… 45%");
+
+  pending.resolve(result(0));
+  await running;
+  expect(dom.status.textContent).toBe("差分を表示中");
+});
+
+test("ignores progress from a superseded render", async () => {
+  const first = deferred();
+  const reports = [];
+  const renderDiffPage = vi.fn((snapshot, options) => {
+    reports.push(options.onProgress);
+    return reports.length === 1 ? first.promise : Promise.resolve(result(1));
+  });
+  const { controller, dom } = harness({ renderDiffPage });
+
+  const stale = controller.showPage(0);
+  const fresh = controller.showPage(1);
+  await fresh;
+
+  reports[0]({ phase: "diff", ratio: 0.9 });
+  expect(dom.status.textContent).toBe("差分を表示中");
+
+  first.resolve(result(0));
+  await stale;
+});
+
+class FakeLaneWorker {
+  constructor(registry) {
+    this.posted = [];
+    this.terminated = false;
+    this.onmessage = null;
+    registry.push(this);
+  }
+
+  postMessage(message) {
+    this.posted.push(message);
+  }
+
+  terminate() {
+    this.terminated = true;
+  }
+
+  emit(data) {
+    this.onmessage?.({ data });
+  }
+}
+
+test("does not report an error when a second render starts while the worker lane is still busy", async () => {
+  const workers = [];
+  const lane = createWorkerLane({ createWorker: () => new FakeLaneWorker(workers) });
+  const renderDiffPage = vi.fn(async snapshot => {
+    await lane.run("diff", { pageIndex: snapshot.pageIndex });
+    return result(snapshot.pageIndex);
+  });
+  const { controller, dom } = harness({ renderDiffPage });
+  dom.cancelRender = () => lane.cancel();
+
+  const pending = controller.showPage(0);
+  expect(workers).toHaveLength(1);
+  const second = controller.showPage(1);
+
+  expect(workers).toHaveLength(2);
+  expect(workers[0].terminated).toBe(true);
+  const { id } = workers[1].posted[0];
+  workers[1].emit({ id, type: "done", result: null });
+
+  await expect(pending).resolves.toMatchObject({ committed: false });
+  await expect(second).resolves.toMatchObject({ committed: true });
+  expect(dom.reportError).not.toHaveBeenCalled();
+});
+
+// create-app と同じ配り方。描画1回につき1セッションを取る。
+function laneRenderDependencies(lane) {
+  const run = lane.session();
+  return { computeDiff: (payload, options) => run("diff", payload, options) };
+}
+
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test("cancels a render that only reaches the worker lane after a newer render started", async () => {
+  const workers = [];
+  const lane = createWorkerLane({ createWorker: () => new FakeLaneWorker(workers) });
+  const rasterized = [deferred(), deferred()];
+  const render = vi.fn(async (snapshot, dependencies) => {
+    await rasterized[snapshot.pageIndex].promise;
+    await dependencies.computeDiff({ pageIndex: snapshot.pageIndex });
+    return result(snapshot.pageIndex);
+  });
+  const { controller, dom } = harness({
+    renderDiffPage: (snapshot, options) => render(snapshot, laneRenderDependencies(lane), options),
+  });
+  dom.cancelRender = () => lane.cancel();
+
+  const stale = controller.showPage(0);
+  const fresh = controller.showPage(1);
+  expect(workers).toHaveLength(0);
+
+  // 古い描画のラスタライズが先に終わってもレーンは奪われない。
+  rasterized[0].resolve();
+  await flush();
+  expect(workers).toHaveLength(0);
+  await expect(stale).resolves.toMatchObject({ committed: false });
+
+  rasterized[1].resolve();
+  await flush();
+  expect(workers).toHaveLength(1);
+  expect(workers[0].posted[0].payload).toEqual({ pageIndex: 1 });
+  const { id } = workers[0].posted[0];
+  workers[0].emit({ id, type: "done", result: null });
+
+  await expect(fresh).resolves.toMatchObject({ committed: true });
+  expect(dom.reportError).not.toHaveBeenCalled();
 });
 
 test("discards a pending result when the document generation changes", async () => {
@@ -572,8 +728,24 @@ test("invalidates alignment and clamps the page before refreshing reordered slot
   expect(state.documents.currentPage).toBe(0);
   expect(invalidatePageAlignment).toHaveBeenCalledWith(state);
   expect(syncInvalidatedBoxEditor).toHaveBeenCalledOnce();
-  expect(renderDiffPage).toHaveBeenCalledWith(expect.objectContaining({ pageIndex: 0 }));
+  expect(renderDiffPage).toHaveBeenCalledWith(
+    expect.objectContaining({ pageIndex: 0 }),
+    expect.objectContaining({ onProgress: expect.any(Function) }),
+  );
 });
+
+// Node には ImageData が無い。renderDiffPage は結果バッファを再確保せず
+// そのまま包むため、包み先の最小実装を用意する。
+class MemoryImageData {
+  constructor(data, width, height) {
+    this.data = data;
+    this.width = width;
+    this.height = height;
+  }
+}
+
+vi.stubGlobal("ImageData", MemoryImageData);
+afterAll(() => vi.unstubAllGlobals());
 
 class MemoryCanvas {
   constructor(width, height, pixels) {
@@ -595,10 +767,6 @@ class MemoryContext {
     this.fillStyle = "#fff";
   }
 
-  createImageData(width, height) {
-    return { width, height, data: new Uint8ClampedArray(width * height * 4) };
-  }
-
   getImageData(x, y, width, height) {
     return { width, height, data: new Uint8ClampedArray(this.canvas.data) };
   }
@@ -616,13 +784,17 @@ class MemoryContext {
     }
   }
 
-  drawImage(source, dx = 0, dy = 0) {
-    for (let y = 0; y < source.height; y += 1) {
-      for (let x = 0; x < source.width; x += 1) {
+  drawImage(source, dx = 0, dy = 0, dw = source.width, dh = source.height) {
+    const scaleX = source.width / dw;
+    const scaleY = source.height / dh;
+    for (let y = 0; y < dh; y += 1) {
+      for (let x = 0; x < dw; x += 1) {
         const targetX = x + dx;
         const targetY = y + dy;
         if (targetX < 0 || targetY < 0 || targetX >= this.canvas.width || targetY >= this.canvas.height) continue;
-        const sourceOffset = (y * source.width + x) * 4;
+        const sourceX = Math.min(source.width - 1, Math.floor(x * scaleX));
+        const sourceY = Math.min(source.height - 1, Math.floor(y * scaleY));
+        const sourceOffset = (sourceY * source.width + sourceX) * 4;
         const targetOffset = (targetY * this.canvas.width + targetX) * 4;
         this.canvas.data.set(source.data.subarray(sourceOffset, sourceOffset + 4), targetOffset);
       }
@@ -675,6 +847,12 @@ function rendererSnapshot({ side = "old", toggleCache = null } = {}) {
   });
 }
 
+function detachAll(options) {
+  for (const buffer of options?.transfer ?? []) {
+    structuredClone(buffer, { transfer: [buffer] });
+  }
+}
+
 function rendererDependencies(oldCanvas, newCanvas) {
   return {
     sequenceIndex: sequence => sequence[0],
@@ -682,7 +860,26 @@ function rendererDependencies(oldCanvas, newCanvas) {
     framePlan: () => ({ oldScale: 1, newScale: 1, normalized: false }),
     renderPageCanvas: vi.fn(async doc => doc.id === "old" ? oldCanvas : newCanvas),
     rotateCanvas90: canvas => canvas,
-    canvasToGrayF: vi.fn(),
+    canvasToRgba: canvas => (canvas
+      ? { data: new Uint8ClampedArray(canvas.data), width: canvas.width, height: canvas.height }
+      : null),
+    alignProbeScale: () => 1,
+    downscaleCanvas: canvas => canvas,
+    computeDiff: async (payload, options) => {
+      const result = computeDiff({ ...payload, onProgress: options?.onProgress });
+      detachAll(options);
+      return result;
+    },
+    computeAlignment: async (payload, options) => {
+      const result = computeAlignment(payload);
+      detachAll(options);
+      return result;
+    },
+    computeQuadrant: async (payload, options) => {
+      const result = computeQuadrant(payload);
+      detachAll(options);
+      return result;
+    },
     createCanvas: (width, height) => new MemoryCanvas(width, height),
     createWhiteCanvas: (width, height) => {
       const canvas = new MemoryCanvas(width, height);
@@ -707,6 +904,112 @@ test("renders the exact legacy common removed and added pixels offscreen", async
   ]);
   expect(rendered.cacheEntry).toEqual({ rm: 1, ad: 1, bx: rendered.boxes.length });
   expect(rendered.status).toBe("差分を表示中");
+});
+
+test("puts the computed buffer straight onto the canvas without a second full-size copy", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const compute = dependencies.computeDiff;
+  let computedImage = null;
+  dependencies.computeDiff = async (payload, options) => {
+    const computed = await compute(payload, options);
+    computedImage = computed.image;
+    return computed;
+  };
+  const placed = [];
+  dependencies.createCanvas = (width, height) => {
+    const canvas = new MemoryCanvas(width, height);
+    const put = canvas.context.putImageData.bind(canvas.context);
+    canvas.context.putImageData = (image, x, y) => {
+      placed.push(image);
+      put(image, x, y);
+    };
+    return canvas;
+  };
+
+  await renderDiffPage(rendererSnapshot(), dependencies);
+
+  expect(placed).toHaveLength(1);
+  expect(placed[0]).toBeInstanceOf(MemoryImageData);
+  expect(placed[0].data).toBe(computedImage);
+  expect([placed[0].width, placed[0].height]).toEqual([3, 1]);
+});
+
+test("skips the alignment phase report while automatic alignment is off", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const phases = [];
+
+  await renderDiffPage(rendererSnapshot(), dependencies, {
+    onProgress: value => phases.push(value.phase),
+  });
+
+  expect(phases).toContain("render");
+  expect(phases).not.toContain("align");
+  expect(phases).toContain("diff");
+});
+
+test("reports the alignment phase while automatic alignment is on", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const base = rendererSnapshot();
+  const snapshot = Object.freeze({
+    ...base,
+    comparison: Object.freeze({ ...base.comparison, autoAlign: true }),
+  });
+  const phases = [];
+
+  await renderDiffPage(snapshot, dependencies, {
+    onProgress: value => phases.push(value.phase),
+  });
+
+  expect(phases).toContain("align");
+});
+
+test("reports diff progress while the toggle mode computes its change boxes", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 60, 120]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([20, 80, 140]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const reports = [];
+
+  await renderTogglePage(rendererSnapshot(), dependencies, {
+    onProgress: value => reports.push(value),
+  });
+
+  const diffReports = reports.filter(value => value.phase === "diff");
+  expect(diffReports.length).toBeGreaterThan(0);
+  expect(diffReports.at(-1).ratio).toBe(1);
+  expect(reports.some(value => value.phase === "align")).toBe(false);
+});
+
+test("applies one shared downscale factor to both canvases before alignment", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  dependencies.alignProbeScale = vi.fn(() => 0.5);
+  dependencies.downscaleCanvas = vi.fn(canvas => canvas);
+  dependencies.computeAlignment = vi.fn(() => ({
+    angle: 0, scale: 1, txFrac: 0, tyFrac: 0, applied: false,
+    method: "identity", scoreBase: 1, scoreBest: 1,
+  }));
+  const base = rendererSnapshot();
+  const snapshot = Object.freeze({
+    ...base,
+    comparison: Object.freeze({ ...base.comparison, autoAlign: true }),
+  });
+
+  await renderDiffPage(snapshot, dependencies);
+
+  expect(dependencies.alignProbeScale).toHaveBeenCalledTimes(1);
+  expect(dependencies.alignProbeScale).toHaveBeenCalledWith([oldCanvas, newCanvas]);
+
+  expect(dependencies.downscaleCanvas).toHaveBeenCalledTimes(2);
+  const [oldCall, newCall] = dependencies.downscaleCanvas.mock.calls;
+  expect(oldCall).toEqual([oldCanvas, 0.5]);
+  expect(newCall).toEqual([newCanvas, 0.5]);
 });
 
 test("requests old and new page dimensions concurrently", async () => {

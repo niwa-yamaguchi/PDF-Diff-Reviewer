@@ -16,11 +16,20 @@ test("README documents the reproducible Vite and Cloudflare Pages workflow", asy
   expect(readme).toContain("Production branch: `main`");
   expect(readme).toMatch(/ブラウザ内.*外部.*送信しない/s);
   expect(readme).toMatch(/実行時.*CDN.*不要/s);
+  for (const directory of ["src/app/", "src/features/", "src/core/", "src/platform/", "src/workers/"]) {
+    expect(readme).toContain(directory);
+  }
 });
 
 test("Playwright runs the same suite in Chromium, Firefox, and WebKit", () => {
   expect(playwrightConfig.projects.map(({ name }) => name))
     .toEqual(["chromium", "firefox", "webkit"]);
+});
+
+test("Playwright pins its worker count instead of scaling with the host CPU", () => {
+  expect(playwrightConfig.workers).toBeTypeOf("number");
+  expect(playwrightConfig.workers).toBeGreaterThan(0);
+  expect(playwrightConfig.workers).toBeLessThanOrEqual(4);
 });
 
 test("index is module-only and carries the final refactoring date", async () => {

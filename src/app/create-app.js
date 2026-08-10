@@ -18,11 +18,15 @@ import { pdfjsLib } from "../platform/pdfjs.js";
 import { createDocumentController } from "../features/documents/document-controller.js";
 import { framePlan, pageLabelText, sequenceIndex } from "../features/documents/page-layout.js";
 import {
-  canvasToGrayF,
+  alignProbeScale,
+  canvasToRgba,
+  downscaleCanvas,
   pageSizePt,
   renderPageCanvas,
   rotateCanvas90,
 } from "../features/documents/page-renderer.js";
+import { createDiffWorker } from "../platform/diff-worker.js";
+import { createWorkerLane } from "../features/visual-diff/worker-lane.js";
 import { createViewerController } from "../features/viewer/viewer-controller.js";
 import { createVisualController } from "../features/visual-diff/visual-controller.js";
 import { effectiveQuadrant, renderDiffPage } from "../features/visual-diff/visual-renderer.js";
@@ -47,7 +51,11 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   framePlan,
   pageLabelText,
   sequenceIndex,
-  canvasToGrayF,
+  alignProbeScale,
+  canvasToRgba,
+  createDiffWorker,
+  createWorkerLane,
+  downscaleCanvas,
   pageSizePt,
   renderPageCanvas,
   rotateCanvas90,
@@ -239,16 +247,42 @@ export function createApp({ document, window, dependencies = {} }) {
     boxEditorView.updateControls();
   }
 
-  const visualRenderDependencies = Object.freeze({
+  const interactiveLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
+  const exportLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
+
+  // 描画1回につき1セッション。cancel() 以前に始まった描画からのジョブは
+  // レーンへ到達した時点で RenderCancelled となり、現行の描画がレーンを取れる。
+  const laneCompute = lane => {
+    const run = lane.session();
+    return Object.freeze({
+      computeDiff: (payload, options) => run("diff", payload, options),
+      computeAlignment: (payload, options) => run("align", payload, options),
+      computeQuadrant: (payload, options) => run("quadrant", payload, options),
+    });
+  };
+
+  const sharedRenderDependencies = Object.freeze({
     sequenceIndex: deps.sequenceIndex,
     pageSizePt: deps.pageSizePt,
     framePlan: deps.framePlan,
     renderPageCanvas: deps.renderPageCanvas,
     rotateCanvas90: deps.rotateCanvas90,
-    canvasToGrayF: deps.canvasToGrayF,
+    canvasToRgba: deps.canvasToRgba,
+    alignProbeScale: deps.alignProbeScale,
+    downscaleCanvas: deps.downscaleCanvas,
     createCanvas: deps.createCanvas,
     createWhiteCanvas: deps.createWhiteCanvas,
     pageLabelText: deps.pageLabelText,
+  });
+
+  const visualRenderDependencies = () => Object.freeze({
+    ...sharedRenderDependencies,
+    ...laneCompute(interactiveLane),
+  });
+
+  const exportRenderDependencies = () => Object.freeze({
+    ...sharedRenderDependencies,
+    ...laneCompute(exportLane),
   });
 
   visualController = deps.createVisualController({
@@ -267,6 +301,7 @@ export function createApp({ document, window, dependencies = {} }) {
       sideOld: dom.sideOld,
       sideNew: dom.sideNew,
       cancelBoxDrag: () => boxEditorController?.cancelDrag?.(),
+      cancelRender: () => interactiveLane.cancel(),
       refreshBoxEditor: () => boxEditorView?.refresh?.(),
       afterCommit() {
         updateAlignButtons();
@@ -276,8 +311,12 @@ export function createApp({ document, window, dependencies = {} }) {
       },
       reportError: error => errorReporter.report(error, "レンダリングに失敗しました"),
     },
-    renderDiffPage: snapshot => deps.renderDiffPage(snapshot, visualRenderDependencies),
-    renderTogglePage: snapshot => deps.renderTogglePage(snapshot, visualRenderDependencies),
+    renderDiffPage: (snapshot, options) => (
+      deps.renderDiffPage(snapshot, visualRenderDependencies(), options)
+    ),
+    renderTogglePage: (snapshot, options) => (
+      deps.renderTogglePage(snapshot, visualRenderDependencies(), options)
+    ),
     drawBoxes: () => boxEditorView?.redraw?.(),
   });
 
@@ -329,9 +368,15 @@ export function createApp({ document, window, dependencies = {} }) {
       dlTextPng: dom.dlTextPng,
       dlTextPdf: dom.dlTextPdf,
     },
-    renderVisualOffscreen: ({ renderSnapshot }) => (
-      deps.renderDiffPage(renderSnapshot, visualRenderDependencies)
-    ),
+    // 1回のPDF出力で1セッション。読み込み直しで打ち切られた出力ループが
+    // 次の出力からレーンを奪わないようにする。
+    createVisualRenderSession: () => {
+      const dependencies = exportRenderDependencies();
+      return Object.freeze({
+        render: ({ renderSnapshot }) => deps.renderDiffPage(renderSnapshot, dependencies),
+        cancel: () => exportLane.cancel(),
+      });
+    },
     renderTextOffscreen: ({ side, pageIndex, snapshot }) => (
       textRenderer.renderOffscreen({ side, pageIndex, snapshot })
     ),

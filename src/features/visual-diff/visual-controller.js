@@ -1,4 +1,5 @@
 import { toggleCompletedCacheMatchesSnapshot } from "./visual-renderer.js";
+import { isRenderCancelled } from "./worker-lane.js";
 
 function frozenBoxes(boxes) {
   if (!boxes) return null;
@@ -158,6 +159,7 @@ export function createVisualController({
     } = {},
   ) {
     if (pageIndex < 0 || pageIndex >= state.documents.pages) return { committed: false };
+    dom.cancelRender?.();
     const ticket = Object.freeze({
       id: ++state.visual.renderGeneration,
       documentGeneration: state.documents.generation,
@@ -172,16 +174,25 @@ export function createVisualController({
     }
     dom.cancelBoxDrag?.();
     dom.status.innerHTML = '<span class="busy">レンダリング中…</span>';
+    const phaseLabel = ({ phase, ratio }) => {
+      if (phase === "render") return "ページを描画中…";
+      if (phase === "align") return "位置合わせ中…";
+      return `差分を計算中… ${Math.round((ratio ?? 0) * 100)}%`;
+    };
+    const onProgress = value => {
+      if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) return;
+      dom.status.innerHTML = `<span class="busy">${phaseLabel(value)}</span>`;
+    };
     const renderer = mode === "toggle" ? renderTogglePage : renderDiffPage;
     let result;
     try {
-      result = await renderer(snapshot);
+      result = await renderer(snapshot, { onProgress });
     } catch (error) {
       if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) {
         finishInteractive(ticket);
         return { committed: false };
       }
-      dom.reportError?.(error);
+      if (!isRenderCancelled(error)) dom.reportError?.(error);
       finishInteractive(ticket);
       return { committed: false, error };
     }
