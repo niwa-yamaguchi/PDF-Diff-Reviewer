@@ -225,6 +225,40 @@ describe("createSplitViewerController", () => {
     expect(controller.getView().scale).toBeCloseTo(Math.min(180 / 1000, 280 / 800) * 0.92);
   });
 
+  test("does not reapply on resize when split view is not active", () => {
+    const state = activeSplitState();
+    const dom = splitDom({ oldWrap: [400, 300], newWrap: [400, 300], canvas: [1000, 800] });
+    const controller = createSplitViewerController({ state, dom });
+    controller.apply({ scale: 2, tx: 30, ty: 40 });
+
+    state.visual.mode = "diff";
+    dom.zoomLabel.textContent = "46%";
+    controller.handleResize();
+
+    expect(dom.zoomLabel.textContent).toBe("46%");
+    expect(controller.getView()).toEqual({ scale: 2, tx: 30, ty: 40 });
+    expect(dom.oldCanvas.style.transform).toBe("translate(30px,40px) scale(2)");
+  });
+
+  test("cancels pan without moving when the split view becomes inactive", () => {
+    const state = activeSplitState();
+    const dom = splitDom({ oldWrap: [400, 300], newWrap: [400, 300], canvas: [1000, 800] });
+    const controller = createSplitViewerController({ state, dom });
+
+    controller.handlePointerDown(dom.newWrap, pointerEvent({ pointerId: 7, clientX: 10, clientY: 20 }));
+    state.ui.topMode = "text";
+    controller.handlePointerMove(dom.newWrap, pointerEvent({ pointerId: 7, clientX: 40, clientY: 60 }));
+
+    expect(controller.getView()).toEqual({ scale: 1, tx: 0, ty: 0 });
+    expect(dom.newWrap.classList.contains("panning")).toBe(false);
+    expect(dom.newWrap.releasePointerCapture).toHaveBeenCalledWith(7);
+    expect(dom.oldWrap.releasePointerCapture).not.toHaveBeenCalled();
+
+    state.ui.topMode = "visual";
+    controller.handlePointerMove(dom.newWrap, pointerEvent({ pointerId: 7, clientX: 80, clientY: 90 }));
+    expect(controller.getView()).toEqual({ scale: 1, tx: 0, ty: 0 });
+  });
+
   test("ignores wheel and zoom when split view is not active", () => {
     const state = activeSplitState();
     state.visual.rendered = false;

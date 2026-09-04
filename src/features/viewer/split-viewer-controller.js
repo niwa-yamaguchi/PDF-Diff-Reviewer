@@ -54,6 +54,10 @@ export function createSplitViewerController({ state, dom }) {
 
   function handlePointerMove(_wrap, event) {
     if (!pan || event.pointerId !== pan.pointerId) return;
+    if (!active()) {
+      cancelPan(event);
+      return;
+    }
     apply({
       ...view,
       tx: pan.startTx + event.clientX - pan.startX,
@@ -86,6 +90,6 @@ export function createSplitViewerController({ state, dom }) {
     handleWheel, handlePointerDown, handlePointerMove,
     handlePointerUp: (_wrap, event) => cancelPan(event),
     handlePointerCancel: (_wrap, event) => cancelPan(event),
-    handleResize: () => apply(),
+    handleResize: () => { if (active()) apply(); },
   };
 }
