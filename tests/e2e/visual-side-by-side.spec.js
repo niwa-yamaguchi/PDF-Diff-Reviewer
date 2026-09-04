@@ -84,10 +84,24 @@ test("reviews aligned drawings side by side with synchronized navigation", async
     const [oldTransform, newTransform] = await transforms(page);
     return oldTransform === newTransform && oldTransform.includes("scale(1)");
   }).toBe(true);
+  await dragPane(page, ".visual-split-pane.old .visual-split-canvas-wrap");
+  const beforeFit = await transforms(page);
+  const expectedFitScale = await page.evaluate(() => {
+    const oldWrap = document.querySelector(".visual-split-pane.old .visual-split-canvas-wrap");
+    const newWrap = document.querySelector(".visual-split-pane.new .visual-split-canvas-wrap");
+    const frame = document.querySelector("#splitOldCanvas");
+    const width = Math.min(oldWrap.clientWidth, newWrap.clientWidth);
+    const height = Math.min(oldWrap.clientHeight, newWrap.clientHeight);
+    return Math.min(width / frame.width, height / frame.height) * 0.92;
+  });
   await page.locator("#zoomFit").click();
   await expect.poll(async () => {
     const [oldTransform, newTransform] = await transforms(page);
-    return oldTransform === newTransform;
+    const match = oldTransform.match(/scale\(([^)]+)\)/);
+    return oldTransform === newTransform
+      && oldTransform !== beforeFit[0]
+      && match
+      && Math.abs(Number(match[1]) - expectedFitScale) < 1e-6;
   }).toBe(true);
 
   await newCanvas.hover();

@@ -124,25 +124,98 @@ async function inspectSplitPng(page, download, { paneWidth, paneHeight, dpi }) {
   expect(content.newNonWhite).toBeGreaterThan(20);
 }
 
-async function inspectSplitPdf(download, expectedPages) {
+async function inspectSplitPdf(page, download, {
+  paneWidth,
+  paneHeight,
+  dpi,
+  pageCount,
+}) {
   const bytes = await downloadBytes(download);
-  const { getDocument } = (await import("pdfjs-dist/build/pdf.js")).default;
-  const document = await getDocument({
-    data: new Uint8Array(bytes),
-    disableWorker: true,
-  }).promise;
-  try {
-    expect(document.numPages).toBe(expectedPages);
-    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
-      const pdfPage = await document.getPage(pageNumber);
-      const viewport = pdfPage.getViewport({ scale: 1 });
-      expect(viewport.width).toBeGreaterThan(viewport.height);
-      const operators = await pdfPage.getOperatorList();
-      expect(operators.fnArray.length).toBeGreaterThan(0);
-      pdfPage.cleanup();
+  const gap = Math.max(1, Math.round(dpi / 72));
+  const labelHeight = Math.max(1, Math.round(28 * dpi / 72));
+  const expectedWidthPx = paneWidth * 2 + gap;
+  const expectedHeightPx = labelHeight + paneHeight;
+  const expectedWidthPt = expectedWidthPx * 72 / dpi;
+  const expectedHeightPt = expectedHeightPx * 72 / dpi;
+  const inspected = await page.evaluate(async ({
+    base64,
+    dpi,
+    paneWidth,
+    gap,
+    labelHeight,
+  }) => {
+    const { pdfjsLib, PDF_DOCUMENT_OPTIONS } = await import("/src/platform/pdfjs.js");
+    const binary = atob(base64);
+    const data = Uint8Array.from(binary, character => character.charCodeAt(0));
+    const loadingTask = pdfjsLib.getDocument({ ...PDF_DOCUMENT_OPTIONS, data });
+    const pdfDocument = await loadingTask.promise;
+    const pages = [];
+    try {
+      for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
+        const pdfPage = await pdfDocument.getPage(pageNumber);
+        const viewport = pdfPage.getViewport({ scale: 1 });
+        const operators = await pdfPage.getOperatorList();
+        const imageSizes = operators.fnArray.flatMap((operator, index) => (
+          operator === pdfjsLib.OPS.paintImageXObject
+            ? [[operators.argsArray[index][1], operators.argsArray[index][2]]]
+            : []
+        ));
+
+        const renderScale = 0.5;
+        const rendered = pdfPage.getViewport({ scale: renderScale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.ceil(rendered.width);
+        canvas.height = Math.ceil(rendered.height);
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await pdfPage.render({ canvasContext: context, viewport: rendered }).promise;
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        const contentTop = Math.ceil(labelHeight * 72 / dpi * renderScale);
+        const oldRight = Math.floor(paneWidth * 72 / dpi * renderScale);
+        const newLeft = Math.ceil((paneWidth + gap) * 72 / dpi * renderScale);
+        const countNonWhite = (left, right) => {
+          let count = 0;
+          for (let y = contentTop; y < canvas.height; y++) {
+            for (let x = left; x < right; x++) {
+              const offset = (y * canvas.width + x) * 4;
+              if (
+                pixels[offset] < 245
+                || pixels[offset + 1] < 245
+                || pixels[offset + 2] < 245
+              ) count++;
+            }
+          }
+          return count;
+        };
+        pages.push({
+          viewport: [viewport.width, viewport.height],
+          oldNonWhite: countNonWhite(0, oldRight),
+          newNonWhite: countNonWhite(newLeft, canvas.width),
+          imageSizes,
+        });
+        pdfPage.cleanup();
+      }
+      return { pageCount: pdfDocument.numPages, pages };
+    } finally {
+      await pdfDocument.destroy();
     }
-  } finally {
-    await document.destroy();
+  }, {
+    base64: bytes.toString("base64"),
+    dpi,
+    paneWidth,
+    gap,
+    labelHeight,
+  });
+
+  expect(inspected.pageCount).toBe(pageCount);
+  expect(inspected.pages).toHaveLength(pageCount);
+  for (const pdfPage of inspected.pages) {
+    expect(pdfPage.viewport[0]).toBeCloseTo(expectedWidthPt, 1);
+    expect(pdfPage.viewport[1]).toBeCloseTo(expectedHeightPt, 1);
+    expect(pdfPage.oldNonWhite).toBeGreaterThan(20);
+    expect(pdfPage.newNonWhite).toBeGreaterThan(20);
+    expect(pdfPage.imageSizes).toContainEqual([expectedWidthPx, expectedHeightPx]);
   }
 }
 
@@ -200,5 +273,5 @@ test("downloads full-resolution side-by-side PNG/PDF without changing the split 
   await inspectSplitPng(page, png, source);
 
   const pdf = await expectDownload(page, "#dlPdf", "side-by-side.pdf", visualView);
-  await inspectSplitPdf(pdf, source.pageCount);
+  await inspectSplitPdf(page, pdf, source);
 });

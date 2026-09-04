@@ -88,32 +88,55 @@ test("keeps a running side-by-side PDF export alive while pages are sent", async
       constructor(...args) {
         super(...args);
         this.__testWorkerId = nextWorkerId++;
+        this.__testWorkerCreatedAt = performance.now();
       }
 
       postMessage(...args) {
-        window.__workerJobs.push({
+        const type = args[0]?.type || null;
+        const record = {
           workerId: this.__testWorkerId,
-          type: args[0]?.type || null,
-        });
+          workerCreatedAt: this.__testWorkerCreatedAt,
+          type,
+          page: type === "diff" ? window.__workerExpectedPage : null,
+          pageLabel: document.querySelector("#pageLabel")?.textContent || "",
+          postedAt: performance.now(),
+          committedAt: null,
+        };
+        window.__workerJobs.push(record);
         return super.postMessage(...args);
       }
     };
+    window.addEventListener("DOMContentLoaded", () => {
+      const pageLabel = document.querySelector("#pageLabel");
+      new MutationObserver(() => {
+        const currentPage = Number(pageLabel.textContent.match(/^(\d+)/)?.[1]);
+        if (currentPage !== window.__workerExpectedPage) return;
+        const committedAt = performance.now();
+        for (const job of window.__workerJobs) {
+          if (
+            job.type === "diff"
+            && job.workerCreatedAt < window.__workerResetAt
+            && job.committedAt == null
+          ) job.committedAt = committedAt;
+        }
+      }).observe(pageLabel, { childList: true, characterData: true, subtree: true });
+    }, { once: true });
   });
   await runDiff(page);
   await page.locator("#modeSplit").click();
   await expect(page.locator("#status")).toHaveText("左右表示中");
   await page.locator("#next").click();
   await expect(page.locator("#pageLabel")).toContainText("2 / 2");
-  for (const total of [3, 4, 5]) {
-    await page.locator("#alignDelOld").click();
-    await expect(page.locator("#pageLabel")).toContainText(`2 / ${total}`, {
-      timeout: 30_000,
-    });
-    await expect(page.locator("#status")).toHaveText("左右表示中");
-  }
-  await page.locator("#prev").click();
-  await expect(page.locator("#pageLabel")).toContainText("1 / 5", { timeout: 30_000 });
+  await page.locator("#alignDelOld").click();
+  await expect(page.locator("#pageLabel")).toContainText("2 / 3", { timeout: 30_000 });
+  await expect(page.locator("#status")).toHaveText("左右表示中");
   const before = await splitCanvasState(page);
+  const resetAt = await page.evaluate(() => {
+    window.__workerJobs = [];
+    window.__workerExpectedPage = 3;
+    window.__workerResetAt = performance.now();
+    return window.__workerResetAt;
+  });
 
   let downloadStarted = false;
   const pending = page.waitForEvent("download").then((download) => {
@@ -126,7 +149,7 @@ test("keeps a running side-by-side PDF export alive while pages are sent", async
   });
   await expect.poll(async () => {
     const current = await splitCanvasState(page);
-    return current.page.includes("2 / 5")
+    return current.page.includes("3 / 3")
       && current.old.dimensions.every(value => value > 10)
       && current.new.dimensions.every(value => value > 10)
       && current.old.checksum !== before.old.checksum
@@ -141,13 +164,15 @@ test("keeps a running side-by-side PDF export alive while pages are sent", async
   const download = await pending;
   expect(download.suggestedFilename()).toBe("side-by-side.pdf");
   expect(await download.path()).not.toBeNull();
-  const workerIds = await page.evaluate(() => (
-    [...new Set(
-      window.__workerJobs
-        .filter(job => ["diff", "align", "quadrant"].includes(job.type))
-        .map(job => job.workerId),
-    )]
-  ));
-  expect(workerIds.length).toBeGreaterThanOrEqual(2);
+  const jobs = await page.evaluate(() => window.__workerJobs.filter(job => job.type === "diff"));
+  expect(jobs.length).toBeGreaterThanOrEqual(2);
+  expect(jobs.every(job => job.postedAt >= resetAt)).toBe(true);
+  const interactiveJob = jobs.find(job => job.workerCreatedAt < resetAt);
+  const exportJob = jobs.find(job => job.workerCreatedAt >= resetAt);
+  expect(interactiveJob?.pageLabel).toContain("2 / 3");
+  expect(interactiveJob?.page).toBe(3);
+  expect(interactiveJob?.postedAt).toBeLessThanOrEqual(interactiveJob?.committedAt);
+  expect(exportJob?.page).toBe(3);
+  expect(exportJob?.workerId).not.toBe(interactiveJob?.workerId);
   await expect(page.locator("#status")).not.toContainText("PDFの保存に失敗しました");
 });
