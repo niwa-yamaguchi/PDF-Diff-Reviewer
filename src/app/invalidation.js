@@ -12,6 +12,7 @@ function clearVisualDerived(state, { pageRendering, alignment, quadrant, boxes }
   if (pageRendering) {
     state.visual.toggleCache = null;
     state.visual.currentPlan = null;
+    state.visual.splitCache = null;
   }
   if (alignment) state.visual.alignmentCache.clear();
   if (quadrant) {

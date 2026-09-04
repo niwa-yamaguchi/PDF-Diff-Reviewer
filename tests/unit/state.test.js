@@ -11,6 +11,8 @@ test("creates isolated state slices with current defaults", () => {
   expect(state.visual.pageCache).toBeInstanceOf(Map);
   expect(state.visual.alignmentCache).toBeInstanceOf(Map);
   expect(state.visual.quadrantCache).toBeInstanceOf(Map);
+  expect(state.visual.splitCache).toBeNull();
+  expect(state.visual.splitView).toEqual({ scale: 1, tx: 0, ty: 0 });
   expect(state.boxEditor.autoByPage).toBeInstanceOf(Map);
   expect(state.boxEditor.editsByPage).toBeInstanceOf(Map);
   expect(state.boxEditor.undoByPage).toBeInstanceOf(Map);
@@ -26,6 +28,7 @@ test("creates independent maps arrays and views for every state", () => {
   first.boxEditor.autoByPage.set(0, []);
   first.boxEditor.revisionByPage.set(0, 3);
   first.textReview.view.scale = 2;
+  first.visual.splitView.scale = 2;
 
   expect(second.documents.alignmentOps).toEqual([]);
   expect(second.comparison.quadrantManual.size).toBe(0);
@@ -33,4 +36,5 @@ test("creates independent maps arrays and views for every state", () => {
   expect(second.boxEditor.autoByPage.size).toBe(0);
   expect(second.boxEditor.revisionByPage.size).toBe(0);
   expect(second.textReview.view).toEqual({ scale: 1, tx: 0, ty: 0 });
+  expect(second.visual.splitView).toEqual({ scale: 1, tx: 0, ty: 0 });
 });

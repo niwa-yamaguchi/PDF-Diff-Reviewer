@@ -18,6 +18,7 @@ function populatedState() {
   state.visual.quadrantCache.set(0, { k: 1 });
   state.visual.toggleCache = { idx: 0 };
   state.visual.currentPlan = { ratio: 1 };
+  state.visual.splitCache = { old: { w: 100 }, new: { w: 100 } };
   state.comparison.quadrantManual.set(0, 2);
   state.boxEditor.autoByPage.set(0, [{ x: 0, y: 0, w: 1, h: 1 }]);
   state.boxEditor.editsByPage.set(0, [{ x: 1, y: 1, w: 1, h: 1 }]);
@@ -35,6 +36,7 @@ function expectVisual(state, { pageRendering, alignment, quadrant }) {
   expect(state.visual.pageCache.size).toBe(0);
   expect(state.visual.toggleCache).toEqual(pageRendering ? null : { idx: 0 });
   expect(state.visual.currentPlan).toEqual(pageRendering ? null : { ratio: 1 });
+  expect(state.visual.splitCache).toEqual(pageRendering ? null : { old: { w: 100 }, new: { w: 100 } });
   expect(state.visual.renderGeneration).toBe(1);
   expect(state.visual.alignmentCache.size).toBe(alignment ? 0 : 1);
   expect(state.visual.quadrantCache.size).toBe(quadrant ? 0 : 1);
@@ -126,6 +128,7 @@ test("box detection invalidation preserves visual and text caches", () => {
   expect(state.visual.alignmentCache.size).toBe(1);
   expect(state.visual.quadrantCache.size).toBe(1);
   expect(state.comparison.quadrantManual.size).toBe(1);
+  expect(state.visual.splitCache).toEqual({ old: { w: 100 }, new: { w: 100 } });
   expect(state.visual.renderGeneration).toBe(0);
   expectBoxesCleared(state);
   expect(state.textReview.extraction).not.toBeNull();

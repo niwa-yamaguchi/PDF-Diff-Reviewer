@@ -32,6 +32,8 @@ export function createAppState() {
       quadrantGeneration: 0,
       rendered: false,
       currentPlan: null,
+      splitCache: null,
+      splitView: { scale: 1, tx: 0, ty: 0 },
     },
     boxEditor: {
       showBoxes: true,
