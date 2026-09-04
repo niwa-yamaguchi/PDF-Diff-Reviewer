@@ -146,6 +146,63 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
   return canvas;
 }
 
+function boxesOverlap(a, b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+function splitLabelLayout(context, {
+  preferredFont,
+  labelHeight,
+  paneWidth,
+  gap,
+  canvasWidth,
+  pad,
+  pageText,
+}) {
+  const measure = (fontPx, text) => {
+    context.font = `bold ${fontPx}px sans-serif`;
+    return context.measureText(text).width;
+  };
+  const tryLayout = (fontPx, twoLine) => {
+    const oldW = measure(fontPx, "OLD");
+    const newW = measure(fontPx, "NEW");
+    const pageW = measure(fontPx, pageText);
+    const oldX = pad;
+    const newX = paneWidth + gap + pad;
+    const pageX = canvasWidth - pad;
+    const oldY = twoLine ? fontPx / 2 : labelHeight / 2;
+    const newY = oldY;
+    const pageY = twoLine ? labelHeight - fontPx / 2 : labelHeight / 2;
+    const boxes = [
+      { left: oldX, right: oldX + oldW, top: oldY - fontPx / 2, bottom: oldY + fontPx / 2 },
+      { left: newX, right: newX + newW, top: newY - fontPx / 2, bottom: newY + fontPx / 2 },
+      { left: pageX - pageW, right: pageX, top: pageY - fontPx / 2, bottom: pageY + fontPx / 2 },
+    ];
+    if (boxes.some(box => box.top < 0 || box.bottom > labelHeight)) return null;
+    if (boxes.some((box, index) => boxes.slice(index + 1).some(other => boxesOverlap(box, other)))) {
+      return null;
+    }
+    return { fontPx, oldX, newX, pageX, oldY, newY, pageY };
+  };
+
+  const single = tryLayout(preferredFont, false);
+  if (single) return single;
+  const twoLineFont = Math.min(preferredFont, Math.max(8, Math.floor(labelHeight / 2)));
+  for (let fontPx = twoLineFont; fontPx >= 8; fontPx -= 1) {
+    const laid = tryLayout(fontPx, true);
+    if (laid) return laid;
+  }
+  return tryLayout(8, true) || {
+    fontPx: 8,
+    oldX: pad,
+    newX: paneWidth + gap + pad,
+    pageX: canvasWidth - pad,
+    oldY: 4,
+    newY: 4,
+    pageY: Math.max(4, labelHeight - 4),
+  };
+}
+
 export function composeVisualSplitExport({
   oldCanvas,
   newCanvas,
@@ -160,18 +217,33 @@ export function composeVisualSplitExport({
   const height = Math.max(oldCanvas?.height || 0, newCanvas?.height || 0, 1);
   const labelHeight = Math.max(1, Math.round(28 * dpi / 72));
   const gap = Math.max(1, Math.round(dpi / 72));
-  const canvas = whiteCanvas(reference, width * 2 + gap, labelHeight + height, destination);
+  const safeDestination = destination
+    && destination !== oldCanvas
+    && destination !== newCanvas
+    ? destination
+    : undefined;
+  const canvas = whiteCanvas(reference, width * 2 + gap, labelHeight + height, safeDestination);
   const context = canvas.getContext("2d");
-  context.font = `bold ${Math.max(12, Math.round(16 * dpi / 72))}px sans-serif`;
+  const pageText = `p ${pageIndex + 1} / ${total}`;
+  const layout = splitLabelLayout(context, {
+    preferredFont: Math.max(12, Math.round(16 * dpi / 72)),
+    labelHeight,
+    paneWidth: width,
+    gap,
+    canvasWidth: canvas.width,
+    pad: 4,
+    pageText,
+  });
+  context.font = `bold ${layout.fontPx}px sans-serif`;
   context.textBaseline = "middle";
   context.textAlign = "left";
   context.fillStyle = "#ff5b57";
-  context.fillText("OLD", 4, labelHeight / 2);
+  context.fillText("OLD", layout.oldX, layout.oldY);
   context.fillStyle = "#4d8dff";
-  context.fillText("NEW", width + gap + 4, labelHeight / 2);
+  context.fillText("NEW", layout.newX, layout.newY);
   context.fillStyle = "#333";
   context.textAlign = "right";
-  context.fillText(`p ${pageIndex + 1} / ${total}`, canvas.width - 4, labelHeight / 2);
+  context.fillText(pageText, layout.pageX, layout.pageY);
   if (oldCanvas) context.drawImage(oldCanvas, 0, labelHeight);
   if (newCanvas) context.drawImage(newCanvas, width + gap, labelHeight);
   return canvas;

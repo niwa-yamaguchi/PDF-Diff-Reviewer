@@ -11,6 +11,7 @@ class RecordingContext {
   constructor(canvas) {
     this.canvas = canvas;
     this.calls = [];
+    this.labelDraws = [];
     this.fillStyle = "#000";
     this.strokeStyle = "#000";
     this.lineWidth = 1;
@@ -26,7 +27,18 @@ class RecordingContext {
   strokeRect(...args) {
     this.calls.push(["strokeRect", this.strokeStyle, this.lineWidth, ...args]);
   }
-  fillText(...args) { this.calls.push(["fillText", this.fillStyle, ...args]); }
+  fillText(...args) {
+    this.calls.push(["fillText", this.fillStyle, ...args]);
+    this.labelDraws.push({
+      fillStyle: this.fillStyle,
+      text: args[0],
+      x: args[1],
+      y: args[2],
+      textAlign: this.textAlign,
+      textBaseline: this.textBaseline,
+      font: this.font,
+    });
+  }
   measureText(text) { return { width: text.length * 8 }; }
   drawImage(source, x, y) {
     this.calls.push(["drawImage", source, x, y]);
@@ -58,6 +70,34 @@ class RecordingCanvas {
   }
   getContext() { return this.context; }
   cloneNode() { return new RecordingCanvas(0, 0); }
+}
+
+function fontPxFrom(font, fallback = 16) {
+  const match = String(font || "").match(/(\d+(?:\.\d+)?)px/);
+  return match ? Number(match[1]) : fallback;
+}
+
+function fillTextBounds(draw, context) {
+  const previousFont = context.font;
+  context.font = draw.font;
+  const width = context.measureText(draw.text).width;
+  context.font = previousFont;
+  const fontPx = fontPxFrom(draw.font);
+  const left = draw.textAlign === "right"
+    ? draw.x - width
+    : draw.textAlign === "center"
+      ? draw.x - width / 2
+      : draw.x;
+  const top = draw.textBaseline === "middle"
+    ? draw.y - fontPx / 2
+    : draw.textBaseline === "top"
+      ? draw.y
+      : draw.y - fontPx;
+  return { left, right: left + width, top, bottom: top + fontPx, text: draw.text };
+}
+
+function boundsOverlap(a, b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
 const visualLegend = [
@@ -167,9 +207,9 @@ describe("visual split export composition", () => {
     });
 
     expect([result.width, result.height]).toEqual([81, 48]);
-    expect(result.context.calls).toContainEqual(["fillText", "#ff5b57", "OLD", 4, 14]);
-    expect(result.context.calls).toContainEqual(["fillText", "#4d8dff", "NEW", 45, 14]);
-    expect(result.context.calls).toContainEqual(["fillText", "#333", "p 2 / 3", 77, 14]);
+    expect(result.context.calls).toContainEqual(["fillText", "#ff5b57", "OLD", 4, 7]);
+    expect(result.context.calls).toContainEqual(["fillText", "#4d8dff", "NEW", 45, 7]);
+    expect(result.context.calls).toContainEqual(["fillText", "#333", "p 2 / 3", 77, 21]);
     expect(result.context.calls.filter(call => call[0] === "drawImage")).toEqual([
       ["drawImage", oldCanvas, 0, 28],
       ["drawImage", newCanvas, 41, 28],
@@ -198,9 +238,9 @@ describe("visual split export composition", () => {
     });
 
     expect([result.width, result.height]).toEqual([102, 86]);
-    expect(result.context.calls).toContainEqual(["fillText", "#ff5b57", "OLD", 4, 28]);
-    expect(result.context.calls).toContainEqual(["fillText", "#4d8dff", "NEW", 56, 28]);
-    expect(result.context.calls).toContainEqual(["fillText", "#333", "p 1 / 2", 98, 28]);
+    expect(result.context.calls).toContainEqual(["fillText", "#ff5b57", "OLD", 4, 14]);
+    expect(result.context.calls).toContainEqual(["fillText", "#4d8dff", "NEW", 56, 14]);
+    expect(result.context.calls).toContainEqual(["fillText", "#333", "p 1 / 2", 98, 42]);
     expect(result.context.calls.filter(call => call[0] === "drawImage")).toEqual([
       ["drawImage", oldCanvas, 0, 56],
       ["drawImage", newCanvas, 52, 56],
@@ -226,5 +266,64 @@ describe("visual split export composition", () => {
     expect(images).toEqual([["drawImage", newCanvas, 41, 28]]);
     expect(destination.context.calls).toContainEqual(["fillRect", "#fff", 0, 0, 81, 40]);
     expect(newCanvas.context.calls).toEqual([]);
+  });
+
+  test("keeps OLD, NEW, and page labels readable without overlapping at 40px pane width", () => {
+    const result = composeVisualSplitExport({
+      oldCanvas: new RecordingCanvas(40, 20),
+      newCanvas: new RecordingCanvas(40, 20),
+      pageIndex: 1,
+      total: 3,
+      dpi: 72,
+    });
+
+    const labels = result.context.labelDraws.filter(draw => (
+      draw.text === "OLD" || draw.text === "NEW" || draw.text === "p 2 / 3"
+    ));
+    expect(labels.map(draw => draw.text).sort()).toEqual(["NEW", "OLD", "p 2 / 3"]);
+    const bounds = labels.map(draw => fillTextBounds(draw, result.context));
+    for (let i = 0; i < bounds.length; i += 1) {
+      for (let j = i + 1; j < bounds.length; j += 1) {
+        expect(
+          boundsOverlap(bounds[i], bounds[j]),
+          `${bounds[i].text} ${JSON.stringify(bounds[i])} overlaps ${bounds[j].text} ${JSON.stringify(bounds[j])}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  test("does not destroy source canvas when destination aliases old or new", () => {
+    const oldPixels = new Array(40 * 20 * 4).fill(7);
+    const newPixels = new Array(40 * 20 * 4).fill(9);
+    const oldCanvas = new RecordingCanvas(40, 20, oldPixels);
+    const newCanvas = new RecordingCanvas(40, 20, newPixels);
+    oldCanvas.style = { transform: "translate(4px, 5px) scale(2)" };
+    newCanvas.style = { transform: "translate(8px, 9px) scale(3)" };
+
+    const aliasedOld = composeVisualSplitExport({
+      oldCanvas,
+      newCanvas,
+      pageIndex: 0,
+      total: 2,
+      dpi: 72,
+      destination: oldCanvas,
+    });
+    const aliasedNew = composeVisualSplitExport({
+      oldCanvas,
+      newCanvas,
+      pageIndex: 0,
+      total: 2,
+      dpi: 72,
+      destination: newCanvas,
+    });
+
+    expect(aliasedOld).not.toBe(oldCanvas);
+    expect(aliasedNew).not.toBe(newCanvas);
+    expect(oldCanvas.pixels).toEqual(oldPixels);
+    expect(newCanvas.pixels).toEqual(newPixels);
+    expect([oldCanvas.width, oldCanvas.height]).toEqual([40, 20]);
+    expect([newCanvas.width, newCanvas.height]).toEqual([40, 20]);
+    expect(oldCanvas.style.transform).toBe("translate(4px, 5px) scale(2)");
+    expect(newCanvas.style.transform).toBe("translate(8px, 9px) scale(3)");
   });
 });
