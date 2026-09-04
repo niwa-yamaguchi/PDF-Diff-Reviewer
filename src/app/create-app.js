@@ -347,6 +347,7 @@ export function createApp({ document, window, dependencies = {} }) {
   });
 
   function restoreVisualSurface(mode = state.visual.mode) {
+    if (state.ui.topMode !== "visual") return;
     const split = state.visual.rendered && mode === "split";
     dom.canvasWrap.style.display = split ? "none" : "";
     out.style.display = state.visual.rendered && !split ? "block" : "none";

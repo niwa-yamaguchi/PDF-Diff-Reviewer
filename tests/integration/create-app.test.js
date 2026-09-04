@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { createApp } from "../../src/app/create-app.js";
+import { createTextController } from "../../src/features/text-review/text-controller.js";
 
 function deferred() {
   let resolve;
@@ -314,6 +315,58 @@ test("rolls failed diff toggle and split transitions back to the last committed 
   await staleSplit;
   expect(app.state.visual.mode).toBe("diff");
 });
+
+test.each([
+  { target: "split", prior: "diff" },
+  { target: "diff", prior: "split" },
+])(
+  "a pending set$target mode rollback preserves text mode and the prior $prior visual state",
+  async ({ target, prior }) => {
+    let controls;
+    const pending = deferred();
+    const visualController = {
+      showPage: vi.fn().mockResolvedValue({ committed: true }),
+    };
+    const viewerController = { cancelPan: vi.fn(), handleResize: vi.fn() };
+    const splitViewerController = {
+      cancelPan: vi.fn(), fit: vi.fn(), apply: vi.fn(), handleResize: vi.fn(),
+    };
+    const dependencies = fakeDependencies({
+      bindControls: vi.fn(args => { controls = args; }),
+      createViewerController: vi.fn(() => viewerController),
+      createSplitViewerController: vi.fn(() => splitViewerController),
+      createTextController: vi.fn(createTextController),
+      createVisualController: vi.fn(() => visualController),
+    });
+    const document = fakeDocument();
+    const window = {
+      confirm: vi.fn(() => true),
+      console: { error: vi.fn(), log: vi.fn() },
+      getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+    };
+    const app = createApp({ document, window, dependencies });
+    app.state.documents.pages = 1;
+    app.state.visual.rendered = true;
+    if (prior === "split") await controls.appController.setSplitMode();
+
+    visualController.showPage.mockImplementationOnce(() => pending.promise);
+    const transition = target === "split"
+      ? controls.appController.setSplitMode()
+      : controls.appController.setDiffMode();
+    await app.textController.setTopMode("text");
+    pending.resolve({ committed: false });
+
+    expect(await transition).toEqual({ committed: false });
+    expect(app.state.ui.topMode).toBe("text");
+    expect(document.getElementById("textPanel").style.display).toBe("flex");
+    expect(document.querySelector(".canvas-wrap").style.display).toBe("none");
+    expect(document.getElementById("out").style.display).toBe("none");
+    expect(document.getElementById("visualSplitPanel").style.display).toBe("none");
+    expect(app.state.visual.mode).toBe(prior);
+    expect(document.getElementById(`mode${prior === "split" ? "Split" : "Diff"}`)
+      .classList.contains("active")).toBe(true);
+  },
+);
 
 test("the E key still uses the controller gate and cannot enter editing in split mode", () => {
   let controls;
