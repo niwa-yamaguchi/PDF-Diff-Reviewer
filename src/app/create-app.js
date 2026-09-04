@@ -408,7 +408,8 @@ export function createApp({ document, window, dependencies = {} }) {
     createVisualRenderSession: () => {
       const dependencies = exportRenderDependencies();
       return Object.freeze({
-        render: ({ renderSnapshot }) => deps.renderDiffPage(renderSnapshot, dependencies),
+        renderDiff: ({ renderSnapshot }) => deps.renderDiffPage(renderSnapshot, dependencies),
+        renderSplit: ({ renderSnapshot }) => deps.renderSplitPage(renderSnapshot, dependencies),
         cancel: () => exportLane.cancel(),
       });
     },

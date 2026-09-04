@@ -91,15 +91,21 @@ function harness(overrides = {}) {
     dlTextPdf: { disabled: false },
   };
   const renderVisualOffscreen = vi.fn(async () => ({ canvas: canvas(100, 200), boxes: [] }));
+  const renderVisualSplitOffscreen = vi.fn(async () => ({
+    sideCanvases: { old: canvas(100, 200), new: canvas(100, 200) },
+    boxes: [],
+  }));
   const visualRenderSessions = [];
   const dependencies = {
     state,
     dom,
     renderVisualOffscreen,
+    renderVisualSplitOffscreen,
     visualRenderSessions,
     createVisualRenderSession: vi.fn(() => {
       const session = {
-        render: (...args) => dependencies.renderVisualOffscreen(...args),
+        renderDiff: (...args) => dependencies.renderVisualOffscreen(...args),
+        renderSplit: (...args) => dependencies.renderVisualSplitOffscreen(...args),
         cancel: vi.fn(),
       };
       visualRenderSessions.push(session);
@@ -199,6 +205,82 @@ describe("visual export snapshots", () => {
     expect([...state.boxEditor.autoByPage]).toEqual(beforeAutoEntries);
     expect(state.boxEditor.editsByPage).toBe(before.editsByPage);
     expect({ ...protectedReferences(state, dom), status: before.status }).toEqual(before);
+    expect(dom.status.textContent).toBe("PDFを保存しました");
+  });
+
+  test("renders every split PDF page offscreen from one frozen export snapshot", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    state.visual.mode = "split";
+    state.visual.splitCache = { idx: 0, screenOnly: true };
+    dom.splitOldCanvas = { cloneNode: () => { throw new Error("screen OLD must not be used"); } };
+    dom.splitNewCanvas = { cloneNode: () => { throw new Error("screen NEW must not be used"); } };
+    const before = protectedReferences(state, dom);
+    const renderInputs = [];
+    const composed = [];
+    dependencies.pdfExporter.saveVisual.mockImplementation(async ({ pageCount, renderPage }) => {
+      for (let page = 0; page < pageCount; page += 1) composed.push(await renderPage(page));
+    });
+    dependencies.renderVisualSplitOffscreen.mockImplementation(async input => {
+      renderInputs.push(input);
+      if (input.pageIndex === 0) {
+        state.visual.mode = "diff";
+        state.comparison.dpi = 300;
+        state.documents.oldSequence[1] = null;
+        state.boxEditor.autoByPage.set(0, [{ x: 90, y: 90, w: 1, h: 1 }]);
+        state.boxEditor.editsByPage.set(1, [{ x: 99, y: 99, w: 1, h: 1 }]);
+      }
+      return {
+        sideCanvases: {
+          old: canvas(100 + input.pageIndex, 200),
+          new: canvas(100 + input.pageIndex, 200),
+        },
+        boxes: [{ x: input.pageIndex, y: 0, w: 2, h: 2 }],
+      };
+    });
+
+    await controller.saveVisualPdf();
+
+    expect(dependencies.pdfExporter.saveVisual).toHaveBeenCalledWith(expect.objectContaining({
+      filename: "side-by-side.pdf",
+      pageCount: 2,
+      dpi: 150,
+    }));
+    expect(renderInputs).toHaveLength(2);
+    expect(renderInputs[0].snapshot).toBe(renderInputs[1].snapshot);
+    expect(renderInputs.map(input => input.pageIndex)).toEqual([0, 1]);
+    expect(renderInputs.map(input => input.renderSnapshot.mode)).toEqual(["split", "split"]);
+    expect(renderInputs.map(input => input.renderSnapshot.visual.splitCache)).toEqual([null, null]);
+    expect(renderInputs[0].renderSnapshot.boxEditor).toMatchObject({
+      showBoxes: true,
+      manualBoxes: null,
+      autoBoxes: [{ x: 5, y: 6, w: 7, h: 8 }],
+    });
+    expect(renderInputs[1].renderSnapshot.boxEditor).toMatchObject({
+      showBoxes: true,
+      manualBoxes: [{ x: 11, y: 12, w: 13, h: 14 }],
+      autoBoxes: null,
+    });
+    expect(Object.isFrozen(renderInputs[0].renderSnapshot.boxEditor.autoBoxes)).toBe(true);
+    expect(Object.isFrozen(renderInputs[0].renderSnapshot.boxEditor.autoBoxes[0])).toBe(true);
+    expect(renderInputs[1].renderSnapshot.documents.oldSequence).toEqual([0, 1]);
+    expect(renderInputs[1].renderSnapshot.comparison.dpi).toBe(150);
+    expect(composed.map(item => [item.width, item.height])).toEqual([
+      [202, 258],
+      [204, 258],
+    ]);
+    expect(composed.map(item => item.getContext("2d").calls
+      .filter(call => call[0] === "fillText").map(call => call[2])))
+      .toEqual([["OLD", "NEW", "p 1 / 2"], ["OLD", "NEW", "p 2 / 2"]]);
+    expect(composed.flatMap(item => item.getContext("2d").calls)
+      .some(call => call[0] === "strokeRect")).toBe(false);
+    expect(dom.out).toBe(before.out);
+    expect(state.documents.currentPage).toBe(before.currentPage);
+    expect(state.visual.pageCache).toBe(before.pageCache);
+    expect(state.visual.alignmentCache).toBe(before.alignmentCache);
+    expect(state.visual.quadrantCache).toBe(before.quadrantCache);
+    expect(state.boxEditor.selectedIndex).toBe(before.selectedIndex);
+    expect(state.boxEditor.drag).toBe(before.drag);
+    expect(state.visual.splitCache).toEqual({ idx: 0, screenOnly: true });
     expect(dom.status.textContent).toBe("PDFを保存しました");
   });
 
@@ -500,6 +582,21 @@ describe("export error and overlap ownership", () => {
     expect(dependencies.errorReporter.report).toHaveBeenCalledTimes(1);
     expect(dependencies.errorReporter.report).toHaveBeenCalledWith(
       expect.any(Error), "PNGの保存に失敗しました", dom.status,
+    );
+    expect(dom.dlPng.disabled).toBe(false);
+    expect(dom.dlPdf.disabled).toBe(false);
+  });
+
+  test("reports a null split PDF render once and restores owned buttons", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    state.visual.mode = "split";
+    dependencies.renderVisualSplitOffscreen.mockResolvedValue(null);
+
+    expect(await controller.saveVisualPdf()).toBe(false);
+
+    expect(dependencies.errorReporter.report).toHaveBeenCalledTimes(1);
+    expect(dependencies.errorReporter.report).toHaveBeenCalledWith(
+      expect.any(Error), "PDFの保存に失敗しました", dom.status,
     );
     expect(dom.dlPng.disabled).toBe(false);
     expect(dom.dlPdf.disabled).toBe(false);

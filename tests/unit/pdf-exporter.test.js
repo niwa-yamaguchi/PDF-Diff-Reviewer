@@ -3,6 +3,7 @@ import { createPdfExporter } from "../../src/features/export/pdf-exporter.js";
 
 test.each([
   ["saveVisual", "diff.pdf"],
+  ["saveVisual", "side-by-side.pdf"],
   ["saveText", "textdiff.pdf"],
 ])("%s preserves page dimensions, orientation, compression and filename", async (method, filename) => {
   const instances = [];

@@ -123,16 +123,18 @@ function visualLegend(mode, showBoxes) {
   return Object.freeze(items.map(item => Object.freeze(item)));
 }
 
-function visualRenderSnapshot(snapshot, pageIndex) {
+function visualRenderSnapshot(snapshot, pageIndex, mode = "diff") {
   const manualBoxes = snapshot.boxEditor.editsByPage.get(pageIndex);
+  const autoBoxes = snapshot.boxEditor.autoByPage.get(pageIndex);
   return Object.freeze({
     pageIndex,
-    mode: "diff",
+    mode,
     documents: snapshot.documents,
     comparison: snapshot.comparison,
     visual: Object.freeze({
       toggleSide: snapshot.visual.toggleSide,
       toggleCache: snapshot.visual.toggleCache,
+      splitCache: null,
       renderGeneration: snapshot.visual.renderGeneration,
       currentPlan: snapshot.visual.currentPlan,
       alignmentCache: snapshot.visual.alignmentCache,
@@ -140,8 +142,9 @@ function visualRenderSnapshot(snapshot, pageIndex) {
       quadrantGeneration: snapshot.visual.quadrantGeneration,
     }),
     boxEditor: Object.freeze({
-      showBoxes: snapshot.boxEditor.showBoxes,
+      showBoxes: mode === "split" ? true : snapshot.boxEditor.showBoxes,
       manualBoxes: manualBoxes ?? null,
+      autoBoxes: autoBoxes ?? null,
       revision: snapshot.boxEditor.revisionByPage.get(pageIndex) || 0,
     }),
   });
@@ -317,16 +320,36 @@ export function createExportController({
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PDF生成中…");
     session.renderSession = createVisualRenderSession();
+    const split = snapshot.visual.mode === "split";
     try {
       await pdfExporter.saveVisual({
         pageCount: snapshot.documents.pages,
         dpi: snapshot.comparison.dpi,
-        filename: "diff.pdf",
+        filename: split ? "side-by-side.pdf" : "diff.pdf",
         renderPage: async pageIndex => {
-          const result = await session.renderSession.render({
+          const renderSnapshot = visualRenderSnapshot(
             snapshot,
             pageIndex,
-            renderSnapshot: visualRenderSnapshot(snapshot, pageIndex),
+            split ? "split" : "diff",
+          );
+          if (split) {
+            const result = await session.renderSession.renderSplit({
+              snapshot,
+              pageIndex,
+              renderSnapshot,
+            });
+            return composeVisualSplitExport({
+              oldCanvas: result.sideCanvases.old,
+              newCanvas: result.sideCanvases.new,
+              pageIndex,
+              total: snapshot.documents.pages,
+              dpi: snapshot.comparison.dpi,
+            });
+          }
+          const result = await session.renderSession.renderDiff({
+            snapshot,
+            pageIndex,
+            renderSnapshot,
           });
           const manual = snapshot.boxEditor.editsByPage.get(pageIndex);
           const boxes = !snapshot.boxEditor.showBoxes ? [] : (manual ?? result.boxes ?? []);
