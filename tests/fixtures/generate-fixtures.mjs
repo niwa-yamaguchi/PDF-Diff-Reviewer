@@ -1,10 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { jsPDF } from "jspdf";
 
 const dir = dirname(fileURLToPath(import.meta.url));
-await mkdir(dir, { recursive: true });
 
 function makePdf(kind) {
   const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true });
@@ -22,5 +21,14 @@ function makePdf(kind) {
   return Buffer.from(pdf.output("arraybuffer"));
 }
 
-await writeFile(join(dir, "old.pdf"), makePdf("old"));
-await writeFile(join(dir, "new.pdf"), makePdf("new"));
+export async function generateFixtures() {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "old.pdf"), makePdf("old"));
+  await writeFile(join(dir, "new.pdf"), makePdf("new"));
+}
+
+export default generateFixtures;
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  await generateFixtures();
+}

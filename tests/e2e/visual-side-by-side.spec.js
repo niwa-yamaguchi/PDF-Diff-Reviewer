@@ -166,11 +166,28 @@ test("shows manual boxes on both sides and keeps editing in diff mode", async ({
 
 test("renders a stable missing-page marker on the empty side", async ({ page }) => {
   await page.addInitScript(() => {
-    const original = CanvasRenderingContext2D.prototype.fillText;
+    const prototype = CanvasRenderingContext2D.prototype;
+    const originalFillText = prototype.fillText;
+    const originalDrawImage = prototype.drawImage;
+    const recordsByCanvas = new WeakMap();
     window.__canvasFillText = [];
-    CanvasRenderingContext2D.prototype.fillText = function instrumentedFillText(text, ...args) {
-      window.__canvasFillText.push(String(text));
-      return original.call(this, text, ...args);
+    prototype.fillText = function instrumentedFillText(text, ...args) {
+      const record = { text: String(text), canvasId: this.canvas.id };
+      window.__canvasFillText.push(record);
+      if (record.text === "この版にこのページはありません") {
+        recordsByCanvas.set(this.canvas, [record]);
+      }
+      return originalFillText.call(this, text, ...args);
+    };
+    prototype.drawImage = function instrumentedDrawImage(source, ...args) {
+      const inherited = recordsByCanvas.get(source);
+      if (inherited) {
+        for (const record of inherited) {
+          if (this.canvas.id) record.canvasId = this.canvas.id;
+        }
+        recordsByCanvas.set(this.canvas, inherited);
+      }
+      return originalDrawImage.call(this, source, ...args);
     };
   });
   await loadComparison(page);
@@ -181,8 +198,16 @@ test("renders a stable missing-page marker on the empty side", async ({ page }) 
   await expect(page.locator("#pageLabel")).toContainText("旧 空白");
   await expect(page.locator("#visualSplitPanel")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (
-    window.__canvasFillText.filter(text => text === "この版にこのページはありません").length
-  ))).toBeGreaterThan(0);
+    window.__canvasFillText
+      .filter(record => record.text === "この版にこのページはありません")
+      .map(record => record.canvasId)
+  ))).toContain("splitOldCanvas");
+  const markerCanvasIds = await page.evaluate(() => (
+    window.__canvasFillText
+      .filter(record => record.text === "この版にこのページはありません")
+      .map(record => record.canvasId)
+  ));
+  expect(markerCanvasIds).not.toContain("splitNewCanvas");
   const corner = await page.locator("#splitOldCanvas").evaluate((canvas) => (
     [...canvas.getContext("2d").getImageData(0, 0, 1, 1).data]
   ));
