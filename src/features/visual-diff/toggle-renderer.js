@@ -2,7 +2,7 @@ import {
   boxStat,
   computeChangeBoxesAligned,
   createToggleCompletedIdentity,
-  createToggleRawCacheIdentity,
+  createVisualRawCacheIdentity,
   prepareVisualPage,
 } from "./visual-renderer.js";
 
@@ -30,7 +30,7 @@ export async function renderTogglePage(snapshot, dependencies, { onProgress = nu
   const pageCache = {
     idx: snapshot.pageIndex,
     quad: prepared.quadrant,
-    rawIdentity: createToggleRawCacheIdentity(
+    rawIdentity: createVisualRawCacheIdentity(
       snapshot,
       prepared.quadrant,
       prepared.currentPlan,

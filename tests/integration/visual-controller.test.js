@@ -2,7 +2,12 @@ import { afterAll, expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
-import { renderDiffPage } from "../../src/features/visual-diff/visual-renderer.js";
+import {
+  createVisualRawCacheIdentity,
+  renderDiffPage,
+  toggleCompletedCacheMatchesSnapshot,
+  visualRawCacheMatchesSnapshot,
+} from "../../src/features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "../../src/features/visual-diff/toggle-renderer.js";
 import { createWorkerLane } from "../../src/features/visual-diff/worker-lane.js";
 import { computeDiff } from "../../src/core/image-diff/diff-compute.js";
@@ -889,6 +894,71 @@ function rendererDependencies(oldCanvas, newCanvas) {
     pageLabelText: () => "1 / 1",
   };
 }
+
+test("shares raw page identity without sharing completed toggle identity", () => {
+  const snapshot = rendererSnapshot();
+  const plan = { oldScale: 1, newScale: 1 };
+  const identity = createVisualRawCacheIdentity(snapshot, 0, plan);
+  const cache = { idx: 0, rawIdentity: identity };
+
+  expect(visualRawCacheMatchesSnapshot(snapshot, cache, {
+    quadrant: 0,
+    framePlan: plan,
+  })).toBe(true);
+  expect(toggleCompletedCacheMatchesSnapshot(snapshot, cache)).toBe(false);
+});
+
+test.each([
+  ["document generation", base => ({
+    documents: Object.freeze({ ...base.documents, generation: base.documents.generation + 1 }),
+  })],
+  ["document identity", base => ({
+    documents: Object.freeze({ ...base.documents, oldDoc: { ...base.documents.oldDoc } }),
+  })],
+  ["page sequence mapping", base => ({
+    documents: Object.freeze({ ...base.documents, oldSequence: Object.freeze([1]) }),
+  })],
+  ["DPI", base => ({
+    comparison: Object.freeze({ ...base.comparison, dpi: 144 }),
+  })],
+])("raw visual identity rejects %s changes", (_label, mutate) => {
+  const snapshot = rendererSnapshot();
+  const plan = { oldScale: 1, newScale: 1 };
+  const cache = {
+    idx: 0,
+    rawIdentity: createVisualRawCacheIdentity(snapshot, 0, plan),
+  };
+  const changed = Object.freeze({ ...snapshot, ...mutate(snapshot) });
+
+  expect(visualRawCacheMatchesSnapshot(changed, cache, {
+    quadrant: 0,
+    framePlan: plan,
+  })).toBe(false);
+});
+
+test("raw visual identity ignores threshold tolerance and offsets", () => {
+  const snapshot = rendererSnapshot();
+  const plan = { oldScale: 1, newScale: 1 };
+  const cache = {
+    idx: 0,
+    rawIdentity: createVisualRawCacheIdentity(snapshot, 0, plan),
+  };
+  const changed = Object.freeze({
+    ...snapshot,
+    comparison: Object.freeze({
+      ...snapshot.comparison,
+      threshold: 200,
+      tolerancePx: 4,
+      dx: 3,
+      dy: 1,
+    }),
+  });
+
+  expect(visualRawCacheMatchesSnapshot(changed, cache, {
+    quadrant: 0,
+    framePlan: plan,
+  })).toBe(true);
+});
 
 test("renders the exact legacy common removed and added pixels offscreen", async () => {
   const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
