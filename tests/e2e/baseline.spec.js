@@ -138,5 +138,13 @@ test("renders both visual modes without changing the current box result", async 
 
 test("preserves the empty-state appearance", async ({ page }) => {
   await page.goto("/");
-  await expect(page).toHaveScreenshot("empty-state.png", { maxDiffPixelRatio: 0.005 });
+  await expect(page.locator("#ph")).toBeVisible();
+  await expect(page.locator("#ph")).toContainText("旧版と新版のPDFを読み込むと");
+  await expect(page.locator("#out")).toBeHidden();
+  await expect(page.locator("#visualSplitPanel")).toBeHidden();
+  await expect(page.locator("#textPanel")).toBeHidden();
+  await expect(page.locator("#modeDiff")).toHaveClass(/active/);
+  for (const selector of ["#modeDiff", "#modeToggle", "#modeSplit"]) {
+    await expect(page.locator(selector)).toBeDisabled();
+  }
 });

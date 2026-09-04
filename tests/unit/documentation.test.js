@@ -21,6 +21,15 @@ test("README documents the reproducible Vite and Cloudflare Pages workflow", asy
   }
 });
 
+test("README documents the side-by-side review and export workflow", async () => {
+  const readme = await readFile("README.md", "utf8");
+  expect(readme).toMatch(/左右表示.*旧版（左）.*位置合わせ済み新版（右）/s);
+  expect(readme).toMatch(/左右表示.*ズーム.*パン.*全体表示.*1:1.*ページ送り.*同期/s);
+  expect(readme).toMatch(/左右表示.*変更枠.*両側.*常時.*差分表示.*編集/s);
+  expect(readme).toMatch(/左右表示.*PNG.*現在ページ.*PDF.*全ページ.*フル解像度.*横並び/s);
+  expect(readme).toMatch(/ブラウザ内.*外部.*送信しない/s);
+});
+
 test("Playwright runs the same suite in Chromium, Firefox, and WebKit", () => {
   expect(playwrightConfig.projects.map(({ name }) => name))
     .toEqual(["chromium", "firefox", "webkit"]);

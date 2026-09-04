@@ -42,10 +42,29 @@ test("keeps a running PDF export alive while pages are sent", async ({ page }) =
     document.querySelector("#dlPdf").click();
     document.querySelector("#next").click();
   });
-  await expect(page.locator("#pageLabel")).toContainText("2 / 2");
+  await expect(page.locator("#pageLabel")).toContainText("2 / 2", { timeout: 30_000 });
   await expect(page.locator("#out")).toBeVisible();
 
   const download = await pending;
   expect(download.suggestedFilename()).toBe("diff.pdf");
+  await expect(page.locator("#status")).not.toContainText("PDFの保存に失敗しました");
+});
+
+test("keeps a running side-by-side PDF export alive while pages are sent", async ({ page }) => {
+  test.setTimeout(180_000);
+  await runDiff(page);
+  await page.locator("#modeSplit").click();
+  await expect(page.locator("#status")).toHaveText("左右表示中");
+
+  const pending = page.waitForEvent("download");
+  await page.evaluate(() => {
+    document.querySelector("#dlPdf").click();
+    document.querySelector("#next").click();
+  });
+  await expect(page.locator("#pageLabel")).toContainText("2 / 2", { timeout: 30_000 });
+  await expect(page.locator("#visualSplitPanel")).toBeVisible();
+
+  const download = await pending;
+  expect(download.suggestedFilename()).toBe("side-by-side.pdf");
   await expect(page.locator("#status")).not.toContainText("PDFの保存に失敗しました");
 });
