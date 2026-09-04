@@ -634,6 +634,55 @@ test("a current split failure preserves both canvases, page, cache, and status",
   expect(dom.status.textContent).toBe("stable split");
 });
 
+test.each(["diff", "split"])(
+  "a pending %s render cannot commit after text mode becomes active",
+  async mode => {
+    const pending = deferred();
+    const renderer = vi.fn(() => pending.promise);
+    const options = mode === "split"
+      ? { renderSplitPage: renderer }
+      : { renderDiffPage: renderer };
+    const {
+      state, dom, context, splitOldContext, splitNewContext, controller,
+    } = harness(options);
+    state.visual.mode = mode;
+    state.documents.currentPage = 1;
+    state.visual.pageCache.set(1, { stable: true });
+    state.visual.splitCache = { idx: 1, stable: true };
+
+    const rendering = controller.showPage(0);
+    state.ui.topMode = "text";
+    dom.canvasWrap.style.display = "none";
+    dom.out.style.display = "none";
+    dom.visualSplitPanel.style.display = "none";
+    dom.status.textContent = "テキスト差分を表示中";
+    pending.resolve(mode === "split" ? splitResult(0) : result(0));
+
+    expect(await rendering).toEqual({ committed: false });
+    expect(context.drawImage).not.toHaveBeenCalled();
+    expect(splitOldContext.drawImage).not.toHaveBeenCalled();
+    expect(splitNewContext.drawImage).not.toHaveBeenCalled();
+    expect(dom.canvasWrap.style.display).toBe("none");
+    expect(dom.visualSplitPanel.style.display).toBe("none");
+    expect(dom.status.textContent).toBe("テキスト差分を表示中");
+    expect(state.documents.currentPage).toBe(1);
+    expect(state.visual.pageCache).toEqual(new Map([[1, { stable: true }]]));
+    expect(state.visual.splitCache).toEqual({ idx: 1, stable: true });
+  },
+);
+
+test("an offscreen visual render can still commit while text mode is active", async () => {
+  const renderDiffPage = vi.fn(async snapshot => result(snapshot.pageIndex));
+  const { state, controller } = harness({ renderDiffPage });
+  state.ui.topMode = "text";
+  state.documents.currentPage = 0;
+
+  expect(await controller.showPage(1, { mode: "diff", updateCurrentPage: false }))
+    .toEqual({ committed: true });
+
+  expect(state.documents.currentPage).toBe(0);
+});
+
 test("rejects the whole split result when staging either source canvas fails", async () => {
   const error = new Error("new staging copy failed");
   let created = 0;

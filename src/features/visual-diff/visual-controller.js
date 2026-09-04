@@ -78,6 +78,7 @@ export function createVisualController({
   function isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide) {
     return ticket.id === state.visual.renderGeneration
       && ticket.documentGeneration === state.documents.generation
+      && (!updateCurrentPage || state.ui.topMode === "visual")
       && (!updateCurrentPage || snapshot.mode === state.visual.mode)
       && (
         !updateCurrentPage
