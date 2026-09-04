@@ -349,6 +349,85 @@ describe("visual export snapshots", () => {
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText")).toBe(false);
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "strokeRect")).toBe(false);
   });
+
+  test("saves the committed split page with a stable filename and frozen page number", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    state.visual.mode = "split";
+    dom.splitOldCanvas = canvas(100, 200);
+    dom.splitNewCanvas = canvas(100, 200);
+
+    const saving = controller.saveVisualPng();
+    state.documents.currentPage = 1;
+    await saving;
+
+    expect(dependencies.download)
+      .toHaveBeenCalledWith(expect.any(Blob), "side-by-side_p1.png");
+  });
+
+  test("clones split canvases before awaiting Blob and ignores later screen changes", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    state.visual.mode = "split";
+    state.documents.currentPage = 0;
+    state.documents.pages = 2;
+    state.comparison.dpi = 72;
+    const oldPixels = [11, 12, 13, 255];
+    const newPixels = [21, 22, 23, 255];
+    dom.splitOldCanvas = canvas(10, 8, oldPixels);
+    dom.splitNewCanvas = canvas(10, 8, newPixels);
+    const newTransform = dom.splitNewCanvas.style.transform;
+    let blobCallback;
+    let outputCanvas;
+    const makeClone = () => {
+      const clone = canvas(0, 0, []);
+      clone.cloneNode = makeClone;
+      const context = clone.getContext("2d");
+      const recordDraw = context.drawImage.bind(context);
+      context.drawImage = (source, x, y) => {
+        recordDraw(source, x, y);
+        if (x === 0 && y === 0 && source.width === clone.width && source.height === clone.height) {
+          clone.pixels = [...source.pixels];
+        }
+      };
+      clone.toBlob = callback => {
+        outputCanvas = clone;
+        blobCallback = callback;
+      };
+      return clone;
+    };
+    dom.splitOldCanvas.cloneNode = makeClone;
+    dom.splitNewCanvas.cloneNode = makeClone;
+
+    const saving = controller.saveVisualPng();
+    dom.splitOldCanvas.pixels.fill(0);
+    dom.splitNewCanvas.pixels.fill(0);
+    dom.splitOldCanvas.style.transform = "scale(9)";
+    state.visual.mode = "diff";
+    state.documents.currentPage = 1;
+    state.documents.pages = 9;
+    state.comparison.dpi = 300;
+    blobCallback(new Blob(["png"]));
+    await saving;
+
+    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "side-by-side_p1.png");
+    expect(dom.splitOldCanvas.pixels).toEqual([0, 0, 0, 0]);
+    expect(dom.splitNewCanvas.style.transform).toBe(newTransform);
+    expect(dom.splitOldCanvas.style.transform).toBe("scale(9)");
+    const images = outputCanvas.getContext("2d").calls.filter(call => call[0] === "drawImage");
+    expect(images).toHaveLength(2);
+    expect(images[0][1]).not.toBe(dom.splitOldCanvas);
+    expect(images[1][1]).not.toBe(dom.splitNewCanvas);
+    expect([...images[0][1].pixels]).toEqual(oldPixels);
+    expect([...images[1][1].pixels]).toEqual(newPixels);
+    expect(images[0].slice(2)).toEqual([0, 28]);
+    expect(images[1].slice(2)).toEqual([11, 28]);
+    expect([outputCanvas.width, outputCanvas.height]).toEqual([21, 36]);
+    expect(outputCanvas.getContext("2d").calls.some(call => (
+      call[0] === "strokeRect" && call[1] === "#ff9500"
+    ))).toBe(false);
+    expect(outputCanvas.getContext("2d").calls.some(call => (
+      call[0] === "fillText" && call[2] === "共通"
+    ))).toBe(false);
+  });
 });
 
 describe("text export snapshots", () => {
@@ -391,6 +470,30 @@ describe("export error and overlap ownership", () => {
       ...canvas(0, 0, []),
       toBlob(callback) { callback(null); },
     });
+
+    await controller.saveVisualPng();
+
+    expect(dependencies.errorReporter.report).toHaveBeenCalledTimes(1);
+    expect(dependencies.errorReporter.report).toHaveBeenCalledWith(
+      expect.any(Error), "PNGの保存に失敗しました", dom.status,
+    );
+    expect(dom.dlPng.disabled).toBe(false);
+    expect(dom.dlPdf.disabled).toBe(false);
+  });
+
+  test("reports a split PNG Blob failure once and restores owned buttons", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    state.visual.mode = "split";
+    const makeClone = () => {
+      const clone = canvas(0, 0, []);
+      clone.cloneNode = makeClone;
+      clone.toBlob = callback => { callback(null); };
+      return clone;
+    };
+    dom.splitOldCanvas = canvas(10, 8);
+    dom.splitNewCanvas = canvas(10, 8);
+    dom.splitOldCanvas.cloneNode = makeClone;
+    dom.splitNewCanvas.cloneNode = makeClone;
 
     await controller.saveVisualPng();
 

@@ -11,8 +11,10 @@ function createLike(reference, width, height) {
   return canvas;
 }
 
-function whiteCanvas(reference, width, height) {
-  const canvas = createLike(reference, width, height);
+function whiteCanvas(reference, width, height, destination) {
+  const canvas = destination || createLike(reference, width, height);
+  canvas.width = width;
+  canvas.height = height;
   const context = canvas.getContext("2d");
   context.fillStyle = "#fff";
   context.fillRect(0, 0, width, height);
@@ -141,6 +143,37 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
   context.textAlign = "left";
   context.fillText("NEW", 4, newLabelY + labelHeight / 2);
   context.drawImage(newSource, (width - newSource.width) / 2, newLabelY + labelHeight);
+  return canvas;
+}
+
+export function composeVisualSplitExport({
+  oldCanvas,
+  newCanvas,
+  pageIndex,
+  total,
+  dpi,
+  destination,
+}) {
+  const reference = oldCanvas || newCanvas;
+  if (!reference) throw new Error("左右表示の出力元Canvasがありません");
+  const width = Math.max(oldCanvas?.width || 0, newCanvas?.width || 0, 1);
+  const height = Math.max(oldCanvas?.height || 0, newCanvas?.height || 0, 1);
+  const labelHeight = Math.max(1, Math.round(28 * dpi / 72));
+  const gap = Math.max(1, Math.round(dpi / 72));
+  const canvas = whiteCanvas(reference, width * 2 + gap, labelHeight + height, destination);
+  const context = canvas.getContext("2d");
+  context.font = `bold ${Math.max(12, Math.round(16 * dpi / 72))}px sans-serif`;
+  context.textBaseline = "middle";
+  context.textAlign = "left";
+  context.fillStyle = "#ff5b57";
+  context.fillText("OLD", 4, labelHeight / 2);
+  context.fillStyle = "#4d8dff";
+  context.fillText("NEW", width + gap + 4, labelHeight / 2);
+  context.fillStyle = "#333";
+  context.textAlign = "right";
+  context.fillText(`p ${pageIndex + 1} / ${total}`, canvas.width - 4, labelHeight / 2);
+  if (oldCanvas) context.drawImage(oldCanvas, 0, labelHeight);
+  if (newCanvas) context.drawImage(newCanvas, width + gap, labelHeight);
   return canvas;
 }
 

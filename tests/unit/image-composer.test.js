@@ -3,6 +3,7 @@ import { CHANGE_BOX_STYLE } from "../../src/core/change-boxes/draw.js";
 import {
   composeTextExport,
   composeVisualExport,
+  composeVisualSplitExport,
   VISUAL_BOX_STYLE,
 } from "../../src/features/export/image-composer.js";
 
@@ -149,5 +150,81 @@ describe("text export composition", () => {
 
     expect(wide.context.calls.some(call => call[0] === "fillText" && call[2] === "削除")).toBe(true);
     expect(narrow.context.calls.some(call => call[0] === "fillText" && call[2] === "削除")).toBe(false);
+  });
+});
+
+describe("visual split export composition", () => {
+  test("composes OLD and NEW horizontally with page label without touching sources", () => {
+    const oldCanvas = new RecordingCanvas(40, 20, new Array(3200).fill(7));
+    const newCanvas = new RecordingCanvas(40, 20, new Array(3200).fill(9));
+    const oldPixels = [...oldCanvas.pixels];
+    const newPixels = [...newCanvas.pixels];
+    oldCanvas.style = { transform: "translate(4px, 5px) scale(2)" };
+    newCanvas.style = { transform: "translate(8px, 9px) scale(3)" };
+
+    const result = composeVisualSplitExport({
+      oldCanvas, newCanvas, pageIndex: 1, total: 3, dpi: 72,
+    });
+
+    expect([result.width, result.height]).toEqual([81, 48]);
+    expect(result.context.calls).toContainEqual(["fillText", "#ff5b57", "OLD", 4, 14]);
+    expect(result.context.calls).toContainEqual(["fillText", "#4d8dff", "NEW", 45, 14]);
+    expect(result.context.calls).toContainEqual(["fillText", "#333", "p 2 / 3", 77, 14]);
+    expect(result.context.calls.filter(call => call[0] === "drawImage")).toEqual([
+      ["drawImage", oldCanvas, 0, 28],
+      ["drawImage", newCanvas, 41, 28],
+    ]);
+    expect(oldCanvas.pixels).toEqual(oldPixels);
+    expect(newCanvas.pixels).toEqual(newPixels);
+    expect([oldCanvas.width, oldCanvas.height]).toEqual([40, 20]);
+    expect([newCanvas.width, newCanvas.height]).toEqual([40, 20]);
+    expect(oldCanvas.style.transform).toBe("translate(4px, 5px) scale(2)");
+    expect(newCanvas.style.transform).toBe("translate(8px, 9px) scale(3)");
+    expect(oldCanvas.context.calls).toEqual([]);
+    expect(newCanvas.context.calls).toEqual([]);
+    expect(result.context.calls.some(call => call[0] === "strokeRect" && call[1] === "#ff9500")).toBe(false);
+    expect(result.context.calls.some(call => call[0] === "fillText" && call[2] === "共通")).toBe(false);
+  });
+
+  test("uses the larger pane size and DPI-scaled label and gap", () => {
+    const oldCanvas = new RecordingCanvas(40, 20);
+    const newCanvas = new RecordingCanvas(50, 30);
+    const result = composeVisualSplitExport({
+      oldCanvas,
+      newCanvas,
+      pageIndex: 0,
+      total: 2,
+      dpi: 144,
+    });
+
+    expect([result.width, result.height]).toEqual([102, 86]);
+    expect(result.context.calls).toContainEqual(["fillText", "#ff5b57", "OLD", 4, 28]);
+    expect(result.context.calls).toContainEqual(["fillText", "#4d8dff", "NEW", 56, 28]);
+    expect(result.context.calls).toContainEqual(["fillText", "#333", "p 1 / 2", 98, 28]);
+    expect(result.context.calls.filter(call => call[0] === "drawImage")).toEqual([
+      ["drawImage", oldCanvas, 0, 56],
+      ["drawImage", newCanvas, 52, 56],
+    ]);
+  });
+
+  test("keeps a missing side white and can reuse a destination canvas", () => {
+    const newCanvas = new RecordingCanvas(40, 12);
+    const destination = new RecordingCanvas(8, 8);
+
+    const result = composeVisualSplitExport({
+      oldCanvas: null,
+      newCanvas,
+      pageIndex: 2,
+      total: 4,
+      dpi: 72,
+      destination,
+    });
+
+    expect(result).toBe(destination);
+    expect([destination.width, destination.height]).toEqual([81, 40]);
+    const images = destination.context.calls.filter(call => call[0] === "drawImage");
+    expect(images).toEqual([["drawImage", newCanvas, 41, 28]]);
+    expect(destination.context.calls).toContainEqual(["fillRect", "#fff", 0, 0, 81, 40]);
+    expect(newCanvas.context.calls).toEqual([]);
   });
 });

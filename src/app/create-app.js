@@ -392,6 +392,8 @@ export function createApp({ document, window, dependencies = {} }) {
     state,
     dom: {
       out,
+      splitOldCanvas: dom.splitOldCanvas,
+      splitNewCanvas: dom.splitNewCanvas,
       oldTextCanvas: dom.oldTextCanvas,
       newTextCanvas: dom.newTextCanvas,
       status: dom.status,

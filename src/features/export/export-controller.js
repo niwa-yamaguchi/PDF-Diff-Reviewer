@@ -1,6 +1,7 @@
 import {
   composeTextExport,
   composeVisualExport,
+  composeVisualSplitExport,
   VISUAL_BOX_STYLE,
 } from "./image-composer.js";
 
@@ -146,6 +147,25 @@ function visualRenderSnapshot(snapshot, pageIndex) {
   });
 }
 
+function copyCanvas(source) {
+  if (!source) return null;
+  if (!source.cloneNode) throw new Error("出力用Canvasを作成できませんでした");
+  const copy = source.cloneNode(false);
+  copy.width = source.width;
+  copy.height = source.height;
+  copy.getContext("2d").drawImage(source, 0, 0);
+  return copy;
+}
+
+function visualPngFilename(snapshot) {
+  const page = snapshot.documents.currentPage + 1;
+  if (snapshot.visual.mode === "split") return `side-by-side_p${page}.png`;
+  if (snapshot.visual.mode === "toggle") {
+    return `${snapshot.visual.toggleSide === "new" ? "new" : "old"}_p${page}.png`;
+  }
+  return `diff_p${page}.png`;
+}
+
 function toBlob(canvas) {
   return new Promise((resolve, reject) => {
     try {
@@ -265,17 +285,22 @@ export function createExportController({
   async function saveVisualPng() {
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PNG生成中…");
-    const filename = snapshot.visual.mode === "toggle"
-      ? `${snapshot.visual.toggleSide === "new" ? "new" : "old"}_p${snapshot.documents.currentPage + 1}.png`
-      : `diff_p${snapshot.documents.currentPage + 1}.png`;
+    const filename = visualPngFilename(snapshot);
     try {
-      const boxes = snapshot.boxEditor.showBoxes ? snapshot.boxEditor.currentBoxes : [];
-      const composed = composeVisualExport({
-        source: dom.out,
-        boxes,
-        legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
-        dpi: snapshot.comparison.dpi,
-      });
+      const composed = snapshot.visual.mode === "split"
+        ? composeVisualSplitExport({
+            oldCanvas: copyCanvas(dom.splitOldCanvas),
+            newCanvas: copyCanvas(dom.splitNewCanvas),
+            pageIndex: snapshot.documents.currentPage,
+            total: snapshot.documents.pages,
+            dpi: snapshot.comparison.dpi,
+          })
+        : composeVisualExport({
+            source: dom.out,
+            boxes: snapshot.boxEditor.showBoxes ? snapshot.boxEditor.currentBoxes : [],
+            legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
+            dpi: snapshot.comparison.dpi,
+          });
       const blob = await toBlob(composed);
       await download(blob, filename);
       setOwnedStatus(session, session.prior.text);
