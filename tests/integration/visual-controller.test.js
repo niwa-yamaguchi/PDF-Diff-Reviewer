@@ -105,6 +105,15 @@ function harness({
   renderDiffPage = vi.fn(),
   renderTogglePage = vi.fn(),
   renderSplitPage = vi.fn(),
+  createCanvas = (width, height) => {
+    const canvas = { width, height, getContext: () => canvasContext, context: null };
+    const canvasContext = {
+      clearRect: vi.fn(),
+      drawImage: vi.fn(source => { canvas.id = source.id; }),
+    };
+    canvas.context = canvasContext;
+    return canvas;
+  },
 } = {}) {
   const state = createAppState();
   state.documents.oldDoc = { id: "old", numPages: 2 };
@@ -118,6 +127,7 @@ function harness({
   const splitNewContext = { clearRect: vi.fn(), drawImage: vi.fn() };
   const dom = {
     out: { width: 10, height: 10, style: { display: "block" }, getContext: () => context },
+    canvasWrap: { style: { display: "" } },
     visualSplitPanel: { style: { display: "none" } },
     splitOldCanvas: {
       width: 10, height: 10, style: {}, getContext: () => splitOldContext,
@@ -146,6 +156,7 @@ function harness({
     renderDiffPage,
     renderTogglePage,
     renderSplitPage,
+    createCanvas,
     drawBoxes,
   });
   return {
@@ -575,6 +586,7 @@ test("commits both split canvases atomically and rejects an older split result",
   expect(state.documents.currentPage).toBe(1);
   expect(state.visual.splitCache).toEqual({ idx: 1 });
   expect(dom.out.style.display).toBe("none");
+  expect(dom.canvasWrap.style.display).toBe("none");
   expect(dom.visualSplitPanel.style.display).toBe("flex");
   expect(dom.status.textContent).toBe("左右表示中");
 });
@@ -620,6 +632,98 @@ test("a current split failure preserves both canvases, page, cache, and status",
   expect(splitOldContext.drawImage).not.toHaveBeenCalled();
   expect(splitNewContext.drawImage).not.toHaveBeenCalled();
   expect(dom.status.textContent).toBe("stable split");
+});
+
+test("rejects the whole split result when staging either source canvas fails", async () => {
+  const error = new Error("new staging copy failed");
+  let created = 0;
+  const createCanvas = vi.fn((width, height) => {
+    created += 1;
+    const stagingContext = {
+      clearRect: vi.fn(),
+      drawImage: created === 2 ? vi.fn(() => { throw error; }) : vi.fn(),
+    };
+    return { width, height, getContext: () => stagingContext };
+  });
+  const {
+    state, dom, splitOldContext, splitNewContext, controller,
+  } = harness({
+    renderSplitPage: vi.fn(async () => splitResult(0)),
+    createCanvas,
+  });
+  state.visual.mode = "split";
+  state.visual.splitCache = { idx: 1, stable: true };
+  dom.status.textContent = "prior split";
+
+  expect(await controller.showPage(0)).toEqual({ committed: false, error });
+
+  expect(splitOldContext.drawImage).not.toHaveBeenCalled();
+  expect(splitNewContext.drawImage).not.toHaveBeenCalled();
+  expect(state.visual.splitCache).toEqual({ idx: 1, stable: true });
+  expect(dom.status.textContent).toBe("prior split");
+});
+
+test("rolls both split targets back when the second target reflection fails", async () => {
+  const error = new Error("new target failed");
+  const {
+    state, dom, splitOldContext, splitNewContext, controller,
+  } = harness({ renderSplitPage: vi.fn(async () => splitResult(0)) });
+  state.visual.mode = "split";
+  dom.splitOldCanvas.width = 31;
+  dom.splitOldCanvas.height = 41;
+  dom.splitNewCanvas.width = 32;
+  dom.splitNewCanvas.height = 42;
+  splitNewContext.drawImage
+    .mockImplementationOnce(() => { throw error; })
+    .mockImplementation(() => {});
+  dom.status.textContent = "prior pair";
+
+  expect(await controller.showPage(0)).toEqual({ committed: false, error });
+
+  expect(dom.splitOldCanvas).toMatchObject({ width: 31, height: 41 });
+  expect(dom.splitNewCanvas).toMatchObject({ width: 32, height: 42 });
+  expect(splitOldContext.drawImage).toHaveBeenCalledTimes(2);
+  expect(splitNewContext.drawImage).toHaveBeenCalledTimes(2);
+  expect(dom.status.textContent).toBe("prior pair");
+});
+
+test("rejects a split result whose baked box revision became stale", async () => {
+  const pending = deferred();
+  const {
+    state, dom, splitOldContext, splitNewContext, controller,
+  } = harness({ renderSplitPage: vi.fn(() => pending.promise) });
+  state.visual.mode = "split";
+  state.documents.currentPage = 1;
+  state.visual.splitCache = { idx: 1, stable: true };
+  dom.status.textContent = "newer boxes";
+
+  const rendering = controller.showPage(0);
+  state.boxEditor.revisionByPage.set(0, 1);
+  pending.resolve(splitResult(0));
+
+  expect(await rendering).toEqual({ committed: false });
+  expect(splitOldContext.drawImage).not.toHaveBeenCalled();
+  expect(splitNewContext.drawImage).not.toHaveBeenCalled();
+  expect(state.documents.currentPage).toBe(1);
+  expect(state.visual.splitCache).toEqual({ idx: 1, stable: true });
+  expect(dom.status.textContent).toBe("newer boxes");
+});
+
+test.each(["diff", "toggle"])("restores the single surface after committing %s", async mode => {
+  const renderer = vi.fn(async snapshot => result(snapshot.pageIndex, mode));
+  const options = mode === "toggle"
+    ? { renderTogglePage: renderer }
+    : { renderDiffPage: renderer };
+  const { state, dom, controller } = harness(options);
+  state.visual.mode = mode;
+  dom.canvasWrap.style.display = "none";
+  dom.visualSplitPanel.style.display = "flex";
+
+  expect(await controller.showPage(0)).toEqual({ committed: true });
+
+  expect(dom.canvasWrap.style.display).toBe("");
+  expect(dom.out.style.display).toBe("block");
+  expect(dom.visualSplitPanel.style.display).toBe("none");
 });
 
 test("reports a current renderer failure without replacing the prior committed page", async () => {
@@ -716,7 +820,11 @@ test("flips a fully matching committed toggle cache without invoking a renderer"
   expect(await controller.flipToggleSide()).toEqual({ committed: true });
 
   expect(state.visual.toggleSide).toBe("new");
-  expect(context.drawImage).toHaveBeenCalledWith(newCanvas, 0, 0);
+  expect(context.drawImage).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "new-side" }),
+    0,
+    0,
+  );
   expect(drawBoxes).toHaveBeenCalledOnce();
   expect(renderDiffPage).not.toHaveBeenCalled();
   expect(renderTogglePage).not.toHaveBeenCalled();

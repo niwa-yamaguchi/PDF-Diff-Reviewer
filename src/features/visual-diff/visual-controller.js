@@ -69,6 +69,7 @@ export function createVisualController({
   renderDiffPage,
   renderTogglePage,
   renderSplitPage,
+  createCanvas,
   drawBoxes,
 }) {
   let activeInteractiveTicket = null;
@@ -98,17 +99,6 @@ export function createVisualController({
     if (pendingFlip?.ticketId === ticket.id) pendingFlip = null;
   }
 
-  function commitCanvas(canvas) {
-    dom.out.width = canvas.width;
-    dom.out.height = canvas.height;
-    const context = dom.out.getContext("2d");
-    context.clearRect(0, 0, dom.out.width, dom.out.height);
-    context.drawImage(canvas, 0, 0);
-    dom.out.style.display = "block";
-    dom.visualSplitPanel.style.display = "none";
-    dom.placeholder.style.display = "none";
-  }
-
   function copyCanvas(source, target) {
     target.width = source.width;
     target.height = source.height;
@@ -117,10 +107,42 @@ export function createVisualController({
     context.drawImage(source, 0, 0);
   }
 
+  function canvasCopy(source) {
+    const copy = createCanvas(source.width, source.height);
+    copyCanvas(source, copy);
+    return copy;
+  }
+
+  function reflectAtomically(entries) {
+    const staged = entries.map(([source, target]) => [canvasCopy(source), target]);
+    const backups = entries.map(([, target]) => canvasCopy(target));
+    try {
+      for (const [source, target] of staged) copyCanvas(source, target);
+    } catch (error) {
+      for (let index = 0; index < entries.length; index += 1) {
+        try {
+          copyCanvas(backups[index], entries[index][1]);
+        } catch (_) { /* preserve the original commit error */ }
+      }
+      throw error;
+    }
+  }
+
+  function commitCanvas(canvas) {
+    reflectAtomically([[canvas, dom.out]]);
+    dom.out.style.display = "block";
+    dom.canvasWrap.style.display = "";
+    dom.visualSplitPanel.style.display = "none";
+    dom.placeholder.style.display = "none";
+  }
+
   function commitSplitCanvases(sideCanvases) {
-    copyCanvas(sideCanvases.old, dom.splitOldCanvas);
-    copyCanvas(sideCanvases.new, dom.splitNewCanvas);
+    reflectAtomically([
+      [sideCanvases.old, dom.splitOldCanvas],
+      [sideCanvases.new, dom.splitNewCanvas],
+    ]);
     dom.out.style.display = "none";
+    dom.canvasWrap.style.display = "none";
     dom.visualSplitPanel.style.display = "flex";
     dom.placeholder.style.display = "none";
   }
@@ -196,7 +218,20 @@ export function createVisualController({
         : null;
     }
     dom.cancelBoxDrag?.();
-    const previousStatus = dom.status.innerHTML;
+    const previousUi = {
+      status: dom.status.innerHTML,
+      outDisplay: dom.out.style.display,
+      canvasWrapDisplay: dom.canvasWrap.style.display,
+      splitDisplay: dom.visualSplitPanel.style.display,
+      placeholderDisplay: dom.placeholder.style.display,
+    };
+    const restorePreviousUi = () => {
+      dom.status.innerHTML = previousUi.status;
+      dom.out.style.display = previousUi.outDisplay;
+      dom.canvasWrap.style.display = previousUi.canvasWrapDisplay;
+      dom.visualSplitPanel.style.display = previousUi.splitDisplay;
+      dom.placeholder.style.display = previousUi.placeholderDisplay;
+    };
     dom.status.innerHTML = '<span class="busy">レンダリング中…</span>';
     const phaseLabel = ({ phase, ratio }) => {
       if (phase === "render") return "ページを描画中…";
@@ -221,7 +256,7 @@ export function createVisualController({
         return { committed: false };
       }
       if (!isRenderCancelled(error)) dom.reportError?.(error);
-      if (snapshot.mode === "split") dom.status.innerHTML = previousStatus;
+      restorePreviousUi();
       finishInteractive(ticket);
       return { committed: false, error };
     }
@@ -229,14 +264,26 @@ export function createVisualController({
       finishInteractive(ticket);
       return { committed: false };
     }
+    if (snapshot.mode === "split" && !boxesAreCurrent(snapshot)) {
+      restorePreviousUi();
+      finishInteractive(ticket);
+      return { committed: false };
+    }
     dom.cancelBoxDrag?.();
-    commitResult(
-      result,
-      snapshot,
-      updateCurrentPage,
-      commitToggleSide,
-      boxesAreCurrent(snapshot),
-    );
+    try {
+      commitResult(
+        result,
+        snapshot,
+        updateCurrentPage,
+        commitToggleSide,
+        boxesAreCurrent(snapshot),
+      );
+    } catch (error) {
+      dom.reportError?.(error);
+      restorePreviousUi();
+      finishInteractive(ticket);
+      return { committed: false, error };
+    }
     finishInteractive(ticket);
     return { committed: true };
   }

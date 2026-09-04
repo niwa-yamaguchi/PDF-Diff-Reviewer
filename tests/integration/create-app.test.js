@@ -1,6 +1,12 @@
 import { expect, test, vi } from "vitest";
 import { createApp } from "../../src/app/create-app.js";
 
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
   "boxDel", "boxEdit", "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
@@ -17,12 +23,21 @@ const ids = [
 
 function element(id) {
   const listeners = new Map();
+  const classes = new Set();
   return {
     id,
     value: "0",
     dataset: {},
     style: {},
-    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    classList: {
+      add: value => classes.add(value),
+      remove: value => classes.delete(value),
+      toggle(value, force) {
+        if (force === undefined ? !classes.has(value) : force) classes.add(value);
+        else classes.delete(value);
+      },
+      contains: value => classes.has(value),
+    },
     listeners,
     addEventListener(type, handler, options) {
       const values = listeners.get(type) || [];
@@ -227,4 +242,136 @@ test("enters split with fit, preserves its view on paging, and can return to dif
   expect(app.state.visual.mode).toBe("diff");
   expect(splitViewerController.cancelPan).toHaveBeenCalledOnce();
   expect(visualController.showPage).toHaveBeenLastCalledWith(0);
+
+  await controls.appController.setSplitMode();
+  expect(splitViewerController.fit).toHaveBeenCalledOnce();
+  expect(splitViewerController.apply).toHaveBeenCalledTimes(2);
+
+  await controls.appController.runVisual();
+  expect(splitViewerController.fit).toHaveBeenCalledTimes(2);
+});
+
+test("rolls failed diff toggle and split transitions back to the last committed mode and surface", async () => {
+  let controls;
+  const visualController = { showPage: vi.fn().mockResolvedValue({ committed: false }) };
+  const viewerController = { cancelPan: vi.fn(), handleResize: vi.fn() };
+  const splitViewerController = {
+    cancelPan: vi.fn(), fit: vi.fn(), apply: vi.fn(), handleResize: vi.fn(),
+  };
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(args => { controls = args; }),
+    createViewerController: vi.fn(() => viewerController),
+    createSplitViewerController: vi.fn(() => splitViewerController),
+    createVisualController: vi.fn(() => visualController),
+  });
+  const document = fakeDocument();
+  const window = {
+    confirm: vi.fn(() => true),
+    console: { error: vi.fn(), log: vi.fn() },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  };
+  const app = createApp({ document, window, dependencies });
+  app.state.documents.pages = 1;
+  app.state.visual.rendered = true;
+  const out = document.getElementById("out");
+  const panel = document.getElementById("visualSplitPanel");
+  const canvasWrap = document.querySelector(".canvas-wrap");
+  out.style.display = "block";
+  panel.style.display = "none";
+  canvasWrap.style.display = "";
+  document.getElementById("status").innerHTML = "prior status";
+
+  await controls.appController.setToggleMode();
+  expect(app.state.visual.mode).toBe("diff");
+  expect(document.getElementById("modeDiff").classList.contains("active")).toBe(true);
+  expect(out.style.display).toBe("block");
+  expect(panel.style.display).toBe("none");
+  expect(canvasWrap.style.display).toBe("");
+  expect(document.getElementById("status").innerHTML).toBe("prior status");
+
+  await controls.appController.setSplitMode();
+  expect(app.state.visual.mode).toBe("diff");
+  expect(out.style.display).toBe("block");
+  expect(panel.style.display).toBe("none");
+  expect(canvasWrap.style.display).toBe("");
+
+  visualController.showPage.mockResolvedValueOnce({ committed: true });
+  await controls.appController.setToggleMode();
+  expect(app.state.visual.mode).toBe("toggle");
+  visualController.showPage.mockResolvedValueOnce({ committed: false });
+  await controls.appController.setDiffMode();
+  expect(app.state.visual.mode).toBe("toggle");
+
+  const staleResult = deferred();
+  visualController.showPage
+    .mockImplementationOnce(() => staleResult.promise)
+    .mockResolvedValueOnce({ committed: true });
+  const staleSplit = controls.appController.setSplitMode();
+  expect(app.state.visual.mode).toBe("split");
+  await controls.appController.setDiffMode();
+  expect(app.state.visual.mode).toBe("diff");
+  staleResult.resolve({ committed: false });
+  await staleSplit;
+  expect(app.state.visual.mode).toBe("diff");
+});
+
+test("the E key still uses the controller gate and cannot enter editing in split mode", () => {
+  let controls;
+  const setEditMode = vi.fn(() => false);
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(args => { controls = args; }),
+    createBoxEditorController: vi.fn(() => ({
+      confirmDiscard: () => true, syncInvalidated() {}, cancelDrag() {},
+      setEditMode, draw() {},
+    })),
+  });
+  const window = {
+    confirm: vi.fn(() => true),
+    console: { error: vi.fn(), log: vi.fn() },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  app.state.visual.rendered = true;
+  app.state.visual.mode = "split";
+  app.state.boxEditor.editMode = false;
+  const event = {
+    key: "E", target: { tagName: "DIV" }, preventDefault: vi.fn(),
+  };
+
+  controls.appController.handleKeyDown(event);
+
+  expect(setEditMode).toHaveBeenCalledWith(true);
+  expect(app.state.boxEditor.editMode).toBe(false);
+  expect(event.preventDefault).toHaveBeenCalledOnce();
+});
+
+test("text-to-visual restoration exposes only the surface for the committed visual mode", () => {
+  let textDom;
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createTextController: vi.fn(({ dom }) => {
+      textDom = dom;
+      return Object.freeze({ name: "text" });
+    }),
+  });
+  const document = fakeDocument();
+  const window = {
+    confirm: vi.fn(() => true),
+    console: { error: vi.fn(), log: vi.fn() },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  };
+  const app = createApp({ document, window, dependencies });
+  app.state.visual.rendered = true;
+  app.state.visual.mode = "split";
+
+  textDom.restoreVisualSurface();
+  expect(document.querySelector(".canvas-wrap").style.display).toBe("none");
+  expect(document.getElementById("out").style.display).toBe("none");
+  expect(document.getElementById("visualSplitPanel").style.display).toBe("flex");
+
+  app.state.visual.mode = "diff";
+  textDom.restoreVisualSurface();
+  expect(document.querySelector(".canvas-wrap").style.display).toBe("");
+  expect(document.getElementById("out").style.display).toBe("block");
+  expect(document.getElementById("visualSplitPanel").style.display).toBe("none");
 });

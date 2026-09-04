@@ -13,6 +13,7 @@ test("creates isolated state slices with current defaults", () => {
   expect(state.visual.quadrantCache).toBeInstanceOf(Map);
   expect(state.visual.splitCache).toBeNull();
   expect(state.visual.splitView).toEqual({ scale: 1, tx: 0, ty: 0 });
+  expect(state.visual.splitNeedsFit).toBe(true);
   expect(state.boxEditor.autoByPage).toBeInstanceOf(Map);
   expect(state.boxEditor.editsByPage).toBeInstanceOf(Map);
   expect(state.boxEditor.undoByPage).toBeInstanceOf(Map);

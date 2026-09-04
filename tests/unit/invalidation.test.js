@@ -19,6 +19,7 @@ function populatedState() {
   state.visual.toggleCache = { idx: 0 };
   state.visual.currentPlan = { ratio: 1 };
   state.visual.splitCache = { old: { w: 100 }, new: { w: 100 } };
+  state.visual.splitNeedsFit = false;
   state.comparison.quadrantManual.set(0, 2);
   state.boxEditor.autoByPage.set(0, [{ x: 0, y: 0, w: 1, h: 1 }]);
   state.boxEditor.editsByPage.set(0, [{ x: 1, y: 1, w: 1, h: 1 }]);
@@ -60,6 +61,7 @@ test("document invalidation clears every document-derived cache and advances tic
   expectBoxesCleared(state);
   expect(state.documents.generation).toBe(1);
   expect(state.textReview).toMatchObject({ scale: null, extraction: null, highlights: null, page: 0, extractGeneration: 1, renderGeneration: 1 });
+  expect(state.visual.splitNeedsFit).toBe(true);
 });
 
 test("document invalidation can preserve an already advanced document generation", () => {
@@ -72,6 +74,7 @@ test("document invalidation can preserve an already advanced document generation
   expectBoxesCleared(state);
   expect(state.documents.generation).toBe(4);
   expect(state.textReview).toMatchObject({ scale: null, extraction: null, highlights: null, page: 0, extractGeneration: 1, renderGeneration: 1 });
+  expect(state.visual.splitNeedsFit).toBe(true);
 });
 
 test("page alignment invalidation clears visual alignment rotation and boxes but preserves text", () => {
