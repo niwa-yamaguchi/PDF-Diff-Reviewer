@@ -44,6 +44,16 @@ function canvas(width = 20, height = 10, pixels = [1, 2, 3, 255]) {
   return result;
 }
 
+function committedVisualOutput(state) {
+  return {
+    ready: true,
+    mode: state.visual.mode,
+    pageIndex: state.documents.currentPage,
+    revision: state.boxEditor.revisionByPage.get(state.documents.currentPage) || 0,
+    documentGeneration: state.documents.generation,
+  };
+}
+
 function harness(overrides = {}) {
   const state = createAppState();
   state.documents.oldDoc = { id: "old", numPages: 2 };
@@ -67,6 +77,7 @@ function harness(overrides = {}) {
   state.boxEditor.revisionByPage.set(1, 3);
   state.boxEditor.selectedIndex = 0;
   state.boxEditor.drag = { kind: "move" };
+  state.visual.output = committedVisualOutput(state);
   state.textReview.scale = 2;
   state.textReview.page = 0;
   state.textReview.highlights = {
@@ -388,6 +399,7 @@ describe("visual export snapshots", () => {
     const { state, dom, dependencies, controller } = harness();
     state.visual.mode = "toggle";
     state.visual.toggleSide = "old";
+    state.visual.output = committedVisualOutput(state);
     const sourcePixels = [...dom.out.pixels];
     let blobCallback;
     dom.out.cloneNode = () => {
@@ -426,15 +438,42 @@ describe("visual export snapshots", () => {
     state.visual.toggleSide = "new";
     state.documents.currentPage = 1;
     state.boxEditor.showBoxes = false;
+    state.visual.output = committedVisualOutput(state);
     await controller.saveVisualPng();
     expect(dependencies.download).toHaveBeenLastCalledWith(expect.any(Blob), "new_p2.png");
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText")).toBe(false);
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "strokeRect")).toBe(false);
   });
 
+  test("refuses PNG until the live visual output identity is committed", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    state.visual.mode = "split";
+    dom.splitOldCanvas = canvas(100, 200);
+    dom.splitNewCanvas = canvas(100, 200);
+
+    expect(await controller.saveVisualPng()).toBe(false);
+
+    expect(dependencies.download).not.toHaveBeenCalled();
+    expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
+    expect(dom.dlPng.disabled).toBe(false);
+    expect(dom.status.textContent).toBe("差分を表示中");
+    expect(dom.status.classList.contains("busy")).toBe(false);
+  });
+
+  test("refuses PNG when the committed page does not match the current page", async () => {
+    const { state, dependencies, controller } = harness();
+    state.visual.output = committedVisualOutput(state);
+    state.visual.output.pageIndex = 1;
+
+    expect(await controller.saveVisualPng()).toBe(false);
+    expect(dependencies.download).not.toHaveBeenCalled();
+    expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
+  });
+
   test("saves the committed split page with a stable filename and frozen page number", async () => {
     const { state, dom, dependencies, controller } = harness();
     state.visual.mode = "split";
+    state.visual.output = committedVisualOutput(state);
     dom.splitOldCanvas = canvas(100, 200);
     dom.splitNewCanvas = canvas(100, 200);
 
@@ -449,6 +488,7 @@ describe("visual export snapshots", () => {
   test("clones split canvases before awaiting Blob and ignores later screen changes", async () => {
     const { state, dom, dependencies, controller } = harness();
     state.visual.mode = "split";
+    state.visual.output = committedVisualOutput(state);
     state.documents.currentPage = 0;
     state.documents.pages = 2;
     state.comparison.dpi = 72;
@@ -563,9 +603,32 @@ describe("export error and overlap ownership", () => {
     expect(dom.dlPdf.disabled).toBe(false);
   });
 
+  test("abandons a delayed visual PNG download after document invalidation without reporting an error", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    let blobCallback;
+    dom.out.cloneNode = () => {
+      const clone = canvas(0, 0, []);
+      clone.toBlob = callback => { blobCallback = callback; };
+      return clone;
+    };
+
+    const saving = controller.saveVisualPng();
+    expect(controller.invalidateDocuments(10)).toBe(true);
+    state.documents.generation = 10;
+    dom.status.textContent = "PDFの読み込みに失敗しました";
+    blobCallback(new Blob(["png"]));
+    await saving;
+
+    expect(dependencies.download).not.toHaveBeenCalled();
+    expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
+    expect(dom.status.textContent).toBe("PDFの読み込みに失敗しました");
+    expect(dom.dlPng.disabled).toBe(false);
+  });
+
   test("reports a split PNG Blob failure once and restores owned buttons", async () => {
     const { state, dom, dependencies, controller } = harness();
     state.visual.mode = "split";
+    state.visual.output = committedVisualOutput(state);
     const makeClone = () => {
       const clone = canvas(0, 0, []);
       clone.cloneNode = makeClone;

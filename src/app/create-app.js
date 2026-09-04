@@ -256,9 +256,16 @@ export function createApp({ document, window, dependencies = {} }) {
   }
 
   function setModeUi() {
-    dom.modeDiff.classList.toggle("active", state.visual.mode === "diff");
-    dom.modeToggle.classList.toggle("active", state.visual.mode === "toggle");
-    dom.modeSplit.classList.toggle("active", state.visual.mode === "split");
+    const modes = [
+      [dom.modeDiff, "diff"],
+      [dom.modeToggle, "toggle"],
+      [dom.modeSplit, "split"],
+    ];
+    for (const [button, mode] of modes) {
+      const active = state.visual.mode === mode;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    }
     dom.toggleInd.style.display = state.visual.mode === "toggle" ? "flex" : "none";
     dom.th.disabled = state.visual.mode === "toggle";
     dom.boxToggle.disabled = !state.visual.rendered;
@@ -487,11 +494,14 @@ export function createApp({ document, window, dependencies = {} }) {
     ) return { committed: false };
     const transition = ++modeTransitionGeneration;
     const priorStatus = dom.status.innerHTML;
+    const priorExportDisabled = [dom.dlPng.disabled, dom.dlPdf.disabled];
     cancelVisualPan();
     if (targetMode === "split") boxEditorController.setEditMode(false);
     state.visual.mode = targetMode;
     setModeUi();
     if (busy) dom.status.innerHTML = '<span class="busy">差分を再計算中…</span>';
+    dom.dlPng.disabled = true;
+    dom.dlPdf.disabled = true;
     const shown = state.documents.pages
       ? await visualController.showPage(state.documents.currentPage)
       : { committed: false };
@@ -501,6 +511,8 @@ export function createApp({ document, window, dependencies = {} }) {
       setModeUi();
       restoreVisualSurface(committedVisualMode);
       dom.status.innerHTML = priorStatus;
+      dom.dlPng.disabled = priorExportDisabled[0];
+      dom.dlPdf.disabled = priorExportDisabled[1];
       return shown;
     }
     committedVisualMode = targetMode;

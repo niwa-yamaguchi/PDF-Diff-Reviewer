@@ -209,7 +209,7 @@ test("returns equal frames and draws the same manual boxes on both sides", async
   );
 });
 
-test("computes automatic boxes once and marks a missing side", async () => {
+test("computes automatic boxes once and marks a missing OLD side", async () => {
   const deps = dependencies({ oldCanvas: null });
   const rendered = await renderSplitPage(splitSnapshot(), deps);
 
@@ -217,6 +217,36 @@ test("computes automatic boxes once and marks a missing side", async () => {
   expect(rendered.sideCanvases.old.context.calls)
     .toContainEqual(expect.arrayContaining(["fillText", "この版にこのページはありません"]));
   expect(rendered.autoBoxes).toEqual(rendered.boxes);
+});
+
+test("marks a missing NEW side on the right canvas", async () => {
+  const deps = dependencies({ newCanvas: null });
+  const rendered = await renderSplitPage(splitSnapshot(), deps);
+
+  expect(rendered.sideCanvases.new.context.calls)
+    .toContainEqual(expect.arrayContaining(["fillText", "この版にこのページはありません"]));
+  expect(rendered.sideCanvases.old.context.calls.some(call => (
+    call[0] === "fillText" && call[1] === "この版にこのページはありません"
+  ))).toBe(false);
+});
+
+test("paints aligned NEW onto the right canvas instead of the raw new page", async () => {
+  const newCanvas = new RecordingCanvas(3, 1, rgba([20, 80, 140]));
+  const rendered = await renderSplitPage(splitSnapshot({
+    comparison: { dx: 2, dy: 0 },
+  }), dependencies({ newCanvas }));
+
+  expect(rendered.splitCache.alignedNewCanvas).not.toBe(newCanvas);
+  expect(rendered.splitCache.alignedNewCanvas).not.toBe(rendered.splitCache.newCanvas);
+  expect(rendered.sideCanvases.new.context.calls).toContainEqual(
+    ["drawImage", rendered.splitCache.alignedNewCanvas, 0, 0],
+  );
+  expect(rendered.sideCanvases.new.context.calls.some(call => (
+    call[0] === "drawImage" && call[1] === rendered.splitCache.newCanvas
+  ))).toBe(false);
+  expect([...rendered.sideCanvases.new.data.slice(8, 12)]).toEqual([20, 20, 20, 255]);
+  expect([...rendered.splitCache.newCanvas.data.slice(0, 4)]).toEqual([20, 20, 20, 255]);
+  expect([...rendered.splitCache.newCanvas.data.slice(8, 12)]).not.toEqual([20, 20, 20, 255]);
 });
 
 test("uses existing automatic boxes before computing new ones", async () => {

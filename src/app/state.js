@@ -35,6 +35,13 @@ export function createAppState() {
       splitCache: null,
       splitView: { scale: 1, tx: 0, ty: 0 },
       splitNeedsFit: true,
+      output: {
+        ready: false,
+        mode: null,
+        pageIndex: 0,
+        revision: 0,
+        documentGeneration: 0,
+      },
     },
     boxEditor: {
       showBoxes: true,

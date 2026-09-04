@@ -68,6 +68,23 @@ describe("drawChangeBoxes", () => {
     ]);
   });
 
+  test("draws every box with the same fill and inset stroke", () => {
+    const context = new RecordingContext();
+    drawChangeBoxes(context, [
+      { x: 10, y: 20, w: 100, h: 50 },
+      { x: 0, y: 0, w: 8, h: 8 },
+    ], 150);
+
+    expect(context.calls.filter(call => call[0] === "fillRect")).toEqual([
+      ["fillRect", "rgba(255,149,0,0.18)", 10, 20, 100, 50],
+      ["fillRect", "rgba(255,149,0,0.18)", 0, 0, 8, 8],
+    ]);
+    expect(context.calls.filter(call => call[0] === "strokeRect")).toEqual([
+      ["strokeRect", "#ff9500", 3, 11.5, 21.5, 97, 47],
+      ["strokeRect", "#ff9500", 3, 1.5, 1.5, 5, 5],
+    ]);
+  });
+
   test("does not mutate boxes", () => {
     const context = new RecordingContext();
     const boxes = [{ x: 1, y: 2, w: 3, h: 4 }];

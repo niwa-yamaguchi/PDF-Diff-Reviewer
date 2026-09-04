@@ -115,12 +115,14 @@ export function createVisualController({
   }
 
   function reflectAtomically(entries) {
-    const staged = entries.map(([source, target]) => [canvasCopy(source), target]);
-    const backups = entries.map(([, target]) => canvasCopy(target));
+    const backups = [];
     try {
-      for (const [source, target] of staged) copyCanvas(source, target);
+      for (const [source, target] of entries) {
+        backups.push(canvasCopy(target));
+        copyCanvas(source, target);
+      }
     } catch (error) {
-      for (let index = 0; index < entries.length; index += 1) {
+      for (let index = 0; index < backups.length; index += 1) {
         try {
           copyCanvas(backups[index], entries[index][1]);
         } catch (_) { /* preserve the original commit error */ }
@@ -163,6 +165,13 @@ export function createVisualController({
     if (commitToggleSide) state.visual.toggleSide = snapshot.visual.toggleSide;
     if (snapshot.mode === "split") commitSplitCanvases(result.sideCanvases);
     else commitCanvas(result.canvas);
+    state.visual.output = Object.freeze({
+      ready: true,
+      mode: snapshot.mode,
+      pageIndex: snapshot.pageIndex,
+      revision: snapshot.boxEditor.revision,
+      documentGeneration: snapshot.documents.generation,
+    });
     state.visual.currentPlan = result.currentPlan;
     replaceMap(state.visual.alignmentCache, result.alignmentCache);
     replaceMap(state.visual.quadrantCache, result.quadrantCache);

@@ -39,6 +39,13 @@ function element(id) {
       },
       contains: value => classes.has(value),
     },
+    attributes: {},
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+    getAttribute(name) {
+      return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null;
+    },
     listeners,
     addEventListener(type, handler, options) {
       const values = listeners.get(type) || [];
@@ -219,18 +226,23 @@ test("enters split with fit, preserves its view on paging, and can return to dif
     createVisualController: vi.fn(() => visualController),
     createBoxEditorController: vi.fn(() => boxEditorController),
   });
+  const document = fakeDocument();
   const window = {
     confirm: vi.fn(() => true),
     console: { error: vi.fn(), log: vi.fn() },
     getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
   };
-  const app = createApp({ document: fakeDocument(), window, dependencies });
+  const app = createApp({ document, window, dependencies });
   app.state.documents.pages = 2;
   app.state.visual.rendered = true;
 
   await controls.appController.setSplitMode();
 
   expect(app.state.visual.mode).toBe("split");
+  expect(document.getElementById("modeSplit").classList.contains("active")).toBe(true);
+  expect(document.getElementById("modeSplit").getAttribute("aria-pressed")).toBe("true");
+  expect(document.getElementById("modeDiff").getAttribute("aria-pressed")).toBe("false");
+  expect(document.getElementById("modeToggle").getAttribute("aria-pressed")).toBe("false");
   expect(boxEditorController.setEditMode).toHaveBeenCalledWith(false);
   expect(viewerController.cancelPan).toHaveBeenCalledOnce();
   expect(splitViewerController.fit).toHaveBeenCalledOnce();
@@ -241,6 +253,9 @@ test("enters split with fit, preserves its view on paging, and can return to dif
 
   await controls.appController.setDiffMode();
   expect(app.state.visual.mode).toBe("diff");
+  expect(document.getElementById("modeDiff").classList.contains("active")).toBe(true);
+  expect(document.getElementById("modeDiff").getAttribute("aria-pressed")).toBe("true");
+  expect(document.getElementById("modeSplit").getAttribute("aria-pressed")).toBe("false");
   expect(splitViewerController.cancelPan).toHaveBeenCalledOnce();
   expect(visualController.showPage).toHaveBeenLastCalledWith(0);
 

@@ -585,6 +585,13 @@ test("commits both split canvases atomically and rejects an older split result",
   expect(splitNewContext.drawImage).toHaveBeenCalledOnce();
   expect(state.documents.currentPage).toBe(1);
   expect(state.visual.splitCache).toEqual({ idx: 1 });
+  expect(state.visual.output).toEqual({
+    ready: true,
+    mode: "split",
+    pageIndex: 1,
+    revision: 0,
+    documentGeneration: 4,
+  });
   expect(dom.out.style.display).toBe("none");
   expect(dom.canvasWrap.style.display).toBe("none");
   expect(dom.visualSplitPanel.style.display).toBe("flex");
@@ -683,14 +690,42 @@ test("an offscreen visual render can still commit while text mode is active", as
   expect(state.documents.currentPage).toBe(0);
 });
 
-test("rejects the whole split result when staging either source canvas fails", async () => {
-  const error = new Error("new staging copy failed");
+test("split commit copies sources onto targets with at most two extra canvases", async () => {
+  const extras = [];
+  const createCanvas = vi.fn((width, height) => {
+    const extra = { width, height, id: `extra-${extras.length}` };
+    extra.getContext = () => ({
+      clearRect: vi.fn(),
+      drawImage: vi.fn(source => { extra.sourceId = source.id; }),
+    });
+    extras.push(extra);
+    return extra;
+  });
+  const rendered = splitResult(0);
+  const { state, splitOldContext, splitNewContext, controller } = harness({
+    renderSplitPage: vi.fn(async () => rendered),
+    createCanvas,
+  });
+  state.visual.mode = "split";
+
+  expect(await controller.showPage(0)).toEqual({ committed: true });
+
+  expect(createCanvas).toHaveBeenCalledTimes(2);
+  expect(splitOldContext.drawImage).toHaveBeenCalledTimes(1);
+  expect(splitNewContext.drawImage).toHaveBeenCalledTimes(1);
+  expect(splitOldContext.drawImage).toHaveBeenCalledWith(rendered.sideCanvases.old, 0, 0);
+  expect(splitNewContext.drawImage).toHaveBeenCalledWith(rendered.sideCanvases.new, 0, 0);
+  expect(extras.map(extra => extra.sourceId)).toEqual([undefined, undefined]);
+});
+
+test("leaves both split targets unchanged when the first extra canvas copy fails", async () => {
+  const error = new Error("first backup copy failed");
   let created = 0;
   const createCanvas = vi.fn((width, height) => {
     created += 1;
     const stagingContext = {
       clearRect: vi.fn(),
-      drawImage: created === 2 ? vi.fn(() => { throw error; }) : vi.fn(),
+      drawImage: created === 1 ? vi.fn(() => { throw error; }) : vi.fn(),
     };
     return { width, height, getContext: () => stagingContext };
   });
@@ -709,6 +744,7 @@ test("rejects the whole split result when staging either source canvas fails", a
   expect(splitOldContext.drawImage).not.toHaveBeenCalled();
   expect(splitNewContext.drawImage).not.toHaveBeenCalled();
   expect(state.visual.splitCache).toEqual({ idx: 1, stable: true });
+  expect(state.visual.output?.ready).not.toBe(true);
   expect(dom.status.textContent).toBe("prior split");
 });
 

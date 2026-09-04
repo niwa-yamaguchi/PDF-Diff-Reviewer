@@ -160,6 +160,15 @@ function copyCanvas(source) {
   return copy;
 }
 
+function visualOutputMatches(state) {
+  const output = state.visual.output;
+  return Boolean(output?.ready)
+    && output.mode === state.visual.mode
+    && output.pageIndex === state.documents.currentPage
+    && output.documentGeneration === state.documents.generation
+    && output.revision === (state.boxEditor.revisionByPage.get(state.documents.currentPage) || 0);
+}
+
 function visualPngFilename(snapshot) {
   const page = snapshot.documents.currentPage + 1;
   if (snapshot.visual.mode === "split") return `side-by-side_p${page}.png`;
@@ -286,6 +295,7 @@ export function createExportController({
   }
 
   async function saveVisualPng() {
+    if (!visualOutputMatches(state)) return false;
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PNG生成中…");
     const filename = visualPngFilename(snapshot);
@@ -305,6 +315,7 @@ export function createExportController({
             dpi: snapshot.comparison.dpi,
           });
       const blob = await toBlob(composed);
+      if (!owns(session)) return false;
       await download(blob, filename);
       setOwnedStatus(session, session.prior.text);
       return true;

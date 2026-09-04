@@ -71,7 +71,12 @@ describe("createSplitViewerController", () => {
     controller.fit();
 
     expect(dom.oldCanvas.style.transform).toBe(dom.newCanvas.style.transform);
-    expect(controller.getView().scale).toBeCloseTo(Math.min(360 / 1000, 280 / 800) * 0.92);
+    const scale = Math.min(360 / 1000, 280 / 800) * 0.92;
+    expect(controller.getView()).toEqual({
+      scale,
+      tx: (360 - 1000 * scale) / 2,
+      ty: (280 - 800 * scale) / 2,
+    });
     expect(dom.zoomLabel.textContent).toBe(`${Math.round(controller.getView().scale * 100)}%`);
     expect(state.visual.splitView).toEqual(controller.getView());
   });
