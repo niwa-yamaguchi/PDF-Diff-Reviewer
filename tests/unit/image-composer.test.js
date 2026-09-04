@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
+import { CHANGE_BOX_STYLE } from "../../src/core/change-boxes/draw.js";
 import {
   composeTextExport,
   composeVisualExport,
+  VISUAL_BOX_STYLE,
 } from "../../src/features/export/image-composer.js";
 
 class RecordingContext {
@@ -63,6 +65,10 @@ const visualLegend = [
 ];
 
 describe("visual export composition", () => {
+  test("re-exports shared change box style", () => {
+    expect(VISUAL_BOX_STYLE).toBe(CHANGE_BOX_STYLE);
+  });
+
   test("clones full-resolution source pixels and draws boxes without changing source", () => {
     const pixels = [1, 2, 3, 255, 4, 5, 6, 255];
     const source = new RecordingCanvas(2, 1, pixels);

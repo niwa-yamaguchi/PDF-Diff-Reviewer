@@ -1,8 +1,5 @@
+import { CHANGE_BOX_STYLE, drawChangeBoxes } from "../../core/change-boxes/draw.js";
 import { legendLayout, LG_BORDER_PT } from "../../core/legend/layout.js";
-
-const BOX_COLOR = "#ff9500";
-const BOX_FILL = "rgba(255,149,0,0.18)";
-const BOX_BASE_DPI = 150;
 const LEGEND_MARGIN_PT = 10;
 const TEXT_LEGEND_UNIT = 1.6;
 
@@ -79,26 +76,6 @@ function drawLegend(context, items, x, y, unit, options, measured) {
   return layout;
 }
 
-function drawBoxes(context, boxes, dpi) {
-  if (!boxes?.length) return;
-  const lineWidth = Math.max(2, Math.round(3 * dpi / BOX_BASE_DPI));
-  context.save();
-  context.fillStyle = BOX_FILL;
-  context.strokeStyle = BOX_COLOR;
-  context.lineWidth = lineWidth;
-  for (const box of boxes) {
-    context.fillRect(box.x, box.y, box.w, box.h);
-    const half = lineWidth / 2;
-    context.strokeRect(
-      box.x + half,
-      box.y + half,
-      Math.max(0, box.w - lineWidth),
-      Math.max(0, box.h - lineWidth),
-    );
-  }
-  context.restore();
-}
-
 export function composeVisualExport({ source, boxes = [], legend = [], dpi, destination }) {
   if (!source) throw new Error("出力元Canvasがありません");
   const canvas = destination || createLike(source, 0, 0);
@@ -106,7 +83,7 @@ export function composeVisualExport({ source, boxes = [], legend = [], dpi, dest
   canvas.height = source.height;
   const context = canvas.getContext("2d");
   context.drawImage(source, 0, 0);
-  drawBoxes(context, boxes, dpi);
+  drawChangeBoxes(context, boxes, dpi);
   if (legend.length) {
     const unit = dpi / 72;
     const margin = LEGEND_MARGIN_PT * unit;
@@ -167,4 +144,4 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
   return canvas;
 }
 
-export const VISUAL_BOX_STYLE = Object.freeze({ color: BOX_COLOR, fill: BOX_FILL });
+export const VISUAL_BOX_STYLE = CHANGE_BOX_STYLE;
