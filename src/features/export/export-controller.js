@@ -162,11 +162,15 @@ function copyCanvas(source) {
 
 function visualOutputMatches(state) {
   const output = state.visual.output;
-  return Boolean(output?.ready)
-    && output.mode === state.visual.mode
-    && output.pageIndex === state.documents.currentPage
-    && output.documentGeneration === state.documents.generation
-    && output.revision === (state.boxEditor.revisionByPage.get(state.documents.currentPage) || 0);
+  if (
+    !output?.ready
+    || output.mode !== state.visual.mode
+    || output.pageIndex !== state.documents.currentPage
+    || output.documentGeneration !== state.documents.generation
+  ) return false;
+  if (output.mode !== "split") return true;
+  const revision = state.boxEditor.revisionByPage.get(state.documents.currentPage) || 0;
+  return output.revision === revision;
 }
 
 function visualPngFilename(snapshot) {

@@ -460,6 +460,37 @@ describe("visual export snapshots", () => {
     expect(dom.status.classList.contains("busy")).toBe(false);
   });
 
+  test("saves a diff PNG after box edits without waiting for a new visual commit", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    const composed = [];
+    dom.out.cloneNode = () => {
+      const clone = canvas(0, 0, []);
+      composed.push(clone);
+      return clone;
+    };
+    state.boxEditor.currentBoxes = [{ x: 10, y: 20, w: 100, h: 50 }];
+    state.boxEditor.revisionByPage.set(0, 7);
+
+    expect(await controller.saveVisualPng()).toBe(true);
+    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "diff_p1.png");
+    expect(composed[0].getContext("2d").calls.some(call => (
+      call[0] === "strokeRect" && call[1] === "#ff9500"
+    ))).toBe(true);
+  });
+
+  test("refuses split PNG when the baked box revision does not match", async () => {
+    const { state, dom, dependencies, controller } = harness();
+    state.visual.mode = "split";
+    state.visual.output = committedVisualOutput(state);
+    state.boxEditor.revisionByPage.set(0, 1);
+    dom.splitOldCanvas = canvas(100, 200);
+    dom.splitNewCanvas = canvas(100, 200);
+
+    expect(await controller.saveVisualPng()).toBe(false);
+    expect(dependencies.download).not.toHaveBeenCalled();
+    expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
+  });
+
   test("refuses PNG when the committed page does not match the current page", async () => {
     const { state, dependencies, controller } = harness();
     state.visual.output = committedVisualOutput(state);

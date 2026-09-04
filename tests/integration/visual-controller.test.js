@@ -769,6 +769,7 @@ test("rolls both split targets back when the second target reflection fails", as
   expect(dom.splitNewCanvas).toMatchObject({ width: 32, height: 42 });
   expect(splitOldContext.drawImage).toHaveBeenCalledTimes(2);
   expect(splitNewContext.drawImage).toHaveBeenCalledTimes(2);
+  expect(state.visual.output?.ready).not.toBe(true);
   expect(dom.status.textContent).toBe("prior pair");
 });
 
