@@ -116,14 +116,16 @@ export function createBoxEditorView({ state, dom, getView }) {
 
   function updateControls() {
     const on = state.boxEditor.editMode;
-    dom.boxEdit.disabled = !state.visual.rendered;
+    const split = state.visual.mode === "split";
+    dom.boxEdit.disabled = split || !state.visual.rendered;
     dom.boxEdit.classList.toggle("active", on);
     dom.wrap.classList.toggle("boxedit", on);
-    dom.boxDelete.style.display = on ? "" : "none";
-    dom.boxReset.style.display = on ? "" : "none";
+    dom.boxDelete.style.display = on && !split ? "" : "none";
+    dom.boxReset.style.display = on && !split ? "" : "none";
     dom.boxDelete.disabled = state.boxEditor.selectedIndex < 0;
     dom.boxReset.disabled = !state.boxEditor.editsByPage.has(state.documents.currentPage);
-    dom.boxToggle.classList.toggle("active", state.boxEditor.showBoxes);
+    dom.boxToggle.disabled = split || !state.visual.rendered;
+    dom.boxToggle.classList.toggle("active", split || state.boxEditor.showBoxes);
   }
 
   function refresh() {

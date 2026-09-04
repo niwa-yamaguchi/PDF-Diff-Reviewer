@@ -155,3 +155,41 @@ test("the browser view converts native client coordinates even when PointerEvent
 
   expect(view.toImagePoint({ clientX: 150, clientY: 110, x: 150, y: 110 })).toEqual({ x: 20, y: 20 });
 });
+
+test("split mode forces the box toggle active and disables box controls without mutating preference", () => {
+  const { canvas } = canvasHarness();
+  const toggleClassList = { toggle: vi.fn() };
+  const state = {
+    documents: { currentPage: 0 },
+    visual: { mode: "split", rendered: true },
+    boxEditor: {
+      currentBoxes: [], selectedIndex: -1, showBoxes: false,
+      editMode: false, drag: null, editsByPage: new Map(),
+    },
+  };
+  const dom = {
+    canvas,
+    out: { style: { display: "none" } },
+    wrap: {
+      clientWidth: 640, clientHeight: 480, style: {},
+      classList: { toggle: vi.fn() },
+    },
+    statBox: { textContent: "" },
+    boxToggle: { disabled: false, classList: toggleClassList },
+    boxEdit: { disabled: false, classList: { toggle: vi.fn() } },
+    boxDelete: { disabled: false, style: {} },
+    boxReset: { disabled: false, style: {} },
+  };
+  const view = createBoxEditorView({
+    state,
+    dom,
+    getView: () => ({ scale: 1, tx: 0, ty: 0 }),
+  });
+
+  view.updateControls();
+
+  expect(dom.boxToggle.disabled).toBe(true);
+  expect(dom.boxEdit.disabled).toBe(true);
+  expect(toggleClassList.toggle).toHaveBeenCalledWith("active", true);
+  expect(state.boxEditor.showBoxes).toBe(false);
+});

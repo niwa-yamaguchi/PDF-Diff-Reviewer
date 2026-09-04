@@ -15,7 +15,7 @@
     <img class="brandlogo" src="/favicon.png" alt="" width="34" height="34">
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-08-10</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-09-04</span>
     </div>
   </div>
   <div class="legend">
@@ -157,6 +157,7 @@
       <div class="modectl">
         <button id="modeDiff" class="active" disabled title="差分表示">差分</button>
         <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
+        <button id="modeSplit" disabled title="旧版と新版を左右表示">左右表示</button>
         <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
         <button id="boxEdit" disabled title="変更枠を手で編集（E）">枠を編集</button>
         <button id="boxDel" disabled style="display:none" title="選択中の枠を削除（Delete）">枠を削除</button>
@@ -180,6 +181,20 @@
       <div class="placeholder" id="ph">
         <div class="mark">＋　＋<br>＋　＋</div>
         旧版と新版のPDFを読み込むと<br>変更箇所が赤（削除）と青（追加）で重なって表示されます
+      </div>
+    </div>
+    <div class="visual-split-panel" id="visualSplitPanel" style="display:none">
+      <div class="visual-split-pane old">
+        <div class="visual-split-pane-label" style="color:var(--removed)">OLD</div>
+        <div class="visual-split-canvas-wrap">
+          <canvas id="splitOldCanvas" width="10" height="10"></canvas>
+        </div>
+      </div>
+      <div class="visual-split-pane new">
+        <div class="visual-split-pane-label" style="color:var(--added)">NEW</div>
+        <div class="visual-split-canvas-wrap">
+          <canvas id="splitNewCanvas" width="10" height="10"></canvas>
+        </div>
       </div>
     </div>
     <div class="text-panel" id="textPanel" style="display:none">

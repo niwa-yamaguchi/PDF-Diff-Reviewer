@@ -26,6 +26,26 @@
   .placeholder .mark{
     font-size:30px;color:var(--line-bright);margin-bottom:10px;letter-spacing:.3em;
   }
+  .visual-split-panel{flex:1;display:flex;overflow:hidden;min-height:0}
+  .visual-split-pane{
+    flex:1 1 50%;display:flex;flex-direction:column;min-width:0;
+    border-right:1px solid var(--line);
+  }
+  .visual-split-pane:last-child{border-right:none}
+  .visual-split-pane-label{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);
+  }
+  .visual-split-canvas-wrap{
+    flex:1;overflow:hidden;position:relative;background:var(--ink);
+    cursor:grab;touch-action:none;
+  }
+  .visual-split-canvas-wrap.panning{cursor:grabbing}
+  .visual-split-canvas-wrap canvas{
+    position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;
+    background:#fff;box-shadow:0 8px 40px rgba(0,0,0,.55);
+    image-rendering:crisp-edges;
+  }
   /* ── テキスト比較パネル（ページ上ハイライト方式） ── */
   .text-panel{
     flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;

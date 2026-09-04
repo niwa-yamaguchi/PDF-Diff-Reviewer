@@ -104,6 +104,7 @@
     font-family:var(--mono);font-size:11px;
   }
   .viewbar .modectl button:hover{border-color:var(--signal)}
+  .viewbar .modectl button:disabled{opacity:.4;cursor:not-allowed}
   .viewbar .modectl button.active{
     background:var(--signal);color:#1a1206;border-color:var(--signal);font-weight:600;
   }

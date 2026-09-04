@@ -229,7 +229,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
   }
 
   function setEditMode(on) {
-    if (on && !state.visual.rendered) return false;
+    if (on && (state.visual.mode === "split" || !state.visual.rendered)) return false;
     if (!on) cancelDrag();
     state.boxEditor.editMode = !!on;
     state.boxEditor.selectedIndex = -1;
@@ -243,7 +243,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
   }
 
   function toggleBoxes() {
-    if (!state.visual.rendered) return false;
+    if (state.visual.mode === "split" || !state.visual.rendered) return false;
     state.boxEditor.showBoxes = !state.boxEditor.showBoxes;
     if (!state.boxEditor.showBoxes && state.boxEditor.editMode) setEditMode(false);
     if (state.boxEditor.showBoxes) {

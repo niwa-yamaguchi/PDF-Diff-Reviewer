@@ -353,10 +353,11 @@ export function createTextController({
     dom.canvasWrap.style.display = visual ? "" : "none";
     dom.textPanel.style.display = visual ? "none" : "flex";
     if (visual) {
-      dom.restoreVisual?.();
+      dom.restoreVisualSurface?.();
       return true;
     }
     dom.out.style.display = "none";
+    dom.visualSplitPanel.style.display = "none";
     const session = activeCandidate();
     if (session) return showPage(session.requestedPage);
     if (state.textReview.highlights) return showPage(state.textReview.page);

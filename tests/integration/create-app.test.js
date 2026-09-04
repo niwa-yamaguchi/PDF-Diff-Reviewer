@@ -5,14 +5,14 @@ const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
   "boxDel", "boxEdit", "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
-  "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
+  "fileOld", "modeDiff", "modeSplit", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",
   "run", "runText", "scaleReset", "sideNew", "sideOld", "statAd", "statBox",
   "statRm", "status", "textCtrl", "textNext", "textPageInd", "textPanel",
   "textPrev", "textStatus", "textZoom1", "textZoomFit", "textZoomIn", "textZoomOut",
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
-  "zoomLabel", "zoomOut",
+  "zoomLabel", "zoomOut", "visualSplitPanel", "splitOldCanvas", "splitNewCanvas",
 ];
 
 function element(id) {
@@ -44,6 +44,8 @@ function element(id) {
 function fakeDocument() {
   const elements = new Map(ids.map(id => [id, element(id)]));
   const canvasWrap = element("canvasWrap");
+  const splitOldWrap = element("splitOldWrap");
+  const splitNewWrap = element("splitNewWrap");
   const oldTextWrap = element("oldTextWrap");
   const newTextWrap = element("newTextWrap");
   const document = Object.assign(element("document"), {
@@ -51,13 +53,18 @@ function fakeDocument() {
     querySelector(selector) {
       return new Map([
         [".canvas-wrap", canvasWrap],
+        [".visual-split-pane.old .visual-split-canvas-wrap", splitOldWrap],
+        [".visual-split-pane.new .visual-split-canvas-wrap", splitNewWrap],
         [".text-pane.old .text-canvas-wrap", oldTextWrap],
         [".text-pane.new .text-canvas-wrap", newTextWrap],
       ]).get(selector) || null;
     },
     querySelectorAll: selector => [{ ...element(selector), dataset: {} }],
   });
-  document.eventTargets = [document, canvasWrap, oldTextWrap, newTextWrap, ...elements.values()];
+  document.eventTargets = [
+    document, canvasWrap, splitOldWrap, splitNewWrap, oldTextWrap, newTextWrap,
+    ...elements.values(),
+  ];
   return document;
 }
 
@@ -69,6 +76,10 @@ function fakeDependencies(overrides = {}) {
       expect(() => onTransform()).not.toThrow();
       return controller("viewer");
     }),
+    createSplitViewerController: vi.fn(() => ({
+      ...controller("splitViewer"),
+      handleResize: vi.fn(),
+    })),
     createBoxEditorView: vi.fn(() => ({ ...controller("boxView"), redraw() {}, refresh() {}, updateControls() {} })),
     createBoxEditorController: vi.fn(() => ({
       ...controller("boxEditor"), confirmDiscard: () => true, syncInvalidated() {},
@@ -89,7 +100,7 @@ function fakeDependencies(overrides = {}) {
     }),
     createCanvas: vi.fn(), createWhiteCanvas: vi.fn(), downloadBlob: vi.fn(),
     pdfjsLib: { Util: { transform: vi.fn() } }, jsPDF: vi.fn(),
-    renderDiffPage: vi.fn(), renderTogglePage: vi.fn(), extractPageTokens: vi.fn(),
+    renderDiffPage: vi.fn(), renderTogglePage: vi.fn(), renderSplitPage: vi.fn(),
     framePlan: vi.fn(), pageLabelText: vi.fn(), sequenceIndex: vi.fn(),
     canvasToRgba: vi.fn(), alignProbeScale: vi.fn(), downscaleCanvas: vi.fn(),
     pageSizePt: vi.fn(), renderPageCanvas: vi.fn(), rotateCanvas90: vi.fn(),
@@ -117,6 +128,22 @@ test("createApp is the sole composition root and binds once after safe construct
   expect(app.visualController.name).toBe("visual");
   expect(app.textController.name).toBe("text");
   expect(app.exportController.name).toBe("export");
+  expect(dependencies.createSplitViewerController).toHaveBeenCalledWith(expect.objectContaining({
+    state: app.state,
+    dom: expect.objectContaining({
+      oldCanvas: expect.objectContaining({ id: "splitOldCanvas" }),
+      newCanvas: expect.objectContaining({ id: "splitNewCanvas" }),
+      oldWrap: expect.objectContaining({ id: "splitOldWrap" }),
+      newWrap: expect.objectContaining({ id: "splitNewWrap" }),
+    }),
+  }));
+  expect(dependencies.createVisualController).toHaveBeenCalledWith(expect.objectContaining({
+    renderSplitPage: expect.any(Function),
+  }));
+  expect(bindControls).toHaveBeenCalledWith(expect.objectContaining({
+    state: app.state,
+    splitViewerController: expect.objectContaining({ name: "splitViewer" }),
+  }));
   expect(bindControls).toHaveBeenCalledTimes(1);
   expect(calls).toEqual(["bind"]);
 });
@@ -152,4 +179,52 @@ test("repeated createApp replaces the previous document event owners", () => {
       expect(registrations).toHaveLength(1);
     }
   }
+});
+
+test("enters split with fit, preserves its view on paging, and can return to diff", async () => {
+  let controls;
+  const viewerController = {
+    cancelPan: vi.fn(), fit: vi.fn(), handleResize: vi.fn(),
+  };
+  const splitViewerController = {
+    cancelPan: vi.fn(), fit: vi.fn(), apply: vi.fn(), handleResize: vi.fn(),
+  };
+  const visualController = {
+    showPage: vi.fn().mockResolvedValue({ committed: true }),
+  };
+  const boxEditorController = {
+    confirmDiscard: () => true, syncInvalidated() {}, cancelDrag() {},
+    setEditMode: vi.fn(), draw() {},
+  };
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(args => { controls = args; }),
+    createViewerController: vi.fn(() => viewerController),
+    createSplitViewerController: vi.fn(() => splitViewerController),
+    createVisualController: vi.fn(() => visualController),
+    createBoxEditorController: vi.fn(() => boxEditorController),
+  });
+  const window = {
+    confirm: vi.fn(() => true),
+    console: { error: vi.fn(), log: vi.fn() },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  app.state.documents.pages = 2;
+  app.state.visual.rendered = true;
+
+  await controls.appController.setSplitMode();
+
+  expect(app.state.visual.mode).toBe("split");
+  expect(boxEditorController.setEditMode).toHaveBeenCalledWith(false);
+  expect(viewerController.cancelPan).toHaveBeenCalledOnce();
+  expect(splitViewerController.fit).toHaveBeenCalledOnce();
+
+  await controls.appController.nextVisualPage();
+  expect(splitViewerController.apply).toHaveBeenCalledOnce();
+  expect(splitViewerController.fit).toHaveBeenCalledOnce();
+
+  await controls.appController.setDiffMode();
+  expect(app.state.visual.mode).toBe("diff");
+  expect(splitViewerController.cancelPan).toHaveBeenCalledOnce();
+  expect(visualController.showPage).toHaveBeenLastCalledWith(0);
 });

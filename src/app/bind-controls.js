@@ -5,7 +5,9 @@ export function bindControls({
   window,
   dom,
   appController,
+  state,
   viewerController,
+  splitViewerController,
   boxEditorController,
   textController,
   textRenderer,
@@ -31,6 +33,7 @@ export function bindControls({
   listen(window, "blur", event => appController.handleBlur(event));
   listen(window, "resize", event => {
     viewerController.handleResize(event);
+    splitViewerController.handleResize(event);
     textRenderer.handleResize(event);
   });
 
@@ -51,10 +54,21 @@ export function bindControls({
   });
   listen(dom.canvasWrap, "dblclick", event => viewerController.handleDoubleClick(event));
 
-  listen(dom.zoomIn, "click", () => viewerController.zoomIn());
-  listen(dom.zoomOut, "click", () => viewerController.zoomOut());
-  listen(dom.zoomFit, "click", () => viewerController.fit());
-  listen(dom.zoom1, "click", () => viewerController.zoomOne());
+  for (const wrap of [dom.splitOldWrap, dom.splitNewWrap]) {
+    listen(wrap, "wheel", event => splitViewerController.handleWheel(wrap, event), { passive: false });
+    listen(wrap, "pointerdown", event => splitViewerController.handlePointerDown(wrap, event));
+    listen(wrap, "pointermove", event => splitViewerController.handlePointerMove(wrap, event));
+    listen(wrap, "pointerup", event => splitViewerController.handlePointerUp(wrap, event));
+    listen(wrap, "pointercancel", event => splitViewerController.handlePointerCancel(wrap, event));
+  }
+
+  const activeVisualViewer = () => (
+    state.visual.mode === "split" ? splitViewerController : viewerController
+  );
+  listen(dom.zoomIn, "click", () => activeVisualViewer().zoomIn());
+  listen(dom.zoomOut, "click", () => activeVisualViewer().zoomOut());
+  listen(dom.zoomFit, "click", () => activeVisualViewer().fit());
+  listen(dom.zoom1, "click", () => activeVisualViewer().zoomOne());
 
   for (const wrap of [dom.oldTextWrap, dom.newTextWrap]) {
     listen(wrap, "wheel", event => textRenderer.handleWheel(wrap, event), { passive: false });
@@ -78,6 +92,7 @@ export function bindControls({
 
   listen(dom.modeDiff, "click", () => appController.setDiffMode());
   listen(dom.modeToggle, "click", () => appController.setToggleMode());
+  listen(dom.modeSplit, "click", () => appController.setSplitMode());
   listen(dom.toggleFlip, "click", () => appController.flipSide());
   listen(dom.boxToggle, "click", () => boxEditorController.toggleBoxes());
   listen(dom.boxEdit, "click", () => appController.toggleBoxEdit());

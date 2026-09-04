@@ -24,7 +24,7 @@ function target() {
 
 test("binds controls once and delegates events to their owning public handlers", () => {
   const names = [
-    "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle",
+    "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle", "modeSplit",
     "toggleFlip", "boxToggle", "boxEdit", "boxDel", "boxReset", "dpi", "th",
     "tolerance", "nudgeReset", "quadReset", "rotReset", "scaleReset", "autoAlign",
     "run", "alignAddNew", "alignDelOld", "alignUndo", "prev", "next", "dlPng",
@@ -35,6 +35,8 @@ test("binds controls once and delegates events to their owning public handlers",
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
     canvasWrap: target(),
+    splitOldWrap: target(),
+    splitNewWrap: target(),
     oldTextWrap: target(),
     newTextWrap: target(),
     nudgeButtons: [target()],
@@ -46,6 +48,7 @@ test("binds controls once and delegates events to their owning public handlers",
   const windowTarget = target();
   const appController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
   const viewerController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
+  const splitViewerController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
   const boxEditorController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
   const textController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
   const textRenderer = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
@@ -56,7 +59,9 @@ test("binds controls once and delegates events to their owning public handlers",
     window: windowTarget,
     dom,
     appController,
+    state: { visual: { mode: "diff" } },
     viewerController,
+    splitViewerController,
     boxEditorController,
     textController,
     textRenderer,
@@ -82,14 +87,40 @@ test("binds controls once and delegates events to their owning public handlers",
   expect(exportController.saveVisualPng).toHaveBeenCalledTimes(1);
   dom.modeDiff.emit("click");
   expect(appController.setDiffMode).toHaveBeenCalledTimes(1);
+  dom.modeSplit.emit("click");
+  expect(appController.setSplitMode).toHaveBeenCalledTimes(1);
+  dom.splitNewWrap.emit("wheel", move);
+  expect(splitViewerController.handleWheel).toHaveBeenCalledWith(dom.splitNewWrap, move);
   windowTarget.emit("resize");
   expect(viewerController.handleResize).toHaveBeenCalledTimes(1);
+  expect(splitViewerController.handleResize).toHaveBeenCalledTimes(1);
   expect(textRenderer.handleResize).toHaveBeenCalledTimes(1);
+
+  dom.zoomIn.emit("click");
+  expect(viewerController.zoomIn).toHaveBeenCalledTimes(1);
+  appController.setSplitMode.mockImplementation(() => {});
+  const splitState = { visual: { mode: "split" } };
+  const splitDom = dom;
+  bindControls({
+    document: documentTarget,
+    window: windowTarget,
+    dom: splitDom,
+    appController,
+    state: splitState,
+    viewerController,
+    splitViewerController,
+    boxEditorController,
+    textController,
+    textRenderer,
+    exportController,
+  });
+  dom.zoomIn.emit("click");
+  expect(splitViewerController.zoomIn).toHaveBeenCalledTimes(1);
 });
 
 test("replaces every active event binding when the same document is bound again", () => {
   const names = [
-    "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle",
+    "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle", "modeSplit",
     "toggleFlip", "boxToggle", "boxEdit", "boxDel", "boxReset", "dpi", "th",
     "tolerance", "nudgeReset", "quadReset", "rotReset", "scaleReset", "autoAlign",
     "run", "alignAddNew", "alignDelOld", "alignUndo", "prev", "next", "dlPng",
@@ -100,6 +131,8 @@ test("replaces every active event binding when the same document is bound again"
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
     canvasWrap: target(),
+    splitOldWrap: target(),
+    splitNewWrap: target(),
     oldTextWrap: target(),
     newTextWrap: target(),
     nudgeButtons: [target()],
@@ -112,6 +145,7 @@ test("replaces every active event binding when the same document is bound again"
   const createOwners = () => ({
     appController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
     viewerController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
+    splitViewerController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
     boxEditorController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
     textController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
     textRenderer: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
@@ -120,8 +154,9 @@ test("replaces every active event binding when the same document is bound again"
   const previous = createOwners();
   const latest = createOwners();
 
-  bindControls({ document: documentTarget, window: windowTarget, dom, ...previous });
-  bindControls({ document: documentTarget, window: windowTarget, dom, ...latest });
+  const state = { visual: { mode: "diff" } };
+  bindControls({ document: documentTarget, window: windowTarget, dom, state, ...previous });
+  bindControls({ document: documentTarget, window: windowTarget, dom, state, ...latest });
 
   for (const eventTarget of [documentTarget, windowTarget, ...Object.values(dom).flat()]) {
     if (!eventTarget?.listeners) continue;

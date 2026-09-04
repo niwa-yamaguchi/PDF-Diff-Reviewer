@@ -211,3 +211,17 @@ test("discard confirmation and clear edits preserve cancellation and clear all d
   expect(state.boxEditor.drag).toBeNull();
   expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
 });
+
+test("split mode rejects edit and visibility toggles without changing showBoxes", () => {
+  const { state, view, controller } = harness();
+  state.visual.mode = "split";
+  state.boxEditor.editMode = false;
+  state.boxEditor.showBoxes = false;
+
+  expect(controller.setEditMode(true)).toBe(false);
+  expect(controller.toggleBoxes()).toBe(false);
+
+  expect(state.boxEditor.editMode).toBe(false);
+  expect(state.boxEditor.showBoxes).toBe(false);
+  expect(view.refresh).not.toHaveBeenCalled();
+});

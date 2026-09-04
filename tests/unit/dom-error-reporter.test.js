@@ -6,20 +6,22 @@ const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
   "boxDel", "boxEdit", "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
-  "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
+  "fileOld", "modeDiff", "modeSplit", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",
   "run", "runText", "scaleReset", "sideNew", "sideOld", "statAd", "statBox",
   "statRm", "status", "textCtrl", "textNext", "textPageInd", "textPanel",
   "textPrev", "textStatus", "textZoom1", "textZoomFit", "textZoomIn", "textZoomOut",
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
-  "zoomLabel", "zoomOut",
+  "zoomLabel", "zoomOut", "visualSplitPanel", "splitOldCanvas", "splitNewCanvas",
 ];
 
 function fakeDocument({ missing, missingSelector } = {}) {
   const elements = new Map(ids.filter(id => id !== missing).map(id => [id, { id }]));
   const selectors = new Map([
     [".canvas-wrap", { id: "canvasWrap" }],
+    [".visual-split-pane.old .visual-split-canvas-wrap", { id: "splitOldWrap" }],
+    [".visual-split-pane.new .visual-split-canvas-wrap", { id: "splitNewWrap" }],
     [".text-pane.old .text-canvas-wrap", { id: "oldTextWrap" }],
     [".text-pane.new .text-canvas-wrap", { id: "newTextWrap" }],
   ]);
@@ -43,6 +45,8 @@ describe("collectDom", () => {
     expect(Object.isFrozen(dom.nudgeButtons)).toBe(true);
     expect(dom.status.id).toBe("status");
     expect(dom.canvasWrap.id).toBe("canvasWrap");
+    expect(dom.splitOldWrap.id).toBe("splitOldWrap");
+    expect(dom.splitNewWrap.id).toBe("splitNewWrap");
     expect(dom.oldTextWrap.id).toBe("oldTextWrap");
     expect(dom.nudgeButtons).toHaveLength(1);
   });

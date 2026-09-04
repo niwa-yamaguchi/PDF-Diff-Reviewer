@@ -2,14 +2,14 @@ const REQUIRED_IDS = Object.freeze([
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
   "boxDel", "boxEdit", "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
-  "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
+  "fileOld", "modeDiff", "modeSplit", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",
   "run", "runText", "scaleReset", "sideNew", "sideOld", "statAd", "statBox",
   "statRm", "status", "textCtrl", "textNext", "textPageInd", "textPanel",
   "textPrev", "textStatus", "textZoom1", "textZoomFit", "textZoomIn", "textZoomOut",
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
-  "zoomLabel", "zoomOut",
+  "zoomLabel", "zoomOut", "visualSplitPanel", "splitOldCanvas", "splitNewCanvas",
 ]);
 
 function required(value, name) {
@@ -29,6 +29,14 @@ export function collectDom(document) {
     dom[id] = required(document.getElementById(id), id);
   }
   dom.canvasWrap = required(document.querySelector(".canvas-wrap"), "canvasWrap");
+  dom.splitOldWrap = required(
+    document.querySelector(".visual-split-pane.old .visual-split-canvas-wrap"),
+    "splitOldWrap",
+  );
+  dom.splitNewWrap = required(
+    document.querySelector(".visual-split-pane.new .visual-split-canvas-wrap"),
+    "splitNewWrap",
+  );
   dom.oldTextWrap = required(
     document.querySelector(".text-pane.old .text-canvas-wrap"),
     "oldTextWrap",

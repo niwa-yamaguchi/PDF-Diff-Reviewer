@@ -55,6 +55,20 @@ function toggleResult(pageIndex, side) {
   };
 }
 
+function splitResult(pageIndex) {
+  const rendered = result(pageIndex, "split");
+  return {
+    ...rendered,
+    canvas: undefined,
+    sideCanvases: {
+      old: { width: 100 + pageIndex, height: 200 + pageIndex, id: `split-old-${pageIndex}` },
+      new: { width: 100 + pageIndex, height: 200 + pageIndex, id: `split-new-${pageIndex}` },
+    },
+    splitCache: { idx: pageIndex },
+    status: "左右表示中",
+  };
+}
+
 function activeClassList() {
   const values = new Set();
   return {
@@ -87,7 +101,11 @@ function textElement(initialText = "") {
   };
 }
 
-function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) {
+function harness({
+  renderDiffPage = vi.fn(),
+  renderTogglePage = vi.fn(),
+  renderSplitPage = vi.fn(),
+} = {}) {
   const state = createAppState();
   state.documents.oldDoc = { id: "old", numPages: 2 };
   state.documents.newDoc = { id: "new", numPages: 2 };
@@ -96,8 +114,17 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
   state.documents.pages = 2;
   state.documents.generation = 4;
   const context = { clearRect: vi.fn(), drawImage: vi.fn() };
+  const splitOldContext = { clearRect: vi.fn(), drawImage: vi.fn() };
+  const splitNewContext = { clearRect: vi.fn(), drawImage: vi.fn() };
   const dom = {
     out: { width: 10, height: 10, style: { display: "block" }, getContext: () => context },
+    visualSplitPanel: { style: { display: "none" } },
+    splitOldCanvas: {
+      width: 10, height: 10, style: {}, getContext: () => splitOldContext,
+    },
+    splitNewCanvas: {
+      width: 10, height: 10, style: {}, getContext: () => splitNewContext,
+    },
     placeholder: { style: { display: "none" } },
     status: textElement("stable"),
     pageLabel: { textContent: "1 / 2" },
@@ -118,9 +145,13 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
     dom,
     renderDiffPage,
     renderTogglePage,
+    renderSplitPage,
     drawBoxes,
   });
-  return { state, dom, context, drawBoxes, controller, renderDiffPage, renderTogglePage };
+  return {
+    state, dom, context, splitOldContext, splitNewContext, drawBoxes, controller,
+    renderDiffPage, renderTogglePage, renderSplitPage,
+  };
 }
 
 function controllerToggleCache(state, sideCanvases) {
@@ -521,6 +552,74 @@ test("selects the renderer from the captured visual mode", async () => {
   expect(renderTogglePage).toHaveBeenCalledOnce();
   expect(Object.isFrozen(renderDiffPage.mock.calls[0][0])).toBe(true);
   expect(Object.isFrozen(renderDiffPage.mock.calls[0][0].comparison)).toBe(true);
+});
+
+test("commits both split canvases atomically and rejects an older split result", async () => {
+  const stale = deferred();
+  const renderSplitPage = vi.fn(snapshot => (
+    snapshot.pageIndex === 0 ? stale.promise : Promise.resolve(splitResult(1))
+  ));
+  const {
+    state, dom, context, splitOldContext, splitNewContext, controller,
+  } = harness({ renderSplitPage });
+  state.visual.mode = "split";
+
+  const oldPage = controller.showPage(0);
+  expect(await controller.showPage(1)).toEqual({ committed: true });
+  stale.resolve(splitResult(0));
+  expect(await oldPage).toEqual({ committed: false });
+
+  expect(context.drawImage).not.toHaveBeenCalled();
+  expect(splitOldContext.drawImage).toHaveBeenCalledOnce();
+  expect(splitNewContext.drawImage).toHaveBeenCalledOnce();
+  expect(state.documents.currentPage).toBe(1);
+  expect(state.visual.splitCache).toEqual({ idx: 1 });
+  expect(dom.out.style.display).toBe("none");
+  expect(dom.visualSplitPanel.style.display).toBe("flex");
+  expect(dom.status.textContent).toBe("左右表示中");
+});
+
+test("captures a frozen current-page auto box snapshot for split rendering", async () => {
+  const renderSplitPage = vi.fn(async snapshot => {
+    expect(Object.isFrozen(snapshot.boxEditor.autoBoxes)).toBe(true);
+    expect(Object.isFrozen(snapshot.boxEditor.autoBoxes[0])).toBe(true);
+    return splitResult(snapshot.pageIndex);
+  });
+  const { state, controller } = harness({ renderSplitPage });
+  state.visual.mode = "split";
+  state.boxEditor.autoByPage.set(0, [{ x: 1, y: 2, w: 3, h: 4 }]);
+
+  await controller.showPage(0);
+
+  expect(renderSplitPage).toHaveBeenCalledWith(
+    expect.objectContaining({
+      visual: expect.objectContaining({ splitCache: null }),
+      boxEditor: expect.objectContaining({
+        autoBoxes: [{ x: 1, y: 2, w: 3, h: 4 }],
+      }),
+    }),
+    expect.objectContaining({ onProgress: expect.any(Function) }),
+  );
+});
+
+test("a current split failure preserves both canvases, page, cache, and status", async () => {
+  const error = new Error("split failed");
+  const renderSplitPage = vi.fn(async () => { throw error; });
+  const {
+    state, dom, splitOldContext, splitNewContext, controller,
+  } = harness({ renderSplitPage });
+  state.visual.mode = "split";
+  state.documents.currentPage = 1;
+  state.visual.splitCache = { idx: 1, stable: true };
+  dom.status.textContent = "stable split";
+
+  expect(await controller.showPage(0)).toEqual({ committed: false, error });
+
+  expect(state.documents.currentPage).toBe(1);
+  expect(state.visual.splitCache).toEqual({ idx: 1, stable: true });
+  expect(splitOldContext.drawImage).not.toHaveBeenCalled();
+  expect(splitNewContext.drawImage).not.toHaveBeenCalled();
+  expect(dom.status.textContent).toBe("stable split");
 });
 
 test("reports a current renderer failure without replacing the prior committed page", async () => {

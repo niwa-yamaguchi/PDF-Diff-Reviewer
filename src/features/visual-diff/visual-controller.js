@@ -13,6 +13,7 @@ function createSnapshot(
   toggleSide = state.visual.toggleSide,
 ) {
   const manualBoxes = state.boxEditor.editsByPage.get(pageIndex);
+  const autoBoxes = state.boxEditor.autoByPage.get(pageIndex);
   return Object.freeze({
     pageIndex,
     mode,
@@ -38,6 +39,7 @@ function createSnapshot(
     visual: Object.freeze({
       toggleSide,
       toggleCache: state.visual.toggleCache,
+      splitCache: state.visual.splitCache,
       renderGeneration: state.visual.renderGeneration,
       currentPlan: state.visual.currentPlan
         ? Object.freeze({ ...state.visual.currentPlan })
@@ -49,6 +51,7 @@ function createSnapshot(
     boxEditor: Object.freeze({
       showBoxes: state.boxEditor.showBoxes,
       manualBoxes: frozenBoxes(manualBoxes),
+      autoBoxes: frozenBoxes(autoBoxes),
       revision: state.boxEditor.revisionByPage.get(pageIndex) || 0,
     }),
   });
@@ -65,6 +68,7 @@ export function createVisualController({
   dom,
   renderDiffPage,
   renderTogglePage,
+  renderSplitPage,
   drawBoxes,
 }) {
   let activeInteractiveTicket = null;
@@ -101,6 +105,23 @@ export function createVisualController({
     context.clearRect(0, 0, dom.out.width, dom.out.height);
     context.drawImage(canvas, 0, 0);
     dom.out.style.display = "block";
+    dom.visualSplitPanel.style.display = "none";
+    dom.placeholder.style.display = "none";
+  }
+
+  function copyCanvas(source, target) {
+    target.width = source.width;
+    target.height = source.height;
+    const context = target.getContext("2d");
+    context.clearRect(0, 0, target.width, target.height);
+    context.drawImage(source, 0, 0);
+  }
+
+  function commitSplitCanvases(sideCanvases) {
+    copyCanvas(sideCanvases.old, dom.splitOldCanvas);
+    copyCanvas(sideCanvases.new, dom.splitNewCanvas);
+    dom.out.style.display = "none";
+    dom.visualSplitPanel.style.display = "flex";
     dom.placeholder.style.display = "none";
   }
 
@@ -117,11 +138,13 @@ export function createVisualController({
     commitBoxes,
   ) {
     if (commitToggleSide) state.visual.toggleSide = snapshot.visual.toggleSide;
-    commitCanvas(result.canvas);
+    if (snapshot.mode === "split") commitSplitCanvases(result.sideCanvases);
+    else commitCanvas(result.canvas);
     state.visual.currentPlan = result.currentPlan;
     replaceMap(state.visual.alignmentCache, result.alignmentCache);
     replaceMap(state.visual.quadrantCache, result.quadrantCache);
     if (Object.hasOwn(result, "toggleCache")) state.visual.toggleCache = result.toggleCache;
+    if (Object.hasOwn(result, "splitCache")) state.visual.splitCache = result.splitCache;
     if (result.quadrantGeneration != null) {
       state.visual.quadrantGeneration = result.quadrantGeneration;
     }
@@ -173,6 +196,7 @@ export function createVisualController({
         : null;
     }
     dom.cancelBoxDrag?.();
+    const previousStatus = dom.status.innerHTML;
     dom.status.innerHTML = '<span class="busy">レンダリング中…</span>';
     const phaseLabel = ({ phase, ratio }) => {
       if (phase === "render") return "ページを描画中…";
@@ -183,7 +207,11 @@ export function createVisualController({
       if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) return;
       dom.status.innerHTML = `<span class="busy">${phaseLabel(value)}</span>`;
     };
-    const renderer = mode === "toggle" ? renderTogglePage : renderDiffPage;
+    const renderer = mode === "toggle"
+      ? renderTogglePage
+      : mode === "split"
+        ? renderSplitPage
+        : renderDiffPage;
     let result;
     try {
       result = await renderer(snapshot, { onProgress });
@@ -193,6 +221,7 @@ export function createVisualController({
         return { committed: false };
       }
       if (!isRenderCancelled(error)) dom.reportError?.(error);
+      if (snapshot.mode === "split") dom.status.innerHTML = previousStatus;
       finishInteractive(ticket);
       return { committed: false, error };
     }

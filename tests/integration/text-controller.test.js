@@ -72,10 +72,11 @@ function makeHarness({ extract = vi.fn(), renderPage = vi.fn() } = {}) {
     textCtrl: { style: {} },
     viewbar: { style: {} },
     canvasWrap: { style: {} },
+    visualSplitPanel: { style: { display: "flex" } },
     textPanel: { style: {} },
     out: { style: { display: "block" } },
     cancelBoxEdit: vi.fn(),
-    restoreVisual: vi.fn(),
+    restoreVisualSurface: vi.fn(),
   };
   const renderer = {
     renderPage,
@@ -535,7 +536,7 @@ describe("text top mode and invalidation", () => {
     await entering;
     await leaving;
 
-    expect(dom.restoreVisual).toHaveBeenCalled();
+    expect(dom.restoreVisualSurface).toHaveBeenCalled();
     expect(dom.oldTextCanvas.width).toBe(10);
     expect(renderer.applyView).not.toHaveBeenCalled();
   });
@@ -552,6 +553,19 @@ describe("text top mode and invalidation", () => {
     await show;
     expect(dom.oldTextCanvas.width).toBe(10);
     expect(dom.textPageInd.textContent).toBe("invalidated");
+  });
+
+  test("text mode hides both visual surfaces and visual mode delegates surface restoration", async () => {
+    const { state, dom, controller } = makeHarness();
+    state.ui.topMode = "visual";
+    state.visual.mode = "split";
+
+    expect(await controller.setTopMode("text")).toBe(true);
+    expect(dom.out.style.display).toBe("none");
+    expect(dom.visualSplitPanel.style.display).toBe("none");
+
+    expect(await controller.setTopMode("visual")).toBe(true);
+    expect(dom.restoreVisualSurface).toHaveBeenCalledOnce();
   });
 });
 

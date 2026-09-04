@@ -28,9 +28,11 @@ import {
 import { createDiffWorker } from "../platform/diff-worker.js";
 import { createWorkerLane } from "../features/visual-diff/worker-lane.js";
 import { createViewerController } from "../features/viewer/viewer-controller.js";
+import { createSplitViewerController } from "../features/viewer/split-viewer-controller.js";
 import { createVisualController } from "../features/visual-diff/visual-controller.js";
 import { effectiveQuadrant, renderDiffPage } from "../features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "../features/visual-diff/toggle-renderer.js";
+import { renderSplitPage } from "../features/visual-diff/split-renderer.js";
 import { createBoxEditorController } from "../features/box-editor/box-editor-controller.js";
 import { createBoxEditorView } from "../features/box-editor/box-editor-view.js";
 import { createTextController, extractPageTokens } from "../features/text-review/text-controller.js";
@@ -60,10 +62,12 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   renderPageCanvas,
   rotateCanvas90,
   createViewerController,
+  createSplitViewerController,
   createVisualController,
   effectiveQuadrant,
   renderDiffPage,
   renderTogglePage,
+  renderSplitPage,
   createBoxEditorController,
   createBoxEditorView,
   createTextController,
@@ -133,6 +137,17 @@ export function createApp({ document, window, dependencies = {} }) {
     },
     window,
     onTransform: () => boxEditorView?.redraw?.(),
+  });
+
+  const splitViewerController = deps.createSplitViewerController({
+    state,
+    dom: {
+      oldCanvas: dom.splitOldCanvas,
+      newCanvas: dom.splitNewCanvas,
+      oldWrap: dom.splitOldWrap,
+      newWrap: dom.splitNewWrap,
+      zoomLabel: dom.zoomLabel,
+    },
   });
 
   boxEditorView = deps.createBoxEditorView({
@@ -241,6 +256,7 @@ export function createApp({ document, window, dependencies = {} }) {
   function setModeUi() {
     dom.modeDiff.classList.toggle("active", state.visual.mode === "diff");
     dom.modeToggle.classList.toggle("active", state.visual.mode === "toggle");
+    dom.modeSplit.classList.toggle("active", state.visual.mode === "split");
     dom.toggleInd.style.display = state.visual.mode === "toggle" ? "flex" : "none";
     dom.th.disabled = state.visual.mode === "toggle";
     dom.boxToggle.disabled = !state.visual.rendered;
@@ -289,6 +305,9 @@ export function createApp({ document, window, dependencies = {} }) {
     state,
     dom: {
       out,
+      visualSplitPanel: dom.visualSplitPanel,
+      splitOldCanvas: dom.splitOldCanvas,
+      splitNewCanvas: dom.splitNewCanvas,
       placeholder: dom.ph,
       status: dom.status,
       pageLabel: dom.pageLabel,
@@ -317,6 +336,9 @@ export function createApp({ document, window, dependencies = {} }) {
     renderTogglePage: (snapshot, options) => (
       deps.renderTogglePage(snapshot, visualRenderDependencies(), options)
     ),
+    renderSplitPage: (snapshot, options) => (
+      deps.renderSplitPage(snapshot, visualRenderDependencies(), options)
+    ),
     drawBoxes: () => boxEditorView?.redraw?.(),
   });
 
@@ -336,13 +358,20 @@ export function createApp({ document, window, dependencies = {} }) {
       textCtrl: dom.textCtrl,
       viewbar: dom.viewbar,
       canvasWrap: dom.canvasWrap,
+      visualSplitPanel: dom.visualSplitPanel,
       textPanel: dom.textPanel,
       out,
       textPrev: dom.textPrev,
       textNext: dom.textNext,
       cancelBoxEdit: () => boxEditorController?.setEditMode?.(false),
-      restoreVisual: () => {
-        if (state.visual.rendered) out.style.display = "block";
+      restoreVisualSurface: () => {
+        if (state.visual.rendered && state.visual.mode === "split") {
+          out.style.display = "none";
+          dom.visualSplitPanel.style.display = "flex";
+        } else if (state.visual.rendered) {
+          out.style.display = "block";
+          dom.visualSplitPanel.style.display = "none";
+        }
         boxEditorView?.redraw?.();
       },
     },
@@ -433,6 +462,17 @@ export function createApp({ document, window, dependencies = {} }) {
     return ["INPUT", "TEXTAREA", "SELECT"].includes(tag) || Boolean(event.target?.isContentEditable);
   }
 
+  function cancelVisualPan(mode = state.visual.mode) {
+    if (mode === "split") splitViewerController.cancelPan();
+    else viewerController.cancelPan();
+  }
+
+  async function showVisualPage(pageIndex) {
+    const shown = await visualController.showPage(pageIndex);
+    if (shown.committed && state.visual.mode === "split") splitViewerController.apply();
+    return shown;
+  }
+
   const appController = Object.freeze({
     async loadFile(side, event) {
       const file = event.target.files[0];
@@ -457,17 +497,28 @@ export function createApp({ document, window, dependencies = {} }) {
       if (file?.type === "application/pdf") documentController.load(side, file);
     },
     async setDiffMode() {
-      if (state.visual.mode === "diff" || !hasImage()) return;
+      if (state.visual.mode === "diff" || !state.visual.rendered) return;
+      cancelVisualPan();
       state.visual.mode = "diff";
       setModeUi();
       dom.status.innerHTML = '<span class="busy">差分を再計算中…</span>';
       if (state.documents.pages) await visualController.showPage(state.documents.currentPage);
     },
     async setToggleMode() {
-      if (state.visual.mode === "toggle" || !hasImage()) return;
+      if (state.visual.mode === "toggle" || !state.visual.rendered) return;
+      cancelVisualPan();
       state.visual.mode = "toggle";
       setModeUi();
       if (state.documents.pages) await visualController.showPage(state.documents.currentPage);
+    },
+    async setSplitMode() {
+      if (state.visual.mode === "split" || !state.visual.rendered) return;
+      boxEditorController.setEditMode(false);
+      cancelVisualPan();
+      state.visual.mode = "split";
+      setModeUi();
+      const shown = await visualController.showPage(state.documents.currentPage);
+      if (shown.committed) splitViewerController.fit();
     },
     flipSide: () => visualController.flipToggleSide(),
     toggleBoxEdit: () => boxEditorController.setEditMode(!state.boxEditor.editMode),
@@ -479,7 +530,7 @@ export function createApp({ document, window, dependencies = {} }) {
           event.preventDefault();
           return;
         }
-        if (state.visual.mode === "toggle" && hasImage()) {
+        if (state.visual.mode === "toggle" && state.visual.rendered) {
           event.preventDefault();
           visualController.flipToggleSide();
         }
@@ -523,7 +574,8 @@ export function createApp({ document, window, dependencies = {} }) {
       dom.dpi.dataset.committed = dom.dpi.value;
       if (state.visual.rendered) {
         await visualController.showPage(state.documents.currentPage);
-        viewerController.fit();
+        if (state.visual.mode === "split") splitViewerController.fit();
+        else viewerController.fit();
       }
     },
     commitThreshold() {
@@ -626,8 +678,10 @@ export function createApp({ document, window, dependencies = {} }) {
     async runVisual() {
       dom.modeDiff.disabled = false;
       dom.modeToggle.disabled = false;
+      dom.modeSplit.disabled = false;
       await visualController.showPage(0);
-      viewerController.fit();
+      if (state.visual.mode === "split") splitViewerController.fit();
+      else viewerController.fit();
     },
     async alignAddNew() {
       if (!state.visual.rendered || !confirmDiscardBoxEdits()) return;
@@ -660,8 +714,8 @@ export function createApp({ document, window, dependencies = {} }) {
         syncInvalidatedBoxEditor,
       });
     },
-    previousVisualPage: () => visualController.showPage(state.documents.currentPage - 1),
-    nextVisualPage: () => visualController.showPage(state.documents.currentPage + 1),
+    previousVisualPage: () => showVisualPage(state.documents.currentPage - 1),
+    nextVisualPage: () => showVisualPage(state.documents.currentPage + 1),
   });
 
   for (const range of [dom.dpi, dom.th, dom.tolerance]) {
@@ -673,7 +727,9 @@ export function createApp({ document, window, dependencies = {} }) {
     window,
     dom,
     appController,
+    state,
     viewerController,
+    splitViewerController,
     boxEditorController,
     textController,
     textRenderer,
@@ -685,6 +741,7 @@ export function createApp({ document, window, dependencies = {} }) {
     documentController,
     visualController,
     viewerController,
+    splitViewerController,
     boxEditorController,
     textController,
     textRenderer,
