@@ -10,11 +10,23 @@ const VISUAL_COLORS = Object.freeze({
   added: "rgb(77,141,255)",
 });
 
-function cloneValue(value) {
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function cloneValue(value, seen = new WeakSet()) {
   if (!value || typeof value !== "object") return value;
-  if (Array.isArray(value)) return Object.freeze(value.map(cloneValue));
+  if (seen.has(value)) return value;
+  if (Array.isArray(value)) {
+    seen.add(value);
+    return Object.freeze(value.map(item => cloneValue(item, seen)));
+  }
+  if (!isPlainObject(value)) return value;
+  seen.add(value);
   const copy = {};
-  for (const [key, child] of Object.entries(value)) copy[key] = cloneValue(child);
+  for (const [key, child] of Object.entries(value)) copy[key] = cloneValue(child, seen);
   return Object.freeze(copy);
 }
 

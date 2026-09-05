@@ -22,6 +22,17 @@ function textElement(text = "") {
   return { textContent: text, classList: classList() };
 }
 
+function cyclicPdfDoc(id, numPages = 2) {
+  const doc = { id, numPages };
+  const transport = { name: `${id}-transport` };
+  const loadingTask = {};
+  transport.loadingTask = loadingTask;
+  loadingTask._transport = transport;
+  doc._pdfInfo = { numPages };
+  doc._transport = transport;
+  return doc;
+}
+
 function canvas(width = 20, height = 10, pixels = [1, 2, 3, 255]) {
   const context = {
     calls: [],
@@ -348,6 +359,35 @@ describe("visual export snapshots", () => {
     expect(dependencies.download).toHaveBeenLastCalledWith(expect.any(Blob), "new_p2.png");
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText")).toBe(false);
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "strokeRect")).toBe(false);
+  });
+
+  test("snapshots a toggle cache that holds cyclic pdf.js documents without overflowing", async () => {
+    const { state, dependencies, controller } = harness();
+    const oldDoc = cyclicPdfDoc("old");
+    const newDoc = cyclicPdfDoc("new");
+    state.documents.oldDoc = oldDoc;
+    state.documents.newDoc = newDoc;
+    state.visual.mode = "toggle";
+    state.visual.toggleCache = {
+      idx: 0,
+      rawIdentity: {
+        documentGeneration: 9,
+        oldDoc,
+        newDoc,
+        oldIndex: 0,
+        newIndex: 0,
+        dpi: 150,
+        quadrant: 0,
+        framePlan: { ratio: 1 },
+      },
+      oldCanvas: canvas(8, 6),
+      alignedNewCanvas: canvas(8, 6),
+      sideCanvases: { old: canvas(8, 6), new: canvas(8, 6) },
+    };
+
+    await expect(controller.saveVisualPng()).resolves.toBe(true);
+    expect(dependencies.download).toHaveBeenCalledTimes(1);
+    expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
   });
 });
 
