@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   composeTextExport,
+  composeToggleExport,
   composeVisualExport,
+  togglePairLayout,
 } from "../../src/features/export/image-composer.js";
 
 class RecordingContext {
@@ -143,5 +145,84 @@ describe("text export composition", () => {
 
     expect(wide.context.calls.some(call => call[0] === "fillText" && call[2] === "削除")).toBe(true);
     expect(narrow.context.calls.some(call => call[0] === "fillText" && call[2] === "削除")).toBe(false);
+  });
+});
+
+describe("toggle export composition", () => {
+  const colors = { removed: "#ff5b57", added: "#4d8dff" };
+  const legend = [{ stroke: "#ff9500", fill: "rgba(255,149,0,0.18)", label: "変更枠" }];
+
+  function images(result) {
+    return result.context.calls.filter(call => call[0] === "drawImage");
+  }
+
+  test("places portrait and square drawings side by side, landscape drawings stacked", () => {
+    expect(togglePairLayout(40, 80)).toBe("horizontal");
+    expect(togglePairLayout(80, 80)).toBe("horizontal");
+    expect(togglePairLayout(80, 40)).toBe("vertical");
+  });
+
+  test("arranges portrait drawings horizontally with OLD left of NEW", () => {
+    const result = composeToggleExport({
+      oldCanvas: new RecordingCanvas(70, 100),
+      newCanvas: new RecordingCanvas(70, 100),
+      boxes: [{ x: 2, y: 4, w: 6, h: 8 }],
+      legend,
+      dpi: 72,
+      colors,
+      pageIndex: 0,
+      total: 2,
+    });
+
+    const drawn = images(result);
+    expect(drawn).toHaveLength(2);
+    expect(drawn[1][2]).toBeGreaterThan(drawn[0][2]);
+    expect(drawn[1][3]).toBe(drawn[0][3]);
+    expect(result.width).toBeGreaterThan(result.height);
+    const labels = result.context.calls.filter(call => call[0] === "fillText");
+    expect(labels.some(call => call[2] === "OLD")).toBe(true);
+    expect(labels.some(call => call[2] === "NEW")).toBe(true);
+    const boxStrokes = result.context.calls.filter(call => (
+      call[0] === "strokeRect" && call[1] === "#ff9500"
+    ));
+    expect(boxStrokes).toHaveLength(2);
+    expect(boxStrokes[1][3]).toBeGreaterThan(boxStrokes[0][3]);
+  });
+
+  test("arranges landscape drawings vertically with OLD above NEW", () => {
+    const result = composeToggleExport({
+      oldCanvas: new RecordingCanvas(80, 40),
+      newCanvas: new RecordingCanvas(80, 40),
+      boxes: [],
+      legend: [],
+      dpi: 72,
+      colors,
+      pageIndex: 1,
+      total: 3,
+    });
+
+    const drawn = images(result);
+    expect(drawn).toHaveLength(2);
+    expect(drawn[1][3]).toBeGreaterThan(drawn[0][3]);
+    expect(result.height).toBeGreaterThan(result.width);
+    expect(result.context.calls.some(call => call[0] === "fillText" && call[2] === "p 2 / 3")).toBe(true);
+  });
+
+  test("arranges square drawings horizontally", () => {
+    const result = composeToggleExport({
+      oldCanvas: new RecordingCanvas(50, 50),
+      newCanvas: new RecordingCanvas(50, 50),
+      boxes: [],
+      legend: [],
+      dpi: 72,
+      colors,
+      pageIndex: 0,
+      total: 1,
+    });
+
+    const drawn = images(result);
+    expect(drawn[1][2]).toBeGreaterThan(drawn[0][2]);
+    expect(drawn[1][3]).toBe(drawn[0][3]);
+    expect(result.width).toBeGreaterThan(result.height);
   });
 });

@@ -317,9 +317,12 @@ describe("visual export snapshots", () => {
     const { state, dom, dependencies, controller } = harness();
     state.visual.mode = "toggle";
     state.visual.toggleSide = "old";
-    const sourcePixels = [...dom.out.pixels];
+    const oldSide = canvas(40, 80, [1, 2, 3, 255]);
+    const newSide = canvas(40, 80, [4, 5, 6, 255]);
+    state.visual.toggleCache = { sideCanvases: { old: oldSide, new: newSide } };
+    const sourcePixels = [...oldSide.pixels];
     let blobCallback;
-    dom.out.cloneNode = () => {
+    oldSide.cloneNode = () => {
       const clone = canvas(0, 0, []);
       clone.toBlob = callback => { blobCallback = callback; };
       return clone;
@@ -332,11 +335,11 @@ describe("visual export snapshots", () => {
     blobCallback(new Blob(["png"]));
     await saving;
 
-    expect(dom.out.pixels).toEqual(sourcePixels);
-    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "old_p1.png");
+    expect(oldSide.pixels).toEqual(sourcePixels);
+    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "toggle_p1.png");
   });
 
-  test("keeps diff and bare toggle PNG filenames and legend rules distinct", async () => {
+  test("keeps diff overlay PNG distinct from paired toggle PNG", async () => {
     const { state, dom, dependencies, controller } = harness();
     const composed = [];
     dom.out.cloneNode = () => {
@@ -351,14 +354,23 @@ describe("visual export snapshots", () => {
       .filter(call => call[0] === "fillText").map(call => call[2]))
       .toEqual(["共通", "削除（旧版のみ）", "追加（新版のみ）", "変更枠"]);
 
+    const oldSide = canvas(50, 50);
+    const newSide = canvas(50, 50);
+    oldSide.cloneNode = () => {
+      const clone = canvas(0, 0, []);
+      composed.push(clone);
+      return clone;
+    };
     state.visual.mode = "toggle";
     state.visual.toggleSide = "new";
     state.documents.currentPage = 1;
     state.boxEditor.showBoxes = false;
+    state.visual.toggleCache = { sideCanvases: { old: oldSide, new: newSide } };
     await controller.saveVisualPng();
-    expect(dependencies.download).toHaveBeenLastCalledWith(expect.any(Blob), "new_p2.png");
-    expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText")).toBe(false);
-    expect(composed[1].getContext("2d").calls.some(call => call[0] === "strokeRect")).toBe(false);
+    expect(dependencies.download).toHaveBeenLastCalledWith(expect.any(Blob), "toggle_p2.png");
+    expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText" && call[2] === "OLD")).toBe(true);
+    expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText" && call[2] === "NEW")).toBe(true);
+    expect(composed[1].getContext("2d").calls.some(call => call[0] === "strokeRect" && call[1] === "#ff9500")).toBe(false);
   });
 
   test("snapshots a toggle cache that holds cyclic pdf.js documents without overflowing", async () => {
@@ -388,6 +400,37 @@ describe("visual export snapshots", () => {
     await expect(controller.saveVisualPng()).resolves.toBe(true);
     expect(dependencies.download).toHaveBeenCalledTimes(1);
     expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
+  });
+
+  test("toggle PDF renders each page as a paired OLD/NEW sheet named toggle.pdf", async () => {
+    const { state, dependencies, controller } = harness();
+    state.visual.mode = "toggle";
+    const composed = [];
+    const snapshots = [];
+    dependencies.pdfExporter.saveVisual.mockImplementation(async ({ filename, pageCount, renderPage }) => {
+      expect(filename).toBe("toggle.pdf");
+      for (let page = 0; page < pageCount; page += 1) composed.push(await renderPage(page));
+    });
+    dependencies.renderVisualOffscreen.mockImplementation(async ({ renderSnapshot, pageIndex }) => {
+      snapshots.push(renderSnapshot);
+      expect(renderSnapshot.mode).toBe("toggle");
+      const oldSide = canvas(50, 80);
+      const newSide = canvas(50, 80);
+      return {
+        canvas: oldSide,
+        boxes: [],
+        toggleCache: { sideCanvases: { old: oldSide, new: newSide } },
+      };
+    });
+
+    await controller.saveVisualPdf();
+
+    expect(snapshots).toHaveLength(2);
+    expect(composed[0].getContext("2d").calls.some(call => call[0] === "fillText" && call[2] === "OLD")).toBe(true);
+    expect(composed[0].getContext("2d").calls.some(call => call[0] === "fillText" && call[2] === "NEW")).toBe(true);
+    const images = composed[0].getContext("2d").calls.filter(call => call[0] === "drawImage");
+    expect(images).toHaveLength(2);
+    expect(images[1][2]).toBeGreaterThan(images[0][2]);
   });
 });
 

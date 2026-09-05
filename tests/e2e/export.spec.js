@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
@@ -43,10 +44,19 @@ async function expectDownload(page, button, filename, capture) {
   const download = await pending;
   expect(download.suggestedFilename()).toBe(filename);
   await expect.poll(() => capture(page)).toEqual(before);
+  return download;
+}
+
+async function pngSize(download) {
+  const buffer = await readFile(await download.path());
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
 }
 
 test("downloads visual and text PNG/PDF without changing either committed view", async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await page.goto("/");
   await page.locator("#fileOld").setInputFiles(fixture("old.pdf"));
   await page.locator("#fileNew").setInputFiles(fixture("new.pdf"));
@@ -55,6 +65,13 @@ test("downloads visual and text PNG/PDF without changing either committed view",
 
   await expectDownload(page, "#dlPng", "diff_p1.png", visualView);
   await expectDownload(page, "#dlPdf", "diff.pdf", visualView);
+
+  await page.locator("#modeToggle").click();
+  await expect(page.locator("#status")).toHaveText("新旧切替（OLD表示中）");
+  const togglePng = await expectDownload(page, "#dlPng", "toggle_p1.png", visualView);
+  const size = await pngSize(togglePng);
+  expect(size.width).toBeGreaterThan(size.height);
+  await expectDownload(page, "#dlPdf", "toggle.pdf", visualView);
 
   await page.locator("#topText").click();
   await page.locator("#runText").click();

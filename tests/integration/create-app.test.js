@@ -121,6 +121,27 @@ test("createApp is the sole composition root and binds once after safe construct
   expect(calls).toEqual(["bind"]);
 });
 
+test("export render session uses the toggle renderer when the snapshot mode is toggle", async () => {
+  const dependencies = fakeDependencies({ bindControls: vi.fn() });
+  const window = {
+    confirm: vi.fn(() => true),
+    console: { error: vi.fn() },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  };
+  createApp({ document: fakeDocument(), window, dependencies });
+  const { createVisualRenderSession } = dependencies.createExportController.mock.calls[0][0];
+  const session = createVisualRenderSession();
+  dependencies.renderTogglePage.mockResolvedValue({ canvas: { id: "toggle" } });
+  dependencies.renderDiffPage.mockResolvedValue({ canvas: { id: "diff" } });
+
+  await session.render({ renderSnapshot: { mode: "toggle" } });
+  expect(dependencies.renderTogglePage).toHaveBeenCalledTimes(1);
+  expect(dependencies.renderDiffPage).not.toHaveBeenCalled();
+
+  await session.render({ renderSnapshot: { mode: "diff" } });
+  expect(dependencies.renderDiffPage).toHaveBeenCalledTimes(1);
+});
+
 test("repeated createApp replaces the previous document event owners", () => {
   const document = fakeDocument();
   const window = Object.assign(element("window"), {

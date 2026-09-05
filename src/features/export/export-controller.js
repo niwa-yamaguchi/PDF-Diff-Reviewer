@@ -1,5 +1,6 @@
 import {
   composeTextExport,
+  composeToggleExport,
   composeVisualExport,
   VISUAL_BOX_STYLE,
 } from "./image-composer.js";
@@ -138,7 +139,7 @@ function visualRenderSnapshot(snapshot, pageIndex) {
   const manualBoxes = snapshot.boxEditor.editsByPage.get(pageIndex);
   return Object.freeze({
     pageIndex,
-    mode: "diff",
+    mode: snapshot.visual.mode,
     documents: snapshot.documents,
     comparison: snapshot.comparison,
     visual: Object.freeze({
@@ -274,19 +275,48 @@ export function createExportController({
     return invalidated;
   }
 
+  function composePage(mode, {
+    source,
+    oldCanvas,
+    newCanvas,
+    boxes,
+    legend,
+    dpi,
+    pageIndex,
+    total,
+  }) {
+    if (mode === "toggle") {
+      return composeToggleExport({
+        oldCanvas,
+        newCanvas,
+        boxes,
+        legend,
+        dpi,
+        colors: VISUAL_COLORS,
+        pageIndex,
+        total,
+      });
+    }
+    return composeVisualExport({ source, boxes, legend, dpi });
+  }
+
   async function saveVisualPng() {
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PNG生成中…");
     const filename = snapshot.visual.mode === "toggle"
-      ? `${snapshot.visual.toggleSide === "new" ? "new" : "old"}_p${snapshot.documents.currentPage + 1}.png`
+      ? `toggle_p${snapshot.documents.currentPage + 1}.png`
       : `diff_p${snapshot.documents.currentPage + 1}.png`;
     try {
       const boxes = snapshot.boxEditor.showBoxes ? snapshot.boxEditor.currentBoxes : [];
-      const composed = composeVisualExport({
+      const composed = composePage(snapshot.visual.mode, {
         source: dom.out,
+        oldCanvas: snapshot.visual.toggleCache?.sideCanvases?.old,
+        newCanvas: snapshot.visual.toggleCache?.sideCanvases?.new,
         boxes,
         legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
         dpi: snapshot.comparison.dpi,
+        pageIndex: snapshot.documents.currentPage,
+        total: snapshot.documents.pages,
       });
       const blob = await toBlob(composed);
       await download(blob, filename);
@@ -308,7 +338,7 @@ export function createExportController({
       await pdfExporter.saveVisual({
         pageCount: snapshot.documents.pages,
         dpi: snapshot.comparison.dpi,
-        filename: "diff.pdf",
+        filename: snapshot.visual.mode === "toggle" ? "toggle.pdf" : "diff.pdf",
         renderPage: async pageIndex => {
           const result = await session.renderSession.render({
             snapshot,
@@ -317,11 +347,15 @@ export function createExportController({
           });
           const manual = snapshot.boxEditor.editsByPage.get(pageIndex);
           const boxes = !snapshot.boxEditor.showBoxes ? [] : (manual ?? result.boxes ?? []);
-          return composeVisualExport({
+          return composePage(snapshot.visual.mode, {
             source: result.canvas,
+            oldCanvas: result.toggleCache?.sideCanvases?.old,
+            newCanvas: result.toggleCache?.sideCanvases?.new,
             boxes,
-            legend: visualLegend("diff", snapshot.boxEditor.showBoxes),
+            legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
             dpi: snapshot.comparison.dpi,
+            pageIndex,
+            total: snapshot.documents.pages,
           });
         },
       });

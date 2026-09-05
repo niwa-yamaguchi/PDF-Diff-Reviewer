@@ -373,7 +373,12 @@ export function createApp({ document, window, dependencies = {} }) {
     createVisualRenderSession: () => {
       const dependencies = exportRenderDependencies();
       return Object.freeze({
-        render: ({ renderSnapshot }) => deps.renderDiffPage(renderSnapshot, dependencies),
+        render: ({ renderSnapshot }) => {
+          const renderer = renderSnapshot.mode === "toggle"
+            ? deps.renderTogglePage
+            : deps.renderDiffPage;
+          return renderer(renderSnapshot, dependencies);
+        },
         cancel: () => exportLane.cancel(),
       });
     },

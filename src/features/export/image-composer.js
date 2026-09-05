@@ -115,6 +115,129 @@ export function composeVisualExport({ source, boxes = [], legend = [], dpi, dest
   return canvas;
 }
 
+export function togglePairLayout(width, height) {
+  return width > height ? "vertical" : "horizontal";
+}
+
+function toggleLabelMetrics(dpi) {
+  const unit = dpi / 72;
+  return {
+    unit,
+    fontPx: Math.max(12, Math.round(8 * unit)),
+    labelHeight: Math.max(24, Math.round(14 * unit)),
+    gap: Math.max(12, Math.round(8 * unit)),
+    pad: Math.max(4, Math.round(4 * unit)),
+  };
+}
+
+function drawPane(context, source, x, y, cellW, cellH, boxes, dpi) {
+  const ox = x + (cellW - source.width) / 2;
+  const oy = y + (cellH - source.height) / 2;
+  context.drawImage(source, ox, oy);
+  if (!boxes?.length) return;
+  drawBoxes(context, boxes.map(box => ({
+    x: box.x + ox,
+    y: box.y + oy,
+    w: box.w,
+    h: box.h,
+  })), dpi);
+}
+
+function drawToggleHeader(context, {
+  label, color, pageText, legend, x, y, width, metrics,
+}) {
+  const { fontPx, labelHeight, pad, unit } = metrics;
+  context.save();
+  context.font = `bold ${fontPx}px sans-serif`;
+  context.textBaseline = "middle";
+  context.textAlign = "left";
+  context.fillStyle = color;
+  context.fillText(label, x + pad, y + labelHeight / 2);
+  if (pageText) {
+    context.fillStyle = "#333";
+    context.textAlign = "right";
+    context.fillText(pageText, x + width - pad, y + labelHeight / 2);
+  }
+  if (legend?.length) {
+    const options = { chrome: false };
+    const measured = measureLegend(context, legend, unit, options);
+    const legendX = x + pad + context.measureText(label).width + pad * 4;
+    const legendLimit = pageText
+      ? x + width - pad - context.measureText(pageText).width - pad * 4
+      : x + width - pad;
+    if (legendX + measured.w <= legendLimit) {
+      drawLegend(
+        context,
+        legend,
+        legendX,
+        y + labelHeight / 2 - measured.h / 2,
+        unit,
+        options,
+        measured,
+      );
+    }
+  }
+  context.restore();
+}
+
+export function composeToggleExport({
+  oldCanvas,
+  newCanvas,
+  boxes = [],
+  legend = [],
+  dpi,
+  colors,
+  pageIndex,
+  total,
+  destination,
+}) {
+  const reference = oldCanvas || newCanvas;
+  if (!reference) throw new Error("出力元Canvasがありません");
+  const oldSource = oldCanvas || whiteCanvas(reference, newCanvas.width, newCanvas.height);
+  const newSource = newCanvas || whiteCanvas(reference, oldCanvas.width, oldCanvas.height);
+  const cellW = Math.max(oldSource.width, newSource.width);
+  const cellH = Math.max(oldSource.height, newSource.height);
+  const layout = togglePairLayout(cellW, cellH);
+  const metrics = toggleLabelMetrics(dpi);
+  const pageText = `p ${pageIndex + 1} / ${total}`;
+  const width = layout === "horizontal" ? cellW * 2 + metrics.gap : cellW;
+  const height = layout === "horizontal"
+    ? metrics.labelHeight + cellH
+    : metrics.labelHeight * 2 + cellH * 2 + metrics.gap;
+  const canvas = destination || createLike(reference, 0, 0);
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, width, height);
+
+  if (layout === "horizontal") {
+    drawToggleHeader(context, {
+      label: "OLD", color: colors.removed, legend,
+      x: 0, y: 0, width: cellW, metrics,
+    });
+    drawToggleHeader(context, {
+      label: "NEW", color: colors.added, pageText,
+      x: cellW + metrics.gap, y: 0, width: cellW, metrics,
+    });
+    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi);
+    drawPane(context, newSource, cellW + metrics.gap, metrics.labelHeight, cellW, cellH, boxes, dpi);
+  } else {
+    drawToggleHeader(context, {
+      label: "OLD", color: colors.removed, pageText, legend,
+      x: 0, y: 0, width, metrics,
+    });
+    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi);
+    const newY = metrics.labelHeight + cellH + metrics.gap;
+    drawToggleHeader(context, {
+      label: "NEW", color: colors.added,
+      x: 0, y: newY, width, metrics,
+    });
+    drawPane(context, newSource, 0, newY + metrics.labelHeight, cellW, cellH, boxes, dpi);
+  }
+  return canvas;
+}
+
 export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colors }) {
   const reference = oldCanvas || newCanvas;
   if (!reference) throw new Error("テキスト出力元Canvasがありません");
