@@ -241,6 +241,16 @@ export function createBoxEditorController({
     return cancelDrag(event);
   }
 
+  function restoreShownBoxes() {
+    const page = state.documents.currentPage;
+    if (state.boxEditor.editsByPage.has(page)) return;
+    if (state.boxEditor.autoByPage.has(page)) {
+      state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(page);
+    } else {
+      dom.onBoxesShown?.();
+    }
+  }
+
   function setEditMode(on) {
     if (on && !state.visual.rendered) return false;
     if (!on) cancelDrag();
@@ -248,7 +258,7 @@ export function createBoxEditorController({
     state.boxEditor.selectedIndex = -1;
     if (on && !state.boxEditor.showBoxes) {
       state.boxEditor.showBoxes = true;
-      dom.onBoxesShown?.();
+      restoreShownBoxes();
     }
     if (!on) view.setCursor?.("");
     refresh();
@@ -259,14 +269,7 @@ export function createBoxEditorController({
     if (!state.visual.rendered) return false;
     state.boxEditor.showBoxes = !state.boxEditor.showBoxes;
     if (!state.boxEditor.showBoxes && state.boxEditor.editMode) setEditMode(false);
-    if (state.boxEditor.showBoxes) {
-      const page = state.documents.currentPage;
-      if (!state.boxEditor.editsByPage.has(page) && state.boxEditor.autoByPage.has(page)) {
-        state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(page);
-      } else if (!state.boxEditor.editsByPage.has(page) && !state.boxEditor.autoByPage.has(page)) {
-        dom.onBoxesShown?.();
-      }
-    }
+    if (state.boxEditor.showBoxes) restoreShownBoxes();
     refresh();
     return true;
   }

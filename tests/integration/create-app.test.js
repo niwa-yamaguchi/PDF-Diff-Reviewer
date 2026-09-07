@@ -129,6 +129,54 @@ function hiddenTogglePage(width = 100, height = 200) {
     status: "新旧切替", pageLabel: "1 / 2" };
 }
 
+test("editing a hidden toggle page preserves saved automatic reviews during immediate manual creation", async () => {
+  const autoBoxes = [{ x: 50, y: 100, w: 20, h: 40, kind: "added" }];
+  const detected = { ...hiddenTogglePage(), boxes: autoBoxes, autoBoxes };
+  let resolveDetection;
+  const renderTogglePage = vi.fn().mockResolvedValueOnce(detected)
+    .mockResolvedValueOnce(hiddenTogglePage())
+    .mockImplementationOnce(() => new Promise(resolve => { resolveDetection = resolve; }));
+  const app = editableVisualApp(renderTogglePage);
+  app.state.boxEditor.showBoxes = true;
+  await app.visualController.showPage(0);
+  app.state.review.entriesById.set("change-1", { status: "confirmed", comment: "既存の確認記録" });
+  app.boxEditorController.toggleBoxes();
+  await app.visualController.showPage(0);
+  expect(app.state.boxEditor.currentBoxes).toEqual([]);
+  expect(app.state.review.itemsByPage.get(0)).toMatchObject([{ id: "change-1", source: "auto" }]);
+  const savedAuto = app.state.boxEditor.autoByPage.get(0);
+  const showing = vi.spyOn(app.visualController, "showPage");
+
+  app.boxEditorController.setEditMode(true);
+  app.boxEditorController.pointerDown({ x: 10, y: 20, pointerId: 1 });
+  app.boxEditorController.pointerMove({ x: 30, y: 60, pointerId: 1 });
+  app.boxEditorController.pointerUp({ pointerId: 1 });
+  const immediateItems = app.state.review.itemsByPage.get(0);
+  if (resolveDetection) {
+    resolveDetection(detected);
+    await showing.mock.results[0].value;
+  }
+
+  const expectedItems = [
+    { id: "change-2", source: "manual", kind: "changed",
+      normalizedRect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
+    { id: "change-1", source: "auto", kind: "added",
+      normalizedRect: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } },
+  ];
+  expect(immediateItems).toMatchObject(expectedItems);
+  expect(app.state.review.itemsByPage.get(0)).toMatchObject(expectedItems);
+  expect(app.state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "既存の確認記録" });
+  expect(app.state.boxEditor.currentBoxes).toMatchObject([
+    { id: "change-1", kind: "added", source: "auto" },
+    { id: "change-2", kind: "changed", source: "manual" },
+  ]);
+  expect(savedAuto).toEqual([{ x: 50, y: 100, w: 20, h: 40, id: "change-1", kind: "added", source: "auto" }]);
+  expect(app.state.boxEditor.currentBoxes).not.toBe(savedAuto);
+  expect(app.state.boxEditor.currentBoxes[0]).not.toBe(savedAuto[0]);
+  expect(app.state.boxEditor.autoByPage.get(0)).toBe(savedAuto);
+  expect(showing).not.toHaveBeenCalled();
+});
+
 test("manual creation after an undetected toggle page commits while automatic detection is pending", async () => {
   let resolveDetection;
   const renderTogglePage = vi.fn().mockResolvedValueOnce(hiddenTogglePage())
