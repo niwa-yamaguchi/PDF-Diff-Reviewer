@@ -17,6 +17,37 @@ test("creates isolated state slices with current defaults", () => {
   expect(state.boxEditor.revisionByPage).toBeInstanceOf(Map);
 });
 
+test("creates isolated review state", () => {
+  const first = createAppState();
+  const second = createAppState();
+
+  expect(first.review).toMatchObject({
+    selectedId: null,
+    panelOpen: false,
+    nextId: 1,
+    indexGeneration: 0,
+    indexRunning: false,
+    indexedPages: 0,
+    indexTotal: 0,
+    pendingMigration: null,
+    migrationSummary: null,
+  });
+  expect(first.review.itemsByPage).toBeInstanceOf(Map);
+  expect(first.review.entriesById).toBeInstanceOf(Map);
+  expect(first.review.indexErrors).toBeInstanceOf(Map);
+  expect(first.review.thumbnailsByPage).toBeInstanceOf(Map);
+
+  first.review.itemsByPage.set(0, []);
+  first.review.entriesById.set("change-1", { status: "confirmed", comment: "確認" });
+  first.review.indexErrors.set(0, new Error("failed"));
+  first.review.thumbnailsByPage.set(0, "thumbnail");
+
+  expect(second.review.itemsByPage.size).toBe(0);
+  expect(second.review.entriesById.size).toBe(0);
+  expect(second.review.indexErrors.size).toBe(0);
+  expect(second.review.thumbnailsByPage.size).toBe(0);
+});
+
 test("creates independent maps arrays and views for every state", () => {
   const first = createAppState();
   const second = createAppState();

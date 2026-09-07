@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import {
   applyInvalidatingChange,
+  captureReviewMigration,
   invalidateBoxDetection,
   invalidateDocuments,
   invalidateDpi,
@@ -9,7 +10,38 @@ import {
   invalidatePageAlignment,
   invalidateThreshold,
   invalidateTolerance,
+  resetReviewState,
 } from "../../src/app/invalidation.js";
+
+function reviewItem(id, { x = 0, y = 0 } = {}) {
+  return {
+    id,
+    pageIndex: 0,
+    pageKey: "old:0|new:0",
+    rect: { x: x * 100, y: y * 100, w: 10, h: 10 },
+    normalizedRect: { x, y, w: 0.1, h: 0.1 },
+    kind: "changed",
+    source: "visual",
+  };
+}
+
+function populateReviewState(state) {
+  state.review.itemsByPage.set(0, [
+    reviewItem("change-2", { x: 0.5, y: 0.5 }),
+    reviewItem("change-1", { x: 0.1, y: 0.1 }),
+  ]);
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "確認" });
+  state.review.entriesById.set("change-2", { status: "pending", comment: "" });
+  state.review.selectedId = "change-1";
+  state.review.panelOpen = true;
+  state.review.nextId = 3;
+  state.review.indexRunning = true;
+  state.review.indexedPages = 1;
+  state.review.indexTotal = 2;
+  state.review.indexErrors.set(1, new Error("failed"));
+  state.review.migrationSummary = { inherited: 1, reset: 0 };
+  state.review.thumbnailsByPage.set(0, "thumbnail");
+}
 
 function populatedState() {
   const state = createAppState();
@@ -58,6 +90,107 @@ test("document invalidation clears every document-derived cache and advances tic
   expectBoxesCleared(state);
   expect(state.documents.generation).toBe(1);
   expect(state.textReview).toMatchObject({ scale: null, extraction: null, highlights: null, page: 0, extractGeneration: 1, renderGeneration: 1 });
+});
+
+test("captures an isolated sorted migration snapshot before clearing the review index", () => {
+  const state = createAppState();
+  populateReviewState(state);
+  const originalItems = state.review.itemsByPage.get(0);
+  const originalEntry = state.review.entriesById.get("change-1");
+
+  captureReviewMigration(state);
+
+  const snapshotItems = state.review.pendingMigration.itemsByPage.get(0);
+  const snapshotEntry = state.review.pendingMigration.entriesById.get("change-1");
+  expect(snapshotItems.map(item => item.id)).toEqual(["change-1", "change-2"]);
+  expect(snapshotItems).not.toBe(originalItems);
+  expect(snapshotItems[0]).not.toBe(originalItems[1]);
+  expect(snapshotEntry).toEqual({ status: "confirmed", comment: "確認" });
+  expect(snapshotEntry).not.toBe(originalEntry);
+  expect(state.review.itemsByPage.size).toBe(0);
+  expect(state.review.entriesById.size).toBe(2);
+  expect(state.review).toMatchObject({
+    selectedId: null,
+    indexGeneration: 1,
+    indexRunning: false,
+    indexedPages: 0,
+    indexTotal: 0,
+    migrationSummary: null,
+  });
+  expect(state.review.indexErrors.size).toBe(0);
+  expect(state.review.thumbnailsByPage.size).toBe(0);
+});
+
+test.each([
+  ["page alignment", invalidatePageAlignment],
+  ["DPI", invalidateDpi],
+  ["threshold", invalidateThreshold],
+  ["tolerance", invalidateTolerance],
+  ["manual alignment", invalidateManualAlignment],
+])("%s invalidation preserves review data for migration", (_name, invalidate) => {
+  const state = populatedState();
+  populateReviewState(state);
+
+  invalidate(state);
+
+  expect(state.review.pendingMigration.itemsByPage.get(0).map(item => item.id)).toEqual([
+    "change-1",
+    "change-2",
+  ]);
+  expect(state.review.pendingMigration.entriesById.get("change-1")).toEqual({
+    status: "confirmed",
+    comment: "確認",
+  });
+  expect(state.review.itemsByPage.size).toBe(0);
+  expect(state.review.entriesById.size).toBe(2);
+  expect(state.review.indexGeneration).toBe(1);
+});
+
+test("document invalidation discards migration snapshots and all review data", () => {
+  const state = populatedState();
+  populateReviewState(state);
+  captureReviewMigration(state);
+
+  invalidateDocuments(state);
+
+  expect(state.review.itemsByPage.size).toBe(0);
+  expect(state.review.entriesById.size).toBe(0);
+  expect(state.review.selectedId).toBeNull();
+  expect(state.review.panelOpen).toBe(false);
+  expect(state.review.nextId).toBe(1);
+  expect(state.review.indexGeneration).toBe(0);
+  expect(state.review.indexRunning).toBe(false);
+  expect(state.review.indexedPages).toBe(0);
+  expect(state.review.indexTotal).toBe(0);
+  expect(state.review.indexErrors.size).toBe(0);
+  expect(state.review.pendingMigration).toBeNull();
+  expect(state.review.migrationSummary).toBeNull();
+  expect(state.review.thumbnailsByPage.size).toBe(0);
+});
+
+test("resetReviewState restores review defaults without sharing maps", () => {
+  const state = createAppState();
+  populateReviewState(state);
+  const previousItems = state.review.itemsByPage;
+
+  resetReviewState(state);
+
+  expect(state.review.itemsByPage).not.toBe(previousItems);
+  expect(state.review).toMatchObject({
+    selectedId: null,
+    panelOpen: false,
+    nextId: 1,
+    indexGeneration: 0,
+    indexRunning: false,
+    indexedPages: 0,
+    indexTotal: 0,
+    pendingMigration: null,
+    migrationSummary: null,
+  });
+  expect(state.review.itemsByPage.size).toBe(0);
+  expect(state.review.entriesById.size).toBe(0);
+  expect(state.review.indexErrors.size).toBe(0);
+  expect(state.review.thumbnailsByPage.size).toBe(0);
 });
 
 test("document invalidation can preserve an already advanced document generation", () => {

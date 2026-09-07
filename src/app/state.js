@@ -1,3 +1,21 @@
+export function createReviewState() {
+  return {
+    itemsByPage: new Map(),
+    entriesById: new Map(),
+    selectedId: null,
+    panelOpen: false,
+    nextId: 1,
+    indexGeneration: 0,
+    indexRunning: false,
+    indexedPages: 0,
+    indexTotal: 0,
+    indexErrors: new Map(),
+    pendingMigration: null,
+    migrationSummary: null,
+    thumbnailsByPage: new Map(),
+  };
+}
+
 export function createAppState() {
   return {
     documents: {
@@ -54,6 +72,7 @@ export function createAppState() {
       renderGeneration: 0,
       debugXYCut: false,
     },
+    review: createReviewState(),
     ui: { topMode: "visual", busy: null },
   };
 }
