@@ -13,11 +13,11 @@ import {
   resetReviewState,
 } from "../../src/app/invalidation.js";
 
-function reviewItem(id, { x = 0, y = 0 } = {}) {
+function reviewItem(id, { pageIndex = 0, x = 0, y = 0 } = {}) {
   return {
     id,
-    pageIndex: 0,
-    pageKey: "old:0|new:0",
+    pageIndex,
+    pageKey: `old:${pageIndex}|new:${pageIndex}`,
     rect: { x: x * 100, y: y * 100, w: 10, h: 10 },
     normalizedRect: { x, y, w: 0.1, h: 0.1 },
     kind: "changed",
@@ -119,6 +119,94 @@ test("captures an isolated sorted migration snapshot before clearing the review 
   });
   expect(state.review.indexErrors.size).toBe(0);
   expect(state.review.thumbnailsByPage.size).toBe(0);
+});
+
+test("migration snapshot is unaffected by mutations to current item rectangles", () => {
+  const state = createAppState();
+  const currentItem = reviewItem("change-1", { x: 0.1, y: 0.2 });
+  const currentEntry = { status: "confirmed", comment: "確認" };
+  state.review.itemsByPage.set(0, [currentItem]);
+  state.review.entriesById.set("change-1", currentEntry);
+
+  captureReviewMigration(state);
+  currentItem.id = "mutated";
+  currentItem.rect.x = 999;
+  currentItem.normalizedRect.x = 0.9;
+  currentEntry.comment = "変更済み";
+
+  const snapshotItem = state.review.pendingMigration.itemsByPage.get(0)[0];
+  expect(snapshotItem).toMatchObject({
+    id: "change-1",
+    rect: { x: 10 },
+    normalizedRect: { x: 0.1 },
+  });
+  expect(state.review.pendingMigration.entriesById.get("change-1")).toEqual({
+    status: "confirmed",
+    comment: "確認",
+  });
+});
+
+test("consecutive migration capture preserves pending pages when the current index is empty", () => {
+  const state = createAppState();
+  state.review.itemsByPage.set(0, [reviewItem("change-1", { x: 0.1, y: 0.2 })]);
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "確認" });
+
+  captureReviewMigration(state);
+  captureReviewMigration(state);
+
+  expect(state.review.pendingMigration.itemsByPage.get(0).map(item => item.id)).toEqual([
+    "change-1",
+  ]);
+  expect(state.review.pendingMigration.entriesById.get("change-1")).toEqual({
+    status: "confirmed",
+    comment: "確認",
+  });
+});
+
+test("partial migration capture replaces current pages while independently retaining pending pages", () => {
+  const state = createAppState();
+  state.review.itemsByPage.set(0, [reviewItem("change-0", { pageIndex: 0, x: 0.1 })]);
+  state.review.itemsByPage.set(1, [reviewItem("change-1", { pageIndex: 1, x: 0.2 })]);
+  state.review.entriesById.set("change-0", { status: "pending", comment: "old" });
+  state.review.entriesById.set("change-1", { status: "excluded", comment: "保持" });
+  captureReviewMigration(state);
+  const firstPendingItem = state.review.pendingMigration.itemsByPage.get(1)[0];
+  const firstPendingEntry = state.review.pendingMigration.entriesById.get("change-1");
+
+  const currentItem = reviewItem("change-0", { pageIndex: 0, x: 0.6 });
+  const currentEntry = { status: "confirmed", comment: "latest" };
+  state.review.itemsByPage.set(0, [currentItem]);
+  state.review.entriesById = new Map([["change-0", currentEntry]]);
+  captureReviewMigration(state);
+
+  const currentSnapshotItem = state.review.pendingMigration.itemsByPage.get(0)[0];
+  const retainedSnapshotItem = state.review.pendingMigration.itemsByPage.get(1)[0];
+  const retainedSnapshotEntry = state.review.pendingMigration.entriesById.get("change-1");
+  expect(currentSnapshotItem.normalizedRect.x).toBe(0.6);
+  expect(retainedSnapshotItem.normalizedRect.x).toBe(0.2);
+  expect(state.review.pendingMigration.entriesById.get("change-0")).toEqual({
+    status: "confirmed",
+    comment: "latest",
+  });
+  expect(retainedSnapshotEntry).toEqual({ status: "excluded", comment: "保持" });
+  expect(retainedSnapshotItem).not.toBe(firstPendingItem);
+  expect(retainedSnapshotItem.rect).not.toBe(firstPendingItem.rect);
+  expect(retainedSnapshotItem.normalizedRect).not.toBe(firstPendingItem.normalizedRect);
+  expect(retainedSnapshotEntry).not.toBe(firstPendingEntry);
+
+  currentItem.rect.x = 999;
+  currentItem.normalizedRect.x = 0.9;
+  currentEntry.comment = "mutated";
+  firstPendingItem.rect.x = 888;
+  firstPendingItem.normalizedRect.x = 0.8;
+  firstPendingEntry.comment = "mutated";
+
+  expect(currentSnapshotItem.rect.x).toBe(60);
+  expect(currentSnapshotItem.normalizedRect.x).toBe(0.6);
+  expect(state.review.pendingMigration.entriesById.get("change-0").comment).toBe("latest");
+  expect(retainedSnapshotItem.rect.x).toBe(20);
+  expect(retainedSnapshotItem.normalizedRect.x).toBe(0.2);
+  expect(retainedSnapshotEntry.comment).toBe("保持");
 });
 
 test.each([

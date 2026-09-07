@@ -21,18 +21,40 @@ function clearReviewIndex(state) {
   state.review.thumbnailsByPage.clear();
 }
 
-export function captureReviewMigration(state) {
-  state.review.pendingMigration = {
-    itemsByPage: new Map(
-      [...state.review.itemsByPage].map(([page, items]) => [
-        page,
-        sortReviewItems(items).map(item => ({ ...item })),
-      ]),
-    ),
-    entriesById: new Map(
-      [...state.review.entriesById].map(([id, entry]) => [id, { ...entry }]),
-    ),
+function cloneReviewItem(item) {
+  return {
+    ...item,
+    rect: { ...item.rect },
+    normalizedRect: { ...item.normalizedRect },
   };
+}
+
+function cloneReviewItemsByPage(itemsByPage) {
+  return new Map(
+    [...itemsByPage].map(([page, items]) => [
+      page,
+      sortReviewItems(items).map(cloneReviewItem),
+    ]),
+  );
+}
+
+function cloneReviewEntries(entriesById) {
+  return new Map(
+    [...entriesById].map(([id, entry]) => [id, { ...entry }]),
+  );
+}
+
+export function captureReviewMigration(state) {
+  const pending = state.review.pendingMigration;
+  const itemsByPage = cloneReviewItemsByPage(pending?.itemsByPage || []);
+  for (const [page, items] of cloneReviewItemsByPage(state.review.itemsByPage)) {
+    itemsByPage.set(page, items);
+  }
+  const entriesById = cloneReviewEntries(pending?.entriesById || []);
+  for (const [id, entry] of cloneReviewEntries(state.review.entriesById)) {
+    entriesById.set(id, entry);
+  }
+  state.review.pendingMigration = { itemsByPage, entriesById };
   clearReviewIndex(state);
 }
 
