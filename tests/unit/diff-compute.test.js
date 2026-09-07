@@ -101,7 +101,7 @@ test("finds a change box around a solid removed area", () => {
   }));
 
   expect(result.boxes).toHaveLength(1);
-  expect(result.boxes[0]).toMatchObject({ x: 0, y: 0 });
+  expect(result.boxes[0]).toMatchObject({ x: 0, y: 0, kind: "removed" });
   expect(result.boxes[0].w).toBeGreaterThanOrEqual(20);
 });
 

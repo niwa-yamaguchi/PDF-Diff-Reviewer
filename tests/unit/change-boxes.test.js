@@ -8,7 +8,7 @@ test("groups adjacent changed blocks and filters single-block noise", () => {
     0, 0, 0, 0, 0, 0,
   ]);
   expect(computeBoxes(flags, 6, 3, 10, 2)).toEqual([
-    { x: 0, y: 0, w: 30, h: 30 },
+    { x: 0, y: 0, w: 30, h: 30, kind: "removed" },
   ]);
 });
 
@@ -21,7 +21,19 @@ test("keeps diagonally touching dilated crosses as separate four-neighbor compon
     0, 0, 0, 0, 0,
   ]);
   expect(computeBoxes(flags, 5, 5, 10, 1)).toEqual([
-    { x: 0, y: 0, w: 30, h: 30 },
-    { x: 20, y: 20, w: 30, h: 30 },
+    { x: 0, y: 0, w: 30, h: 30, kind: "removed" },
+    { x: 20, y: 20, w: 30, h: 30, kind: "removed" },
+  ]);
+});
+
+test("labels connected components from removed and added block bits", () => {
+  const flags = Uint8Array.from([
+    1, 1, 0, 2, 2,
+    0, 1, 0, 0, 2,
+    0, 0, 3, 0, 0,
+  ]);
+
+  expect(computeBoxes(flags, 5, 3, 10, 1)).toEqual([
+    { x: 0, y: 0, w: 50, h: 30, kind: "changed" },
   ]);
 });

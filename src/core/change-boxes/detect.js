@@ -1,3 +1,11 @@
+export const CHANGE_BITS = Object.freeze({ removed: 1, added: 2 });
+
+function changeKind(bits) {
+  if (bits === CHANGE_BITS.removed) return "removed";
+  if (bits === CHANGE_BITS.added) return "added";
+  return "changed";
+}
+
 export function computeBoxes(flags, cols, rows, block, minBlocks) {
   const DIRS4 = [[-1, 0], [1, 0], [0, -1], [0, 1]];
   const dil = new Uint8Array(cols * rows);
@@ -21,10 +29,11 @@ export function computeBoxes(flags, cols, rows, block, minBlocks) {
       if (!dil[i] || seen[i]) continue;
       let head = 0, tail = 0;
       qx[tail] = c; qy[tail] = r; tail++; seen[i] = 1;
-      let minC = c, maxC = c, minR = r, maxR = r, origCount = 0;
+      let minC = c, maxC = c, minR = r, maxR = r, origCount = 0, kindBits = 0;
       while (head < tail) {
         const cx = qx[head], cy = qy[head]; head++;
-        if (flags[cy * cols + cx]) origCount++;
+        const bits = flags[cy * cols + cx];
+        if (bits) { origCount++; kindBits |= bits; }
         if (cx < minC) minC = cx; if (cx > maxC) maxC = cx;
         if (cy < minR) minR = cy; if (cy > maxR) maxR = cy;
         for (const [dx, dy] of DIRS4) {
@@ -40,6 +49,7 @@ export function computeBoxes(flags, cols, rows, block, minBlocks) {
         y: minR * block,
         w: (maxC - minC + 1) * block,
         h: (maxR - minR + 1) * block,
+        kind: changeKind(kindBits),
       });
     }
   }

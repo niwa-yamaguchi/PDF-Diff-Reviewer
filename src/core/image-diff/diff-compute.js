@@ -1,4 +1,4 @@
-import { computeBoxes } from "../change-boxes/detect.js";
+import { CHANGE_BITS, computeBoxes } from "../change-boxes/detect.js";
 import { clampBoxes } from "../geometry/rectangles.js";
 import { luminanceAt } from "./luminance.js";
 import { toleratedDiffMasks } from "./masks.js";
@@ -57,8 +57,9 @@ export function computeDiff({
   let removedCount = 0;
   let addedCount = 0;
 
-  const flag = (x, y) => {
-    flags[Math.floor(y / block) * columns + Math.floor(x / block)] = 1;
+  const flag = (x, y, bit) => {
+    const index = Math.floor(y / block) * columns + Math.floor(x / block);
+    flags[index] |= bit;
   };
 
   if (radius > 0) {
@@ -83,11 +84,11 @@ export function computeDiff({
         if (removed[index]) {
           paint(image, index, DIFF_RGB.removed);
           removedCount += 1;
-          flag(x, y);
+          flag(x, y, CHANGE_BITS.removed);
         } else if (added[index]) {
           paint(image, index, DIFF_RGB.added);
           addedCount += 1;
-          flag(x, y);
+          flag(x, y, CHANGE_BITS.added);
         } else {
           paint(image, index, DIFF_RGB.common);
         }
@@ -109,11 +110,11 @@ export function computeDiff({
         } else if (oldInk) {
           paint(image, index, DIFF_RGB.removed);
           removedCount += 1;
-          flag(x, y);
+          flag(x, y, CHANGE_BITS.removed);
         } else {
           paint(image, index, DIFF_RGB.added);
           addedCount += 1;
-          flag(x, y);
+          flag(x, y, CHANGE_BITS.added);
         }
       }
       report((y + 1) / height);
@@ -121,12 +122,18 @@ export function computeDiff({
   }
 
   report(1);
+  const boxes = needsBoxes
+    ? computeBoxes(flags, columns, rows, block, minBlocks)
+      .map(box => {
+        const [clamped] = clampBoxes([box], width, height);
+        return clamped ? { ...clamped, kind: box.kind } : null;
+      })
+      .filter(Boolean)
+    : [];
   return {
     image,
     removed: removedCount,
     added: addedCount,
-    boxes: needsBoxes
-      ? clampBoxes(computeBoxes(flags, columns, rows, block, minBlocks), width, height)
-      : [],
+    boxes,
   };
 }
