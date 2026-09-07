@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { createApp } from "../../src/app/create-app.js";
+import { applyInvalidatingChange } from "../../src/app/invalidation.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
@@ -121,15 +122,9 @@ test("createApp is the sole composition root and binds once after safe construct
   expect(calls).toEqual(["bind"]);
 });
 
-test("createApp passes manual-box allocation and box-change publication boundaries to the editor", () => {
-  const makeManualBox = vi.fn(({ box }) => ({
-    ...box, id: "change-1", kind: "changed", source: "manual",
-  }));
-  const onBoxesChanged = vi.fn();
+test("createApp connects manual-box allocation and edits to the real review controller", () => {
   const dependencies = fakeDependencies({
     bindControls: vi.fn(),
-    makeManualBox,
-    onBoxesChanged,
   });
   const window = {
     confirm: vi.fn(() => true),
@@ -137,12 +132,48 @@ test("createApp passes manual-box allocation and box-change publication boundari
     getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
   };
 
-  createApp({ document: fakeDocument(), window, dependencies });
+  const document = fakeDocument();
+  Object.assign(document.getElementById("out"), { width: 100, height: 200 });
+  const app = createApp({ document, window, dependencies });
+  const { makeManualBox, onBoxesChanged } = dependencies.createBoxEditorController.mock.calls[0][0];
+  const box = makeManualBox({ pageIndex: 0, box: { x: 10, y: 10, w: 20, h: 20 } });
+  onBoxesChanged({ pageIndex: 0, boxes: [box], reason: "create" });
+  expect(app.state.review.itemsByPage.get(0)[0]).toMatchObject({
+    id: "change-1", kind: "changed", source: "manual", normalizedRect: { x: 0.1, y: 0.05 },
+  });
+});
 
-  expect(dependencies.createBoxEditorController).toHaveBeenCalledWith(expect.objectContaining({
-    makeManualBox,
-    onBoxesChanged,
-  }));
+test("index jobs use a third lane and accepted invalidation stops that lane", async () => {
+  const lanes = [];
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    applyInvalidatingChange,
+    createWorkerLane: () => {
+      const lane = { session: () => async () => lane, cancel: vi.fn() };
+      lanes.push(lane);
+      return lane;
+    },
+    renderDiffPage: async (snapshot, deps) => deps.computeDiff({}),
+    renderChangeIndexPage: async (snapshot, deps) => {
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(await deps.computeDiff({})).toBe(lanes[2]);
+      return { boxes: [], width: 100, height: 100 };
+    },
+  });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  app.state.documents.pages = 1;
+  await app.reviewController.startIndex();
+  expect(app.state.review.itemsByPage.get(0)).toEqual([]);
+  const interactive = dependencies.createVisualController.mock.calls[0][0];
+  expect(await interactive.renderDiffPage({})).toBe(lanes[0]);
+  const exporter = dependencies.createExportController.mock.calls[0][0];
+  expect(await exporter.createVisualRenderSession().render({ renderSnapshot: { mode: "diff" } })).toBe(lanes[1]);
+  const before = lanes[2].cancel.mock.calls.length;
+  const controls = dependencies.bindControls.mock.calls[0][0];
+  controls.appController.commitThreshold();
+  expect(lanes[2].cancel.mock.calls.length).toBeGreaterThan(before);
+  expect(app.state.review.indexRunning).toBe(false);
 });
 
 test("export render session uses the toggle renderer when the snapshot mode is toggle", async () => {
@@ -164,6 +195,56 @@ test("export render session uses the toggle renderer when the snapshot mode is t
 
   await session.render({ renderSnapshot: { mode: "diff" } });
   expect(dependencies.renderDiffPage).toHaveBeenCalledTimes(1);
+});
+
+test("runVisual starts the remaining-page index only after a committed page is fitted", async () => {
+  const order = [];
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createViewerController: () => ({ fit: () => order.push("fit") }),
+    createVisualController: () => ({ showPage: async () => {
+      order.push("show");
+      return { committed: true };
+    } }),
+    renderChangeIndexPage: async snapshot => {
+      order.push(`index-${snapshot.pageIndex}`);
+      return { boxes: [], width: 100, height: 100 };
+    },
+  });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  app.state.documents.pages = 3;
+  const { appController } = dependencies.bindControls.mock.calls[0][0];
+  await appController.runVisual();
+  await vi.waitFor(() => expect(app.state.review.indexRunning).toBe(false));
+  expect(order).toEqual(["show", "fit", "index-1", "index-2"]);
+  app.state.visual.mode = "toggle";
+  app.state.boxEditor.showBoxes = false;
+  order.length = 0;
+  await appController.runVisual();
+  await vi.waitFor(() => expect(app.state.review.indexRunning).toBe(false));
+  expect(order).toEqual(["show", "fit", "index-0", "index-1", "index-2"]);
+  app.visualController.showPage = async () => ({ committed: false });
+  order.length = 0;
+  await appController.runVisual();
+  expect(order).toEqual([]);
+});
+
+test("document acceptance cancels an in-flight index before PDF replacement finishes", async () => {
+  let resolve;
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    renderChangeIndexPage: () => new Promise(done => { resolve = done; }),
+  });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  app.state.documents.pages = 1;
+  const indexing = app.reviewController.startIndex();
+  dependencies.createDocumentController.mock.calls[0][0].onLoadAccepted({ documentGeneration: 3 });
+  resolve({ boxes: [], width: 100, height: 100 });
+  await indexing;
+  expect(app.state.review.itemsByPage.size).toBe(0);
+  expect(app.state.review.indexRunning).toBe(false);
 });
 
 test("repeated createApp replaces the previous document event owners", () => {

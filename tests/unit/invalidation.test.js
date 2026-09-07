@@ -25,6 +25,21 @@ function reviewItem(id, { pageIndex = 0, x = 0, y = 0 } = {}) {
   };
 }
 
+test("accepted comparison changes stop indexing before updating settings; rejected changes do not", () => {
+  const state = createAppState();
+  const order = [];
+  const change = {
+    confirmDiscard: () => false,
+    cancelIndex: () => order.push("cancel"),
+    update: () => order.push("update"),
+    invalidate: () => order.push("invalidate"),
+  };
+  applyInvalidatingChange(state, change);
+  expect(order).toEqual([]);
+  applyInvalidatingChange(state, { ...change, confirmDiscard: () => true });
+  expect(order).toEqual(["cancel", "update", "invalidate"]);
+});
+
 function populateReviewState(state) {
   state.review.itemsByPage.set(0, [
     reviewItem("change-2", { x: 0.5, y: 0.5 }),

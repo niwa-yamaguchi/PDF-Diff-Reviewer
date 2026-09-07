@@ -28,8 +28,9 @@ import {
 import { createDiffWorker } from "../platform/diff-worker.js";
 import { createWorkerLane } from "../features/visual-diff/worker-lane.js";
 import { createViewerController } from "../features/viewer/viewer-controller.js";
-import { createVisualController } from "../features/visual-diff/visual-controller.js";
-import { effectiveQuadrant, renderDiffPage } from "../features/visual-diff/visual-renderer.js";
+import { createVisualController, createVisualSnapshot } from "../features/visual-diff/visual-controller.js";
+import { effectiveQuadrant, renderDiffPage, renderChangeIndexPage } from "../features/visual-diff/visual-renderer.js";
+import { createChangeReviewController } from "../features/change-review/review-controller.js";
 import { renderTogglePage } from "../features/visual-diff/toggle-renderer.js";
 import { createBoxEditorController } from "../features/box-editor/box-editor-controller.js";
 import { createBoxEditorView } from "../features/box-editor/box-editor-view.js";
@@ -61,6 +62,8 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   rotateCanvas90,
   createViewerController,
   createVisualController,
+  createChangeReviewController,
+  renderChangeIndexPage,
   effectiveQuadrant,
   renderDiffPage,
   renderTogglePage,
@@ -96,6 +99,7 @@ export function createApp({ document, window, dependencies = {} }) {
   let textController;
   let exportController;
   let documentController;
+  let reviewController;
   let spaceHeld = false;
 
   const textColors = (() => {
@@ -164,8 +168,12 @@ export function createApp({ document, window, dependencies = {} }) {
       },
     },
     view: boxEditorView,
-    makeManualBox: deps.makeManualBox,
-    onBoxesChanged: deps.onBoxesChanged,
+    makeManualBox: ({ box }) => ({
+      ...box, id: reviewController.allocateId(), kind: "changed", source: "manual",
+    }),
+    onBoxesChanged: ({ pageIndex, boxes }) => reviewController.syncEditedPage({
+      pageIndex, boxes, width: out.width, height: out.height,
+    }),
     confirmDiscard: () => window.confirm(
       "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
     ),
@@ -251,6 +259,7 @@ export function createApp({ document, window, dependencies = {} }) {
 
   const interactiveLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
   const exportLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
+  const indexLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
 
   // 描画1回につき1セッション。cancel() 以前に始まった描画からのジョブは
   // レーンへ到達した時点で RenderCancelled となり、現行の描画がレーンを取れる。
@@ -287,6 +296,20 @@ export function createApp({ document, window, dependencies = {} }) {
     ...laneCompute(exportLane),
   });
 
+  const indexRenderDependencies = () => Object.freeze({
+    ...sharedRenderDependencies,
+    ...laneCompute(indexLane),
+  });
+
+  reviewController = deps.createChangeReviewController({
+    state,
+    renderIndexPage: pageIndex => deps.renderChangeIndexPage(
+      createVisualSnapshot(state, pageIndex, "diff"), indexRenderDependencies(),
+    ),
+    cancelIndex: () => indexLane.cancel(),
+    reportError: (error, pageIndex) => window.console.error(`変更索引: ページ ${pageIndex + 1}`, error),
+  });
+
   visualController = deps.createVisualController({
     state,
     dom: {
@@ -320,6 +343,7 @@ export function createApp({ document, window, dependencies = {} }) {
       deps.renderTogglePage(snapshot, visualRenderDependencies(), options)
     ),
     drawBoxes: () => boxEditorView?.redraw?.(),
+    commitReviewPage: value => reviewController.commitPage(value),
   });
 
   textController = deps.createTextController({
@@ -409,9 +433,13 @@ export function createApp({ document, window, dependencies = {} }) {
     },
     pdf: deps.pdfjsLib,
     errorReporter,
-    invalidateDocuments: deps.invalidateDocuments,
+    invalidateDocuments: (state, options) => {
+      reviewController.cancelIndex();
+      deps.invalidateDocuments(state, options);
+    },
     onReady: () => boxEditorController?.syncInvalidated?.(),
     onLoadAccepted: ({ documentGeneration }) => {
+      reviewController.cancelIndex();
       textController?.invalidateDocuments?.(documentGeneration);
       exportController?.invalidateDocuments?.(documentGeneration);
     },
@@ -425,6 +453,7 @@ export function createApp({ document, window, dependencies = {} }) {
       confirmDiscard: confirmDiscardBoxEdits,
       update,
       invalidate,
+      cancelIndex: () => reviewController.cancelIndex(),
     });
     if (applied) syncInvalidatedBoxEditor();
     return applied;
@@ -633,15 +662,24 @@ export function createApp({ document, window, dependencies = {} }) {
     async runVisual() {
       dom.modeDiff.disabled = false;
       dom.modeToggle.disabled = false;
-      await visualController.showPage(0);
+      const result = await visualController.showPage(0);
+      if (!result?.committed) return;
       viewerController.fit();
+      const currentPageDetected = state.visual.mode !== "toggle" || state.boxEditor.showBoxes
+        || state.boxEditor.editsByPage.has(state.documents.currentPage);
+      void reviewController.startIndex({
+        skipPages: new Set(currentPageDetected ? [state.documents.currentPage] : []),
+      });
     },
     async alignAddNew() {
       if (!state.visual.rendered || !confirmDiscardBoxEdits()) return;
       state.documents.oldSequence.splice(state.documents.currentPage, 0, null);
       state.documents.alignmentOps.push({ side: "old", slot: state.documents.currentPage });
       await visualController.refreshAfterAlign({
-        invalidatePageAlignment: deps.invalidatePageAlignment,
+        invalidatePageAlignment: state => {
+          reviewController.cancelIndex();
+          deps.invalidatePageAlignment(state);
+        },
         syncInvalidatedBoxEditor,
       });
     },
@@ -650,7 +688,10 @@ export function createApp({ document, window, dependencies = {} }) {
       state.documents.newSequence.splice(state.documents.currentPage, 0, null);
       state.documents.alignmentOps.push({ side: "new", slot: state.documents.currentPage });
       await visualController.refreshAfterAlign({
-        invalidatePageAlignment: deps.invalidatePageAlignment,
+        invalidatePageAlignment: state => {
+          reviewController.cancelIndex();
+          deps.invalidatePageAlignment(state);
+        },
         syncInvalidatedBoxEditor,
       });
     },
@@ -663,7 +704,10 @@ export function createApp({ document, window, dependencies = {} }) {
         : state.documents.newSequence;
       if (sequence[operation.slot] === null) sequence.splice(operation.slot, 1);
       await visualController.refreshAfterAlign({
-        invalidatePageAlignment: deps.invalidatePageAlignment,
+        invalidatePageAlignment: state => {
+          reviewController.cancelIndex();
+          deps.invalidatePageAlignment(state);
+        },
         syncInvalidatedBoxEditor,
       });
     },
@@ -689,6 +733,7 @@ export function createApp({ document, window, dependencies = {} }) {
 
   return Object.freeze({
     state,
+    reviewController,
     documentController,
     visualController,
     viewerController,

@@ -1,12 +1,13 @@
 import { toggleCompletedCacheMatchesSnapshot } from "./visual-renderer.js";
 import { isRenderCancelled } from "./worker-lane.js";
+import { pageKeyFor } from "../../core/change-review/model.js";
 
 function frozenBoxes(boxes) {
   if (!boxes) return null;
   return Object.freeze(boxes.map(box => Object.freeze({ ...box })));
 }
 
-function createSnapshot(
+export function createVisualSnapshot(
   state,
   pageIndex,
   mode,
@@ -66,6 +67,7 @@ export function createVisualController({
   renderDiffPage,
   renderTogglePage,
   drawBoxes,
+  commitReviewPage = ({ boxes, autoBoxes }) => ({ currentBoxes: boxes, autoBoxes }),
 }) {
   let activeInteractiveTicket = null;
   let pendingFlip = null;
@@ -126,9 +128,20 @@ export function createVisualController({
       state.visual.quadrantGeneration = result.quadrantGeneration;
     }
     if (commitBoxes) {
-      state.boxEditor.currentBoxes = result.boxes || [];
-      if (result.autoBoxes !== undefined) {
-        state.boxEditor.autoByPage.set(snapshot.pageIndex, result.autoBoxes);
+      const hasDetectedBoxes = snapshot.mode !== "toggle"
+        || snapshot.boxEditor.manualBoxes != null || result.autoBoxes !== undefined;
+      const committed = hasDetectedBoxes ? commitReviewPage({
+        pageIndex: snapshot.pageIndex,
+        pageKey: pageKeyFor(snapshot.documents, snapshot.pageIndex),
+        boxes: result.boxes || [],
+        autoBoxes: result.autoBoxes,
+        width: result.canvas.width,
+        height: result.canvas.height,
+        source: snapshot.boxEditor.manualBoxes != null ? "manual" : "auto",
+      }) : { currentBoxes: result.boxes || [], autoBoxes: undefined };
+      state.boxEditor.currentBoxes = committed.currentBoxes;
+      if (committed.autoBoxes !== undefined) {
+        state.boxEditor.autoByPage.set(snapshot.pageIndex, committed.autoBoxes);
       }
     }
     if (result.cacheEntry) state.visual.pageCache.set(snapshot.pageIndex, result.cacheEntry);
@@ -165,7 +178,7 @@ export function createVisualController({
       documentGeneration: state.documents.generation,
       pageIndex,
     });
-    const snapshot = createSnapshot(state, pageIndex, mode, toggleSide);
+    const snapshot = createVisualSnapshot(state, pageIndex, mode, toggleSide);
     if (updateCurrentPage) {
       activeInteractiveTicket = ticket.id;
       pendingFlip = commitToggleSide
@@ -225,7 +238,7 @@ export function createVisualController({
   async function flipToggleSide() {
     const baseSide = pendingFlip?.target ?? state.visual.toggleSide;
     const targetSide = baseSide === "old" ? "new" : "old";
-    const snapshot = createSnapshot(
+    const snapshot = createVisualSnapshot(
       state,
       state.documents.currentPage,
       state.visual.mode,

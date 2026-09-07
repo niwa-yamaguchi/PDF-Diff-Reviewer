@@ -375,6 +375,12 @@ function boxStat(snapshot, boxes) {
   return `変更箇所 ${boxes.length.toLocaleString()}${edited ? "（手編集）" : ""}`;
 }
 
+export async function renderChangeIndexPage(snapshot, dependencies, options = {}) {
+  const prepared = await prepareVisualPage(snapshot, dependencies, null, options.onProgress);
+  const boxes = await computeChangeBoxesAligned(snapshot, prepared, dependencies, options);
+  return { boxes, width: prepared.width, height: prepared.height };
+}
+
 export async function renderDiffPage(snapshot, dependencies, { onProgress = null } = {}) {
   const prepared = await prepareVisualPage(snapshot, dependencies, null, onProgress);
   const canvas = dependencies.createCanvas(prepared.width, prepared.height);

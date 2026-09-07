@@ -2,7 +2,7 @@ import { afterAll, expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
-import { renderDiffPage } from "../../src/features/visual-diff/visual-renderer.js";
+import { renderDiffPage, renderChangeIndexPage } from "../../src/features/visual-diff/visual-renderer.js";
 import { renderTogglePage } from "../../src/features/visual-diff/toggle-renderer.js";
 import { createWorkerLane } from "../../src/features/visual-diff/worker-lane.js";
 import { computeDiff } from "../../src/core/image-diff/diff-compute.js";
@@ -82,7 +82,7 @@ function textElement(initialText = "") {
   };
 }
 
-function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) {
+function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn(), commitReviewPage } = {}) {
   const state = createAppState();
   state.documents.oldDoc = { id: "old", numPages: 2 };
   state.documents.newDoc = { id: "new", numPages: 2 };
@@ -114,9 +114,39 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn() } = {}) 
     renderDiffPage,
     renderTogglePage,
     drawBoxes,
+    commitReviewPage,
   });
   return { state, dom, context, drawBoxes, controller, renderDiffPage, renderTogglePage };
 }
+
+test("commits review IDs before storing interactive and automatic boxes", async () => {
+  const commitReviewPage = vi.fn(({ boxes }) => ({
+    currentBoxes: boxes.map(box => ({ ...box, id: "change-8" })),
+    autoBoxes: boxes.map(box => ({ ...box, id: "change-8" })),
+  }));
+  const { state, controller } = harness({ renderDiffPage: async () => result(0), commitReviewPage });
+  await controller.showPage(0);
+  expect(state.boxEditor.currentBoxes[0].id).toBe("change-8");
+  expect(state.boxEditor.autoByPage.get(0)[0].id).toBe("change-8");
+  expect(commitReviewPage).toHaveBeenCalledWith(expect.objectContaining({
+    pageIndex: 0, pageKey: "old:0|new:0", width: 100, height: 200,
+  }));
+});
+
+test("a toggle render with hidden boxes cannot erase previously indexed reviews", async () => {
+  let indexedBoxes = [{ x: 10, y: 10, w: 20, h: 20, id: "change-1" }];
+  const { state, controller } = harness({
+    renderTogglePage: async () => ({ ...result(0, "toggle"), boxes: [], autoBoxes: undefined }),
+    commitReviewPage: ({ boxes }) => {
+      indexedBoxes = boxes;
+      return { currentBoxes: boxes, autoBoxes: boxes };
+    },
+  });
+  state.visual.mode = "toggle";
+  state.boxEditor.showBoxes = false;
+  await controller.showPage(0);
+  expect(indexedBoxes).toHaveLength(1);
+});
 
 function controllerToggleCache(state, sideCanvases) {
   const rawIdentity = {
@@ -811,6 +841,17 @@ class MemoryContext {
 }
 
 const rgba = values => new Uint8ClampedArray(values.flatMap(value => [value, value, value, 255]));
+
+test("index rendering computes boxes without returning full-resolution canvases or images", async () => {
+  const dependencies = rendererDependencies(new MemoryCanvas(16, 16), new MemoryCanvas(16, 16));
+  dependencies.computeDiff = vi.fn(dependencies.computeDiff);
+  const rendered = await renderChangeIndexPage(rendererSnapshot(), dependencies);
+  expect(Object.keys(rendered).sort()).toEqual(["boxes", "height", "width"]);
+  expect(rendered).toMatchObject({ width: 16, height: 16 });
+  expect(dependencies.computeDiff).toHaveBeenCalledWith(expect.objectContaining({
+    needsImage: false, needsBoxes: true,
+  }), expect.anything());
+});
 
 function rendererSnapshot({ side = "old", toggleCache = null } = {}) {
   return Object.freeze({

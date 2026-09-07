@@ -78,8 +78,9 @@ function clearVisualDerived(state, { pageRendering, alignment, quadrant, boxes }
   if (boxes) clearBoxes(state);
 }
 
-export function applyInvalidatingChange(state, { confirmDiscard, update, invalidate }) {
+export function applyInvalidatingChange(state, { confirmDiscard, update, invalidate, cancelIndex }) {
   if (!confirmDiscard()) return false;
+  cancelIndex?.();
   update();
   invalidate(state);
   return true;
