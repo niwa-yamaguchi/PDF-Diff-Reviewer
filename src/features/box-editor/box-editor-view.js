@@ -15,6 +15,7 @@ export function drawBoxLayer({
   canvas,
   boxes = [],
   selectedIndex = -1,
+  focusedIndex = -1,
   view = { scale: 1, tx: 0, ty: 0 },
   showBoxes,
   editMode,
@@ -51,6 +52,18 @@ export function drawBoxLayer({
     context.fillRect(x, y, boxWidth, boxHeight);
     context.strokeRect(x + 1, y + 1, Math.max(0, boxWidth - 2), Math.max(0, boxHeight - 2));
   });
+
+  if (focusedIndex >= 0 && focusedIndex < boxes.length) {
+    const focused = preview && activeDrag.i === focusedIndex ? preview : boxes[focusedIndex];
+    const x = view.tx + focused.x * scale;
+    const y = view.ty + focused.y * scale;
+    const boxWidth = focused.w * scale;
+    const boxHeight = focused.h * scale;
+    context.setLineDash([]);
+    context.strokeStyle = "#fff";
+    context.lineWidth = 2;
+    context.strokeRect(x - 2, y - 2, boxWidth + 4, boxHeight + 4);
+  }
 
   if (editMode && selectedIndex >= 0 && selectedIndex < boxes.length) {
     const selected = preview && activeDrag.i === selectedIndex ? preview : boxes[selectedIndex];
@@ -89,10 +102,13 @@ export function drawBoxLayer({
 
 export function createBoxEditorView({ state, dom, getView }) {
   function redraw() {
+    const boxes = state.boxEditor.currentBoxes || [];
+    const focusedIndex = boxes.findIndex(box => box.id === state.review?.selectedId);
     drawBoxLayer({
       canvas: dom.canvas,
-      boxes: state.boxEditor.currentBoxes || [],
+      boxes,
       selectedIndex: state.boxEditor.selectedIndex,
+      focusedIndex,
       view: getView(),
       showBoxes: state.boxEditor.showBoxes,
       editMode: state.boxEditor.editMode,

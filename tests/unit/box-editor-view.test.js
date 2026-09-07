@@ -78,6 +78,30 @@ test("draws move and create previews without touching the visual output canvas",
   expect(visualContext.strokeRect).not.toHaveBeenCalled();
 });
 
+test("draws review focus independently from edit selection and keeps handles on the edit selection", () => {
+  const { canvas, context } = canvasHarness();
+
+  drawBoxLayer({
+    canvas,
+    boxes: [
+      { x: 10, y: 20, w: 30, h: 40, id: "change-1" },
+      { x: 60, y: 70, w: 20, h: 10, id: "change-2" },
+    ],
+    selectedIndex: 0,
+    focusedIndex: 1,
+    view: { scale: 1, tx: 0, ty: 0 },
+    showBoxes: true,
+    editMode: true,
+    drag: null,
+    rendered: true,
+    outputVisible: true,
+  });
+
+  expect(context.strokeRect).toHaveBeenCalledWith(58, 68, 24, 14);
+  expect(context.fillRect).toHaveBeenCalledWith(5, 15, 10, 10);
+  expect(context.fillRect).not.toHaveBeenCalledWith(55, 65, 10, 10);
+});
+
 test.each([
   { rendered: false, outputVisible: true, showBoxes: true },
   { rendered: true, outputVisible: false, showBoxes: true },
@@ -131,6 +155,45 @@ test("the browser view sizes the overlay from its wrap instead of the initial ca
   expect(canvas.width).toBe(640);
   expect(canvas.height).toBe(480);
   expect(context.clearRect).toHaveBeenCalledWith(0, 0, 640, 480);
+});
+
+test("the browser view maps the selected review id to the focused box", () => {
+  const { canvas, context } = canvasHarness();
+  const classList = { toggle: vi.fn() };
+  const state = {
+    documents: { currentPage: 0 },
+    visual: { mode: "diff", rendered: true },
+    boxEditor: {
+      currentBoxes: [
+        { x: 10, y: 10, w: 10, h: 10, id: "change-1" },
+        { x: 50, y: 60, w: 20, h: 30, id: "change-2" },
+      ],
+      selectedIndex: -1,
+      showBoxes: true,
+      editMode: false,
+      drag: null,
+      editsByPage: new Map(),
+    },
+    review: { selectedId: "change-2" },
+  };
+  const view = createBoxEditorView({
+    state,
+    dom: {
+      canvas,
+      out: { style: { display: "block" } },
+      wrap: {
+        clientWidth: 300, clientHeight: 200, style: {}, classList,
+        getBoundingClientRect: () => ({ left: 0, top: 0 }),
+      },
+      statBox: { textContent: "" }, boxToggle: { classList },
+      boxEdit: { classList }, boxDelete: { style: {} }, boxReset: { style: {} },
+    },
+    getView: () => ({ scale: 1, tx: 0, ty: 0 }),
+  });
+
+  view.redraw();
+
+  expect(context.strokeRect).toHaveBeenCalledWith(48, 58, 24, 34);
 });
 
 test("the browser view converts native client coordinates even when PointerEvent exposes x and y aliases", () => {

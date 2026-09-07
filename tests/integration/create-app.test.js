@@ -121,6 +121,30 @@ test("createApp is the sole composition root and binds once after safe construct
   expect(calls).toEqual(["bind"]);
 });
 
+test("createApp passes manual-box allocation and box-change publication boundaries to the editor", () => {
+  const makeManualBox = vi.fn(({ box }) => ({
+    ...box, id: "change-1", kind: "changed", source: "manual",
+  }));
+  const onBoxesChanged = vi.fn();
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    makeManualBox,
+    onBoxesChanged,
+  });
+  const window = {
+    confirm: vi.fn(() => true),
+    console: { error: vi.fn() },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  };
+
+  createApp({ document: fakeDocument(), window, dependencies });
+
+  expect(dependencies.createBoxEditorController).toHaveBeenCalledWith(expect.objectContaining({
+    makeManualBox,
+    onBoxesChanged,
+  }));
+});
+
 test("export render session uses the toggle renderer when the snapshot mode is toggle", async () => {
   const dependencies = fakeDependencies({ bindControls: vi.fn() });
   const window = {

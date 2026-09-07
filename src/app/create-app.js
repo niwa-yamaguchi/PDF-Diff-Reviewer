@@ -164,6 +164,8 @@ export function createApp({ document, window, dependencies = {} }) {
       },
     },
     view: boxEditorView,
+    makeManualBox: deps.makeManualBox,
+    onBoxesChanged: deps.onBoxesChanged,
     confirmDiscard: () => window.confirm(
       "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
     ),

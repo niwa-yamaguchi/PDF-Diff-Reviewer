@@ -29,7 +29,14 @@ function handlePoints(box) {
   ];
 }
 
-export function createBoxEditorController({ state, dom, view, confirmDiscard }) {
+export function createBoxEditorController({
+  state,
+  dom,
+  view,
+  confirmDiscard,
+  makeManualBox,
+  onBoxesChanged,
+}) {
   const refresh = () => {
     if (view.refresh) view.refresh();
     else view.redraw?.();
@@ -57,6 +64,11 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
   function bumpRevision(pageIndex) {
     const current = state.boxEditor.revisionByPage.get(pageIndex) || 0;
     state.boxEditor.revisionByPage.set(pageIndex, current + 1);
+  }
+
+  function commitChange(pageIndex, reason, boxes = state.boxEditor.currentBoxes || []) {
+    bumpRevision(pageIndex);
+    onBoxesChanged?.({ pageIndex, boxes: cloneBoxes(boxes), reason });
   }
 
   function materializeEdits(pageIndex = state.documents.currentPage) {
@@ -201,8 +213,9 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
       if (!isTooSmall(draggedBox)) {
         pushUndo(page, state.boxEditor.currentBoxes || []);
         const edits = materializeEdits(page);
-        edits.push(clampBox(draggedBox, width, height));
-        bumpRevision(page);
+        const box = clampBox(draggedBox, width, height);
+        edits.push(makeManualBox?.({ pageIndex: page, box }) ?? box);
+        commitChange(page, "create");
         state.boxEditor.selectedIndex = edits.length - 1;
       }
     } else {
@@ -215,8 +228,8 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
         );
         if (changed && !(drag.kind === "resize" && isTooSmall(next))) {
           pushUndo(page, boxes);
-          materializeEdits(page)[drag.i] = { ...next };
-          bumpRevision(page);
+          materializeEdits(page)[drag.i] = { ...drag.orig, ...next };
+          commitChange(page, drag.kind);
         }
       }
     }
@@ -265,7 +278,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     if (!snapshot) return false;
     state.boxEditor.editsByPage.set(page, cloneBoxes(snapshot));
     state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(page);
-    bumpRevision(page);
+    commitChange(page, "undo");
     state.boxEditor.selectedIndex = -1;
     refresh();
     return true;
@@ -279,7 +292,7 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     const page = state.documents.currentPage;
     pushUndo(page, boxes);
     materializeEdits(page).splice(index, 1);
-    bumpRevision(page);
+    commitChange(page, "delete");
     state.boxEditor.selectedIndex = -1;
     refresh();
     return true;
@@ -291,12 +304,14 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
     if (!state.boxEditor.editsByPage.has(page)) return false;
     state.boxEditor.editsByPage.delete(page);
     state.boxEditor.undoByPage.delete(page);
-    bumpRevision(page);
     state.boxEditor.selectedIndex = -1;
     if (state.boxEditor.autoByPage.has(page)) {
       state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(page);
+      commitChange(page, "reset");
       refresh();
     } else {
+      state.boxEditor.currentBoxes = null;
+      commitChange(page, "reset");
       dom.onAutoMissing?.();
     }
     return true;
@@ -305,11 +320,13 @@ export function createBoxEditorController({ state, dom, view, confirmDiscard }) 
   function clearEdits() {
     cancelDrag();
     const editedPages = [...state.boxEditor.editsByPage.keys()];
-    for (const page of editedPages) bumpRevision(page);
     state.boxEditor.editsByPage.clear();
     state.boxEditor.undoByPage.clear();
     state.boxEditor.selectedIndex = -1;
     state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(state.documents.currentPage) ?? null;
+    for (const page of editedPages) {
+      commitChange(page, "discard", state.boxEditor.autoByPage.get(page) || []);
+    }
     refresh();
   }
 
