@@ -144,6 +144,10 @@ function rankedCandidates(previousItems, nextItems) {
   return { byPrevious, byNext };
 }
 
+function hasMultipleOverlaps(candidates) {
+  return candidates.filter(candidate => candidate.score.overlap > 0).length > 1;
+}
+
 export function reconcileReviewItems({ previousItems, nextItems, entries, allocateId }) {
   const candidates = rankedCandidates(previousItems, nextItems);
   const nextEntries = new Map(entries);
@@ -158,7 +162,9 @@ export function reconcileReviewItems({ previousItems, nextItems, entries, alloca
       const isMutualBest = previousRanked[0]?.nextIndex === nextIndex;
       const clearForNext = canInherit(best.score, nextRanked[1]?.score);
       const clearForPrevious = canInherit(best.score, previousRanked[1]?.score);
-      if (isMutualBest && clearForNext && clearForPrevious) {
+      const isSplit = hasMultipleOverlaps(previousRanked);
+      const isMerge = hasMultipleOverlaps(nextRanked);
+      if (isMutualBest && clearForNext && clearForPrevious && !isSplit && !isMerge) {
         inherited += 1;
         return { ...nextItem, id: previousItems[best.previousIndex].id };
       }

@@ -223,6 +223,41 @@ test("does not inherit a many-to-one merge", () => {
   expect(result.summary).toEqual({ inherited: 0, reset: 1 });
 });
 
+test("does not inherit the high-scoring side of an asymmetric 95/5 split", () => {
+  const result = reconcileReviewItems({
+    previousItems: [item("old-a", "added", rect(0.10, 0.10, 0.20, 0.20))],
+    nextItems: [
+      item(null, "added", rect(0.10, 0.10, 0.19, 0.20)),
+      item(null, "added", rect(0.29, 0.10, 0.01, 0.20)),
+    ],
+    entries: new Map([["old-a", { status: "confirmed", comment: "asymmetric split" }]]),
+    allocateId: ids("new-major", "new-sliver"),
+  });
+
+  expect(result.items.map(reviewItem => reviewItem.id)).toEqual(["new-major", "new-sliver"]);
+  expect(result.entries.get("new-major")).toEqual({ status: "pending", comment: "" });
+  expect(result.summary).toEqual({ inherited: 0, reset: 2 });
+});
+
+test("does not inherit the high-scoring side of an asymmetric 95/5 merge", () => {
+  const result = reconcileReviewItems({
+    previousItems: [
+      item("old-major", "added", rect(0.10, 0.10, 0.19, 0.20)),
+      item("old-sliver", "added", rect(0.29, 0.10, 0.01, 0.20)),
+    ],
+    nextItems: [item(null, "added", rect(0.10, 0.10, 0.20, 0.20))],
+    entries: new Map([
+      ["old-major", { status: "confirmed", comment: "major" }],
+      ["old-sliver", { status: "excluded", comment: "sliver" }],
+    ]),
+    allocateId: () => "new-merged",
+  });
+
+  expect(result.items[0].id).toBe("new-merged");
+  expect(result.entries.get("new-merged")).toEqual({ status: "pending", comment: "" });
+  expect(result.summary).toEqual({ inherited: 0, reset: 1 });
+});
+
 test("rejects a tied second candidate", () => {
   const sameRect = rect(0.10, 0.10, 0.20, 0.20);
   const result = reconcileReviewItems({
@@ -257,7 +292,7 @@ test("rejects a mutual best match when the second-candidate gap is under 0.10", 
   expect(result.summary).toEqual({ inherited: 0, reset: 2 });
 });
 
-test("requires each candidate to choose the other as its best match", () => {
+test("resets non-mutual candidates when one old item intersects both new items", () => {
   const result = reconcileReviewItems({
     previousItems: [item("old-a", "added", rect(0.10, 0.10, 0.20, 0.20))],
     nextItems: [
@@ -265,9 +300,9 @@ test("requires each candidate to choose the other as its best match", () => {
       item(null, "added", rect(0.10, 0.10, 0.20, 0.20)),
     ],
     entries: new Map([["old-a", { status: "confirmed", comment: "mutual" }]]),
-    allocateId: () => "new-non-mutual",
+    allocateId: ids("new-first", "new-second"),
   });
 
-  expect(result.items.map(reviewItem => reviewItem.id)).toEqual(["new-non-mutual", "old-a"]);
-  expect(result.summary).toEqual({ inherited: 1, reset: 1 });
+  expect(result.items.map(reviewItem => reviewItem.id)).toEqual(["new-first", "new-second"]);
+  expect(result.summary).toEqual({ inherited: 0, reset: 2 });
 });
