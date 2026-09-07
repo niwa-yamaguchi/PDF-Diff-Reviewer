@@ -344,6 +344,9 @@ export function createApp({ document, window, dependencies = {} }) {
     ),
     drawBoxes: () => boxEditorView?.redraw?.(),
     commitReviewPage: value => reviewController.commitPage(value),
+    rememberPageDimensions: (pageIndex, width, height) => (
+      reviewController.rememberPageDimensions(pageIndex, width, height)
+    ),
   });
 
   textController = deps.createTextController({

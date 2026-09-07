@@ -2,6 +2,7 @@ import { expect, test, vi } from "vitest";
 import { createApp } from "../../src/app/create-app.js";
 import { applyInvalidatingChange } from "../../src/app/invalidation.js";
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
+import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
@@ -101,6 +102,77 @@ function fakeDependencies(overrides = {}) {
     ...overrides,
   };
 }
+
+function editableVisualApp(renderTogglePage) {
+  const document = fakeDocument();
+  const out = document.getElementById("out");
+  out.getContext = () => ({ clearRect() {}, drawImage() {} });
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(), createBoxEditorController, createVisualController, renderTogglePage,
+    createBoxEditorView: () => ({
+      refresh() {}, redraw() {}, updateControls() {},
+      getFrameSize: () => ({ width: out.width, height: out.height }),
+      getScale: () => 1,
+    }),
+  });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  Object.assign(app.state.documents, { pages: 2, oldSequence: [0, 1], newSequence: [0, 1] });
+  app.state.visual.mode = "toggle";
+  app.state.boxEditor.showBoxes = false;
+  return app;
+}
+
+function hiddenTogglePage(width = 100, height = 200) {
+  return { canvas: { width, height }, boxes: [], autoBoxes: undefined,
+    stats: { removed: "削除 —", added: "追加 —", boxes: "変更箇所 —" },
+    status: "新旧切替", pageLabel: "1 / 2" };
+}
+
+test("manual creation after an undetected toggle page commits while automatic detection is pending", async () => {
+  let resolveDetection;
+  const renderTogglePage = vi.fn().mockResolvedValueOnce(hiddenTogglePage())
+    .mockImplementationOnce(() => new Promise(resolve => { resolveDetection = resolve; }));
+  const app = editableVisualApp(renderTogglePage);
+  expect(await app.visualController.showPage(0)).toEqual({ committed: true });
+  expect(app.state.review.itemsByPage.has(0)).toBe(false);
+  const showing = vi.spyOn(app.visualController, "showPage");
+  app.boxEditorController.setEditMode(true);
+  const detection = showing.mock.results[0].value;
+  app.boxEditorController.pointerDown({ x: 10, y: 20, pointerId: 1 });
+  app.boxEditorController.pointerMove({ x: 30, y: 60, pointerId: 1 });
+  let creationError;
+  try { app.boxEditorController.pointerUp({ pointerId: 1 }); }
+  catch (error) { creationError = error; }
+  const autoBoxes = [{ x: 0, y: 0, w: 10, h: 10, kind: "added" }];
+  resolveDetection({ ...hiddenTogglePage(), boxes: autoBoxes, autoBoxes });
+  expect(await detection).toEqual({ committed: true });
+  expect(creationError).toBeUndefined();
+  expect(app.state.review.itemsByPage.get(0)).toMatchObject([{
+    id: "change-1", source: "manual", kind: "changed",
+    normalizedRect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+  }]);
+  expect(app.state.boxEditor.currentBoxes).toEqual(app.state.boxEditor.editsByPage.get(0));
+  expect(app.state.boxEditor.autoByPage.has(0)).toBe(false);
+});
+
+test("stale undetected renders cannot register dimensions for a page that never committed", async () => {
+  let resolveStale;
+  const renderTogglePage = vi.fn()
+    .mockImplementationOnce(() => new Promise(resolve => { resolveStale = resolve; }))
+    .mockResolvedValueOnce(hiddenTogglePage(200, 400));
+  const app = editableVisualApp(renderTogglePage);
+  const stale = app.visualController.showPage(0);
+  await app.visualController.showPage(1);
+  resolveStale(hiddenTogglePage(1000, 2000));
+  expect(await stale).toEqual({ committed: false });
+  expect(app.state.review.itemsByPage.size).toBe(0);
+  expect(() => app.reviewController.syncEditedPage({ pageIndex: 0, boxes: [] })).toThrow("変更枠寸法がありません");
+  const edited = app.reviewController.syncEditedPage({ pageIndex: 1,
+    boxes: [{ x: 20, y: 40, w: 40, h: 80, kind: "changed" }] });
+  expect(edited.currentBoxes).toHaveLength(1);
+  expect(app.state.review.itemsByPage.get(1)[0].normalizedRect).toEqual({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 });
+});
 
 test("createApp is the sole composition root and binds once after safe construction", () => {
   const calls = [];

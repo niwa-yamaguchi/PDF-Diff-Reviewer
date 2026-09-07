@@ -51,6 +51,10 @@ export function createChangeReviewController({
     return dimensions;
   }
 
+  function rememberPageDimensions(pageIndex, width, height) {
+    pageDimensions(pageIndex, width, height);
+  }
+
   function commitPage({ pageIndex, pageKey = pageKeyFor(state.documents, pageIndex), boxes,
     autoBoxes, width, height, source = "auto" }) {
     const review = state.review;
@@ -175,5 +179,5 @@ export function createChangeReviewController({
     }
   }
 
-  return { commitPage, startIndex, cancelIndex, syncEditedPage, allocateId };
+  return { commitPage, startIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions };
 }

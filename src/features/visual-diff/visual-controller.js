@@ -68,6 +68,7 @@ export function createVisualController({
   renderTogglePage,
   drawBoxes,
   commitReviewPage = ({ boxes, autoBoxes }) => ({ currentBoxes: boxes, autoBoxes }),
+  rememberPageDimensions,
 }) {
   let activeInteractiveTicket = null;
   let pendingFlip = null;
@@ -120,6 +121,7 @@ export function createVisualController({
   ) {
     if (commitToggleSide) state.visual.toggleSide = snapshot.visual.toggleSide;
     commitCanvas(result.canvas);
+    rememberPageDimensions?.(snapshot.pageIndex, result.canvas.width, result.canvas.height);
     state.visual.currentPlan = result.currentPlan;
     replaceMap(state.visual.alignmentCache, result.alignmentCache);
     replaceMap(state.visual.quadrantCache, result.quadrantCache);

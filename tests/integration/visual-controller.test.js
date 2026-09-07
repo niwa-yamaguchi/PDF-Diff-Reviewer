@@ -82,7 +82,7 @@ function textElement(initialText = "") {
   };
 }
 
-function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn(), commitReviewPage } = {}) {
+function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn(), commitReviewPage, rememberPageDimensions } = {}) {
   const state = createAppState();
   state.documents.oldDoc = { id: "old", numPages: 2 };
   state.documents.newDoc = { id: "new", numPages: 2 };
@@ -115,9 +115,27 @@ function harness({ renderDiffPage = vi.fn(), renderTogglePage = vi.fn(), commitR
     renderTogglePage,
     drawBoxes,
     commitReviewPage,
+    rememberPageDimensions,
   });
   return { state, dom, context, drawBoxes, controller, renderDiffPage, renderTogglePage };
 }
+
+test("committed canvas dimensions are published even when newer box edits reject the rendered boxes", async () => {
+  const pending = deferred();
+  const dimensions = new Map();
+  const { state, controller } = harness({
+    renderDiffPage: () => pending.promise,
+    rememberPageDimensions: (page, width, height) => dimensions.set(page, { width, height }),
+  });
+  const rendering = controller.showPage(0);
+  state.boxEditor.revisionByPage.set(0, 1);
+  const edited = [{ x: 10, y: 10, w: 20, h: 20, id: "manual" }];
+  state.boxEditor.currentBoxes = edited;
+  pending.resolve(result(0));
+  expect(await rendering).toEqual({ committed: true });
+  expect(dimensions.get(0)).toEqual({ width: 100, height: 200 });
+  expect(state.boxEditor.currentBoxes).toBe(edited);
+});
 
 test("commits review IDs before storing interactive and automatic boxes", async () => {
   const commitReviewPage = vi.fn(({ boxes }) => ({
