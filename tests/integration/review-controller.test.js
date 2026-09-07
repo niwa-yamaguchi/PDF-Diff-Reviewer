@@ -26,6 +26,56 @@ test("commits boxes with stable IDs and default entries without an initial migra
   expect(state.review.migrationSummary).toBeNull();
 });
 
+test.each([
+  ["nested components", [
+    { x: 0, y: 0, w: 80, h: 80, kind: "added" },
+    { x: 30, y: 30, w: 20, h: 20, kind: "added" },
+  ]],
+  ["duplicate rectangles", [box(), box()]],
+])("identical redraws preserve each review ID and input for %s", (_name, boxes) => {
+  const { state, controller } = harness(1);
+  controller.commitPage(page(0, boxes));
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "outer" });
+  state.review.entriesById.set("change-2", { status: "excluded", comment: "inner" });
+  const redraw = controller.commitPage(page(0, boxes.map(box => ({ ...box }))));
+  expect(redraw.currentBoxes.map(box => box.id)).toEqual(["change-1", "change-2"]);
+  expect(redraw.currentBoxes.map(box => state.review.entriesById.get(box.id))).toEqual([
+    { status: "confirmed", comment: "outer" },
+    { status: "excluded", comment: "inner" },
+  ]);
+});
+
+test("pending migration keeps the split and merge guard even for identical nested rectangles", () => {
+  const { state, controller } = harness(1);
+  const boxes = [
+    { x: 0, y: 0, w: 80, h: 80, kind: "added" },
+    { x: 30, y: 30, w: 20, h: 20, kind: "added" },
+  ];
+  controller.commitPage(page(0, boxes));
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "outer" });
+  captureReviewMigration(state);
+  const migrated = controller.commitPage(page(0, boxes));
+  expect(migrated.currentBoxes.map(box => box.id)).toEqual(["change-3", "change-4"]);
+  expect(state.review.migrationSummary).toEqual({ inherited: 0, reset: 2 });
+});
+
+test("redraw matches exact rectangles across ordering changes and safely reconciles the remainder", () => {
+  const { controller } = harness(1);
+  const outer = { x: 0, y: 0, w: 80, h: 80, kind: "added" };
+  const inner = { x: 30, y: 30, w: 20, h: 20, kind: "added" };
+  controller.commitPage({ ...page(0, [outer, inner, box(120)]), width: 200 });
+  const redraw = controller.commitPage({ ...page(0, [inner, box(121), outer]), width: 200 });
+  expect(redraw.currentBoxes.map(box => box.id)).toEqual(["change-2", "change-3", "change-1"]);
+});
+
+test("matching rectangles cannot inherit IDs after their page identity or kind changes", () => {
+  const { controller } = harness(1);
+  controller.commitPage(page(0));
+  expect(controller.commitPage({ ...page(0), pageKey: "old:1|new:0" }).currentBoxes[0].id).toBe("change-2");
+  expect(controller.commitPage({ ...page(0, [{ ...box(), kind: "removed" }]), pageKey: "old:1|new:0" })
+    .currentBoxes[0].id).toBe("change-3");
+});
+
 test("inherits matching entries and finalizes migration only after every page is processed", () => {
   const { state, controller } = harness(2);
   controller.commitPage(page(0));
@@ -124,4 +174,38 @@ test("a manual edit during indexing wins over an in-flight automatic result", as
   resolve(page(0));
   await running;
   expect(state.review.itemsByPage.get(0)[0]).toMatchObject({ id: manual[0].id, source: "manual", rect: { x: 70 } });
+});
+
+test("a synchronized manual edit wins over a delayed worker failure and indexing continues", async () => {
+  let reject;
+  const { state, controller, renderIndexPage, reportError } = harness(2);
+  controller.commitPage(page(0));
+  renderIndexPage.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  const running = controller.startIndex();
+  const manual = [{ ...box(70), id: controller.allocateId(), kind: "changed", source: "manual" }];
+  state.boxEditor.editsByPage.set(0, manual);
+  controller.syncEditedPage({ pageIndex: 0 });
+  reject(new Error("late worker failure"));
+  await running;
+  expect(state.review.indexErrors.has(0)).toBe(false);
+  expect(reportError).not.toHaveBeenCalled();
+  expect(state.review.itemsByPage.get(0)[0]).toMatchObject({ id: manual[0].id, rect: { x: 70 } });
+  expect(state.review.itemsByPage.has(1)).toBe(true);
+  expect(state.review.indexedPages).toBe(2);
+  expect(state.review.indexRunning).toBe(false);
+});
+
+test("worker cancellation still stops indexing when the waiting page was manually edited", async () => {
+  let reject;
+  const { state, controller, renderIndexPage } = harness(2);
+  const boxes = controller.commitPage(page(0)).currentBoxes;
+  renderIndexPage.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  const running = controller.startIndex();
+  state.boxEditor.editsByPage.set(0, boxes);
+  controller.syncEditedPage({ pageIndex: 0 });
+  reject(Object.assign(new Error("cancel"), { name: "RenderCancelled" }));
+  await running;
+  expect(state.review.indexErrors.size).toBe(0);
+  expect(state.review.itemsByPage.has(1)).toBe(false);
+  expect(state.review.indexRunning).toBe(false);
 });

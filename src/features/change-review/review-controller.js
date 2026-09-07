@@ -1,5 +1,30 @@
 import { createReviewItems, pageKeyFor, reconcileReviewItems, sortReviewItems } from "../../core/change-review/model.js";
 
+function reconcileRedrawnItems({ previousItems, nextItems, entries, allocateId }) {
+  const remainingPrevious = [...previousItems];
+  const exactMatches = new Map();
+  for (const nextItem of nextItems) {
+    const index = remainingPrevious.findIndex(previous => previous.pageKey === nextItem.pageKey
+      && previous.kind === nextItem.kind
+      && ["x", "y", "w", "h"].every(key => previous.rect[key] === nextItem.rect[key]));
+    if (index < 0) continue;
+    const [previous] = remainingPrevious.splice(index, 1);
+    exactMatches.set(nextItem, { ...nextItem, id: previous.id });
+  }
+  const reconciled = reconcileReviewItems({
+    previousItems: remainingPrevious,
+    nextItems: nextItems.filter(item => !exactMatches.has(item)),
+    entries,
+    allocateId,
+  });
+  let remainingIndex = 0;
+  return {
+    ...reconciled,
+    items: nextItems.map(item => exactMatches.get(item) || reconciled.items[remainingIndex++]),
+    summary: { ...reconciled.summary, inherited: reconciled.summary.inherited + exactMatches.size },
+  };
+}
+
 export function createChangeReviewController({
   state, renderIndexPage, cancelIndex: cancelLane, onChanged = () => {}, reportError = () => {},
 }) {
@@ -50,7 +75,8 @@ export function createChangeReviewController({
       const nextItems = createReviewItems({ boxes, pageIndex, pageKey, ...dimensions,
         source, allocateId: previousItems.length ? () => null : allocateId });
       if (previousItems.length) {
-        const reconciled = reconcileReviewItems({ previousItems, nextItems, entries, allocateId });
+        const reconcile = current ? reconcileRedrawnItems : reconcileReviewItems;
+        const reconciled = reconcile({ previousItems, nextItems, entries, allocateId });
         items = reconciled.items;
         summary = reconciled.summary;
         for (const [id, entry] of reconciled.entries) entries.set(id, entry);
@@ -125,8 +151,19 @@ export function createChangeReviewController({
         }
       } catch (error) {
         if (!isCurrent() || error?.name === "RenderCancelled") break;
-        review.indexErrors.set(pageIndex, error.message || String(error));
-        reportError(error, pageIndex);
+        let failure = error;
+        if (state.boxEditor.editsByPage.has(pageIndex)) {
+          try {
+            syncEditedPage({ pageIndex });
+            failure = null;
+          } catch (syncError) {
+            failure = syncError;
+          }
+        }
+        if (failure) {
+          review.indexErrors.set(pageIndex, failure.message || String(failure));
+          reportError(failure, pageIndex);
+        }
       }
       if (!isCurrent()) break;
       review.indexedPages += 1;

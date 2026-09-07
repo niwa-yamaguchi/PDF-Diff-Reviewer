@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { createApp } from "../../src/app/create-app.js";
 import { applyInvalidatingChange } from "../../src/app/invalidation.js";
+import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
@@ -135,12 +136,42 @@ test("createApp connects manual-box allocation and edits to the real review cont
   const document = fakeDocument();
   Object.assign(document.getElementById("out"), { width: 100, height: 200 });
   const app = createApp({ document, window, dependencies });
+  app.reviewController.commitPage({ pageIndex: 0, boxes: [], width: 100, height: 200 });
   const { makeManualBox, onBoxesChanged } = dependencies.createBoxEditorController.mock.calls[0][0];
   const box = makeManualBox({ pageIndex: 0, box: { x: 10, y: 10, w: 20, h: 20 } });
   onBoxesChanged({ pageIndex: 0, boxes: [box], reason: "create" });
   expect(app.state.review.itemsByPage.get(0)[0]).toMatchObject({
     id: "change-1", kind: "changed", source: "manual", normalizedRect: { x: 0.1, y: 0.05 },
   });
+});
+
+test("discarding edits across different-sized pages preserves each page's normalized rectangles", () => {
+  const dependencies = fakeDependencies({ bindControls: vi.fn(), createBoxEditorController });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const document = fakeDocument();
+  Object.assign(document.getElementById("out"), { width: 1000, height: 500 });
+  const app = createApp({ document, window, dependencies });
+  const first = app.reviewController.commitPage({ pageIndex: 0, width: 1000, height: 500,
+    boxes: [{ x: 100, y: 100, w: 200, h: 100, kind: "added" }] }).currentBoxes;
+  const second = app.reviewController.commitPage({ pageIndex: 1, width: 2000, height: 1000,
+    boxes: [{ x: 100, y: 100, w: 200, h: 100, kind: "added" }] }).currentBoxes;
+  app.state.boxEditor.editsByPage.set(0, first.map(box => ({ ...box, x: 300 })));
+  app.state.boxEditor.editsByPage.set(1, second.map(box => ({ ...box, x: 300 })));
+  app.boxEditorController.clearEdits();
+  expect(app.state.review.itemsByPage.get(0)[0].normalizedRect).toEqual({ x: 0.1, y: 0.2, w: 0.2, h: 0.2 });
+  expect(app.state.review.itemsByPage.get(1)[0].normalizedRect).toEqual({ x: 0.05, y: 0.1, w: 0.1, h: 0.1 });
+  expect(app.state.boxEditor.editsByPage.size).toBe(0);
+});
+
+test("editing without recorded page dimensions cannot borrow the visible canvas size", () => {
+  const dependencies = fakeDependencies({ bindControls: vi.fn() });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const document = fakeDocument();
+  Object.assign(document.getElementById("out"), { width: 100, height: 200 });
+  const app = createApp({ document, window, dependencies });
+  const { onBoxesChanged } = dependencies.createBoxEditorController.mock.calls[0][0];
+  expect(() => onBoxesChanged({ pageIndex: 1, boxes: [], reason: "discard" })).toThrow("変更枠寸法がありません");
+  expect(app.state.review.itemsByPage.has(1)).toBe(false);
 });
 
 test("index jobs use a third lane and accepted invalidation stops that lane", async () => {

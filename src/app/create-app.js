@@ -172,7 +172,7 @@ export function createApp({ document, window, dependencies = {} }) {
       ...box, id: reviewController.allocateId(), kind: "changed", source: "manual",
     }),
     onBoxesChanged: ({ pageIndex, boxes }) => reviewController.syncEditedPage({
-      pageIndex, boxes, width: out.width, height: out.height,
+      pageIndex, boxes,
     }),
     confirmDiscard: () => window.confirm(
       "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
