@@ -473,6 +473,7 @@ export function createApp({ document, window, dependencies = {} }) {
   const syncInvalidatedBoxEditor = () => {
     boxEditorController.syncInvalidated();
     reviewView.render({ preserveCommentFocus: true });
+    if (state.visual.rendered && state.ui.topMode === "visual") void reviewController.startIndex();
   };
   function applyComparisonSettingChange(update, invalidate) {
     const applied = deps.applyInvalidatingChange(state, {

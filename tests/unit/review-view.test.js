@@ -177,8 +177,8 @@ test("shows indexing progress, migration results and retryable failed pages", ()
   state.review.indexErrors.set(2, "画像を読めません");
   view.render();
   expect(dom.reviewIndexStatus.textContent).toContain("2 / 4");
-  expect(dom.reviewNotice.textContent).toContain("引継ぎ 1件");
-  expect(dom.reviewNotice.textContent).toContain("未確認に戻した変更 1件");
+  expect(dom.reviewNotice.textContent).toContain("レビュー1件を継承し、");
+  expect(dom.reviewNotice.textContent).toContain("1件を未確認へ戻しました");
   expect(dom.reviewList.textContent).toContain("画像を読めません");
   expect(dom.reviewList.querySelector('[data-review-retry="2"]').disabled).toBe(true);
   state.review.indexRunning = false;

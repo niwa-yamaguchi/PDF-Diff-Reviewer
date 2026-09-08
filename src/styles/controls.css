@@ -77,17 +77,17 @@
 
   /* ── ビューア ── */
   .viewbar{
-    display:flex;align-items:center;gap:14px;padding:10px 16px;
+    display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:10px 16px;flex-shrink:0;
     border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;
     color:var(--muted);
   }
-  .viewbar .pager{display:flex;align-items:center;gap:8px}
+  .viewbar .pager{display:flex;align-items:center;gap:8px;flex-shrink:0;white-space:nowrap}
   .viewbar .pager button{
     background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
     width:26px;height:24px;border-radius:4px;cursor:pointer;font-family:var(--mono);
   }
   .viewbar .pager button:hover{border-color:var(--signal)}
-  .viewbar .zoomctl{display:flex;align-items:center;gap:6px;
+  .viewbar .zoomctl{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;
     padding-left:14px;border-left:1px solid var(--line)}
   .viewbar .zoomctl button{
     background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
@@ -120,7 +120,7 @@
     width:26px;height:24px;border-radius:4px;cursor:pointer;font-family:var(--mono);
   }
   .viewbar .toggleind button:hover{border-color:var(--signal)}
-  .viewbar .stat{margin-left:auto;display:flex;gap:16px}
+  .viewbar .stat{margin-left:auto;display:flex;flex-wrap:wrap;gap:16px;white-space:nowrap}
   .viewbar .stat .rm{color:var(--removed)}
   .viewbar .stat .ad{color:var(--added)}
   .viewbar .stat .bx{color:var(--box)}

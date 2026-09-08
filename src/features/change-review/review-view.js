@@ -71,10 +71,10 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     dom.reviewIndexStatus.textContent = review.indexRunning
       ? `索引作成中 ${review.indexedPages} / ${review.indexTotal} ページ`
       : review.indexErrors.size ? `索引エラー ${review.indexErrors.size}ページ`
-        : review.indexTotal ? `索引完了 ${review.indexedPages} / ${review.indexTotal} ページ` : "";
+        : review.indexTotal ? `分析完了 ${review.indexedPages} / ${review.indexTotal} ページ` : "";
     dom.reviewPrev.disabled = dom.reviewNext.disabled = !items.length;
     dom.reviewNotice.textContent = review.migrationSummary
-      ? `引継ぎ ${review.migrationSummary.inherited}件 ／ 未確認に戻した変更 ${review.migrationSummary.reset}件` : "";
+      ? `レビュー${review.migrationSummary.inherited}件を継承し、${review.migrationSummary.reset}件を未確認へ戻しました` : "";
 
     const pages = [...new Set([...review.itemsByPage.keys(), ...review.indexErrors.keys()])].sort((a, b) => a - b);
     const groups = [];
@@ -125,6 +125,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
           } else thumbnail.textContent = thumbnails?.error ? "画像なし" : "";
         }
         article.classList.toggle("selected", review.selectedId === item.id);
+        article.setAttribute("aria-current", String(review.selectedId === item.id));
         select.setAttribute("aria-pressed", String(review.selectedId === item.id));
         number.textContent = `${pageIndex + 1}.${index + 1}`;
         kind.className = `review-kind ${item.kind}`;

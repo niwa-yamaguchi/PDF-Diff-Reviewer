@@ -32,14 +32,22 @@ test("Playwright pins its worker count instead of scaling with the host CPU", ()
   expect(playwrightConfig.workers).toBeLessThanOrEqual(4);
 });
 
-test("index is module-only and carries the final refactoring date", async () => {
+test("index is module-only and carries the change review release date", async () => {
   const html = await readFile("index.html", "utf8");
   expect(html).not.toMatch(/<style[\s>]/i);
   expect(html).not.toMatch(/<script(?![^>]*type="module")[^>]*>/i);
   expect(html).toContain('<script type="module" src="/src/main.js"></script>');
-  expect(html).toContain("UPDATED 2026-09-08");
+  expect(html).toContain("UPDATED 2026-09-09");
   expect(html).not.toContain("1ファイル運用");
   expect(html).not.toMatch(/\son\w+\s*=/i);
+});
+
+test("README explains the available review workflow and its persistence boundary", async () => {
+  const readme = await readFile("README.md", "utf8");
+  for (const term of ["変更箇所一覧", "未確認", "確認済み", "対象外", "コメント", "前後移動",
+    "サムネイル", "高確度", "メモリ上", "ファイル保存は今後の改善"]) {
+    expect(readme).toContain(term);
+  }
 });
 
 test("package scripts install all final browsers and validate built artifacts", async () => {
