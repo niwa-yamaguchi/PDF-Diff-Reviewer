@@ -304,7 +304,11 @@ export function createApp({ document, window, dependencies = {} }) {
     ...laneCompute(indexLane),
   });
 
-  reviewView = deps.createChangeReviewView({ state, dom, document });
+  reviewView = deps.createChangeReviewView({ state, dom, document,
+    requestPageThumbnails: pageIndex => {
+      void Promise.resolve().then(() => reviewController.requestPageThumbnails(pageIndex));
+    },
+  });
   reviewController = deps.createChangeReviewController({
     state,
     showPage: pageIndex => visualController.showPage(pageIndex),
@@ -316,6 +320,9 @@ export function createApp({ document, window, dependencies = {} }) {
     renderIndexPage: pageIndex => deps.renderChangeIndexPage(
       createVisualSnapshot(state, pageIndex, "diff"), indexRenderDependencies(),
     ),
+    renderThumbnailPage: snapshot => deps.renderDiffPage(snapshot, indexRenderDependencies()),
+    createSnapshot: pageIndex => createVisualSnapshot(state, pageIndex, "diff"),
+    createCanvas: deps.createCanvas,
     cancelIndex: () => indexLane.cancel(),
     reportError: (error, pageIndex) => window.console.error(`変更索引: ページ ${pageIndex + 1}`, error),
   });

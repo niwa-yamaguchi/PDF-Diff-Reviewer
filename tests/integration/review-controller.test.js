@@ -3,10 +3,127 @@ import { createAppState } from "../../src/app/state.js";
 import { captureReviewMigration, invalidateDocuments } from "../../src/app/invalidation.js";
 import { createChangeReviewController } from "../../src/features/change-review/review-controller.js";
 import { createViewerController } from "../../src/features/viewer/viewer-controller.js";
-import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
+import { createVisualController, createVisualSnapshot } from "../../src/features/visual-diff/visual-controller.js";
 
 const box = (x = 10) => ({ x, y: 10, w: 20, h: 20, kind: "added" });
 const page = (pageIndex, boxes = [box()]) => ({ pageIndex, boxes, width: 100, height: 100 });
+
+function thumbnailHarness(overrides = {}) {
+  const state = createAppState();
+  state.documents.pages = 3;
+  Object.assign(state.comparison, { dpi: 300, dx: 25, dy: -50 });
+  const created = [];
+  const createCanvas = (width, height) => {
+    const canvas = { width, height, getContext: () => ({ fillRect() {}, drawImage() {} }),
+      toDataURL: vi.fn(() => `data:image/png;base64,crop${created.length}`) };
+    created.push(canvas);
+    return canvas;
+  };
+  const renderThumbnailPage = vi.fn(async () => ({ canvas: { width: 100, height: 100 } }));
+  const controller = createChangeReviewController({ state, renderThumbnailPage, createCanvas,
+    createSnapshot: pageIndex => createVisualSnapshot(state, pageIndex, "diff"), ...overrides });
+  controller.commitPage(page(0));
+  controller.commitPage(page(1, [box(), box(50)]));
+  controller.commitPage(page(2));
+  return { state, controller, renderThumbnailPage, created };
+}
+
+// Break: rendering per item/reopening or mutating full-resolution settings wastes work and shifts crops.
+test("renders one immutable 72 DPI page for all requested thumbnails and caches each PNG once", async () => {
+  const { state, controller, renderThumbnailPage, created } = thumbnailHarness();
+  await Promise.all([controller.requestPageThumbnails(1), controller.requestPageThumbnails(1)]);
+  await controller.requestPageThumbnails(1);
+  expect(renderThumbnailPage).toHaveBeenCalledTimes(1);
+  const snapshot = renderThumbnailPage.mock.calls[0][0];
+  expect(snapshot.comparison).toMatchObject({ dpi: 72, dx: 6, dy: -12 });
+  expect(Object.isFrozen(snapshot)).toBe(true);
+  expect(Object.isFrozen(snapshot.comparison)).toBe(true);
+  expect(state.comparison).toMatchObject({ dpi: 300, dx: 25, dy: -50 });
+  expect(state.review.thumbnailsByPage.get(1).size).toBe(2);
+  expect(created).toHaveLength(2);
+  for (const canvas of created) expect(canvas.toDataURL).toHaveBeenCalledExactlyOnceWith("image/png");
+});
+
+// Break: starting thumbnails during indexing contends for the single background Worker lane.
+test("queues opened groups during indexing and processes them once in page order", async () => {
+  let finishIndex;
+  const events = [];
+  const { controller, renderThumbnailPage } = thumbnailHarness({
+    renderIndexPage: async index => {
+      events.push(`index-${index}`);
+      if (index === 0) await new Promise(resolve => { finishIndex = resolve; });
+      return page(index);
+    },
+  });
+  renderThumbnailPage.mockImplementation(async snapshot => {
+    events.push(`thumb-${snapshot.pageIndex}`);
+    return { canvas: { width: 100, height: 100 } };
+  });
+  const indexing = controller.startIndex();
+  const pending = [controller.requestPageThumbnails(2), controller.requestPageThumbnails(0),
+    controller.requestPageThumbnails(2)];
+  expect(renderThumbnailPage).not.toHaveBeenCalled();
+  finishIndex();
+  await indexing;
+  await Promise.all(pending);
+  expect(events).toEqual(["index-0", "index-1", "index-2", "thumb-0", "thumb-2"]);
+});
+
+// Break: a thumbnail failure must not erase review data or trigger repeated failing renders.
+test("caches failed thumbnails without blocking review operations", async () => {
+  const { state, controller } = thumbnailHarness({ renderThumbnailPage: async () => { throw new Error("broken image"); } });
+  await controller.requestPageThumbnails(1);
+  expect(state.review.thumbnailsByPage.get(1)).toEqual({ error: true });
+  controller.setComment("change-2", "確認を継続");
+  expect(state.review.entriesById.get("change-2").comment).toBe("確認を継続");
+});
+
+// Break: a replaced document or canceled comparison must never receive an old thumbnail.
+test("rejects a delayed thumbnail after cancellation", async () => {
+  let finish;
+  const { state, controller } = thumbnailHarness({ renderThumbnailPage: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = controller.requestPageThumbnails(0);
+  controller.cancelIndex();
+  finish({ canvas: { width: 100, height: 100 } });
+  await pending;
+  expect(state.review.thumbnailsByPage.size).toBe(0);
+});
+
+// Break: editing a rectangle without invalidating the crop shows the previous location forever.
+test("refreshes thumbnails after geometry changes but preserves cache through identical redraws", async () => {
+  const { state, controller, renderThumbnailPage } = thumbnailHarness();
+  await controller.requestPageThumbnails(0);
+  const cached = state.review.thumbnailsByPage.get(0);
+  controller.commitPage(page(0));
+  await controller.requestPageThumbnails(0);
+  expect(state.review.thumbnailsByPage.get(0)).toBe(cached);
+  controller.syncEditedPage({ pageIndex: 0, boxes: [{ ...box(40), id: "change-1" }] });
+  expect(state.review.thumbnailsByPage.has(0)).toBe(false);
+  await controller.requestPageThumbnails(0);
+  expect(renderThumbnailPage).toHaveBeenCalledTimes(2);
+});
+
+// Break: a page retry can submit a Worker job while a thumbnail still owns the shared lane.
+test("waits for an in-flight thumbnail before retrying an index page", async () => {
+  let finish;
+  const events = [];
+  const { state, controller } = thumbnailHarness({
+    renderThumbnailPage: async () => {
+      events.push("thumbnail-start");
+      await new Promise(resolve => { finish = resolve; });
+      events.push("thumbnail-end");
+      return { canvas: { width: 100, height: 100 } };
+    },
+    renderIndexPage: async index => { events.push("index"); return page(index); },
+  });
+  state.review.indexErrors.set(1, "retry");
+  const thumbnail = controller.requestPageThumbnails(0);
+  const retry = controller.retryPage(1);
+  expect(events).toEqual(["thumbnail-start"]);
+  finish();
+  await Promise.all([thumbnail, retry]);
+  expect(events).toEqual(["thumbnail-start", "thumbnail-end", "index"]);
+});
 
 function navigationHarness(show) {
   const state = createAppState();

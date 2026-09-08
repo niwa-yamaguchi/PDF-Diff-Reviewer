@@ -3,7 +3,8 @@ import { sortReviewItems, summarizeReviews } from "../../core/change-review/mode
 const KIND_LABELS = { added: "追加", removed: "削除", changed: "変更" };
 const STATUS_LABELS = { pending: "未確認", confirmed: "確認済み", excluded: "対象外" };
 
-export function createChangeReviewView({ state, dom, document = dom.reviewList.ownerDocument }) {
+export function createChangeReviewView({ state, dom, document = dom.reviewList.ownerDocument,
+  requestPageThumbnails = () => {} }) {
   let previousSelectedId = null;
   const pageViews = new Map();
   const itemViews = new Map();
@@ -42,8 +43,12 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     comment.dataset.reviewComment = item.id;
     comment.rows = 2;
     comment.placeholder = "確認メモを入力";
-    article.append(select, status, comment);
-    return { article, select, number, kind, stateLabel, status, comment };
+    const thumbnail = element("div", "review-thumbnail");
+    thumbnail.dataset.reviewThumbnail = item.id;
+    thumbnail.style.width = "120px";
+    thumbnail.style.height = "80px";
+    article.append(select, thumbnail, status, comment);
+    return { article, select, number, kind, stateLabel, status, comment, thumbnail };
   }
 
   function render({ preserveCommentFocus = true } = {}) {
@@ -81,7 +86,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
       if (!pageViews.has(pageIndex)) {
         const group = element("details", "review-page");
         group.dataset.reviewPage = String(pageIndex);
-        group.open = true;
+        group.open = pageIndex === state.documents.currentPage;
         pageViews.set(pageIndex, { group, title: element("summary", "review-page-title") });
       }
       const { group, title } = pageViews.get(pageIndex);
@@ -102,7 +107,23 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
       for (const [index, item] of pageItems.entries()) {
         const entry = review.entriesById.get(item.id) || { status: "pending", comment: "" };
         if (!itemViews.has(item.id)) itemViews.set(item.id, createItem(item));
-        const { article, select, number, kind, stateLabel, status, comment } = itemViews.get(item.id);
+        const { article, select, number, kind, stateLabel, status, comment, thumbnail } = itemViews.get(item.id);
+        const thumbnails = review.thumbnailsByPage.get(pageIndex);
+        const url = thumbnails instanceof Map ? thumbnails.get(item.id) : null;
+        const thumbnailState = url || (thumbnails?.error ? "error" : "loading");
+        if (thumbnail.dataset.state !== thumbnailState) {
+          thumbnail.dataset.state = thumbnailState;
+          thumbnail.setAttribute("aria-busy", String(thumbnailState === "loading"));
+          thumbnail.classList.toggle("loading", thumbnailState === "loading");
+          if (url) {
+            const image = element("img");
+            image.src = url;
+            image.width = 120;
+            image.height = 80;
+            image.alt = `ページ ${pageIndex + 1} 変更 ${index + 1}の差分画像`;
+            thumbnail.replaceChildren(image);
+          } else thumbnail.textContent = thumbnails?.error ? "画像なし" : "";
+        }
         article.classList.toggle("selected", review.selectedId === item.id);
         select.setAttribute("aria-pressed", String(review.selectedId === item.id));
         number.textContent = `${pageIndex + 1}.${index + 1}`;
@@ -136,6 +157,9 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
       focusedField.setSelectionRange(focus.start, focus.end, focus.direction);
     } else if (focusedStatus && visible && document.activeElement !== focusedStatus) {
       focusedStatus.focus({ preventScroll: true });
+    }
+    if (visible) for (const [pageIndex, { group }] of pageViews) {
+      if (group.open) requestPageThumbnails(pageIndex);
     }
   }
 

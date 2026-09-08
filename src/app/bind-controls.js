@@ -90,6 +90,13 @@ export function bindControls({
   listen(dom.reviewBackdrop, "click", () => reviewController.togglePanel(false));
   listen(dom.reviewPrev, "click", () => reviewController.selectPrevious());
   listen(dom.reviewNext, "click", () => reviewController.selectNext());
+  // details.toggle does not bubble; keep the single delegated listener in capture phase.
+  listen(dom.reviewList, "toggle", event => {
+    const group = event.target;
+    if (group.tagName !== "DETAILS" || !group.open || dom.reviewPanel.hidden
+      || group.dataset.reviewPage === undefined) return;
+    void reviewController.requestPageThumbnails(Number(group.dataset.reviewPage));
+  }, true);
   listen(dom.reviewList, "click", event => {
     const retry = event.target.closest("[data-review-retry]");
     if (retry) { void reviewController.retryPage(Number(retry.dataset.reviewRetry)); return; }

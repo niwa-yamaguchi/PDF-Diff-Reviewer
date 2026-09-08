@@ -26,6 +26,28 @@ function target() {
   };
 }
 
+// Break: toggle does not bubble, so listening without capture never requests opened page groups.
+test("captures page toggles once and requests only visible opened review groups", () => {
+  const dom = new Proxy({}, { get: (value, key) => {
+    if (!(key in value)) value[key] = key.endsWith("Buttons") ? [] : target();
+    return value[key];
+  } });
+  const reviewController = { requestPageThumbnails: vi.fn() };
+  bindControls({ document: target(), window: target(), dom, reviewController });
+  const registrations = dom.reviewList.listeners.get("toggle");
+  expect(registrations).toHaveLength(1);
+  expect(registrations[0].options).toBe(true);
+  const group = { tagName: "DETAILS", dataset: { reviewPage: "2" }, open: true };
+  dom.reviewList.emit("toggle", { target: group });
+  expect(reviewController.requestPageThumbnails).toHaveBeenCalledExactlyOnceWith(2);
+  group.open = false;
+  dom.reviewList.emit("toggle", { target: group });
+  group.open = true;
+  dom.reviewPanel.hidden = true;
+  dom.reviewList.emit("toggle", { target: group });
+  expect(reviewController.requestPageThumbnails).toHaveBeenCalledTimes(1);
+});
+
 test("binds controls once and delegates events to their owning public handlers", () => {
   const names = [
     "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle",

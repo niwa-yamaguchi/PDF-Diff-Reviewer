@@ -4,6 +4,7 @@ import { applyInvalidatingChange, invalidateDocuments, invalidateThreshold } fro
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
 import { reviewDom } from "../helpers/review-dom.js";
+import { bindControls } from "../../src/app/bind-controls.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
@@ -68,6 +69,44 @@ function fakeDocument() {
   document.eventTargets = [document, canvasWrap, oldTextWrap, newTextWrap, ...elements.values()];
   return document;
 }
+
+// Break: omitting the view/controller bridge or using the interactive lane loses lazy background crops.
+test("an opened review group renders its 72 DPI thumbnails using the index Worker lane", async () => {
+  const lanes = [];
+  const dependencies = fakeDependencies({ bindControls: vi.fn(),
+    createWorkerLane: () => {
+      const run = vi.fn(async () => ({}));
+      const lane = { run, session: () => run, cancel() {} };
+      lanes.push(lane);
+      return lane;
+    },
+    createCanvas: (width, height) => ({ width, height,
+      getContext: () => ({ drawImage() {}, fillRect() {} }), toDataURL: () => "data:image/png;base64,crop" }),
+    renderDiffPage: vi.fn(async (snapshot, dependencies) => {
+      await dependencies.computeDiff({ thumbnail: true });
+      return { canvas: { width: 100, height: 100 } };
+    }),
+  });
+  const document = fakeDocument();
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  app.state.documents.pages = 2;
+  app.reviewController.commitPage({ pageIndex: 1, width: 100, height: 100,
+    boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "added" }] });
+  app.reviewController.togglePanel(true);
+  expect(dependencies.renderDiffPage).not.toHaveBeenCalled();
+  window.addEventListener = () => {};
+  window.removeEventListener = () => {};
+  bindControls(dependencies.bindControls.mock.calls[0][0]);
+  const group = document.getElementById("reviewList").querySelector("details");
+  group.open = true;
+  document.getElementById("reviewList").emit("toggle", { target: group });
+  await vi.waitFor(() => expect(app.state.review.thumbnailsByPage.get(1)?.get("change-1"))
+    .toBe("data:image/png;base64,crop"));
+  expect(dependencies.renderDiffPage.mock.calls[0][0].comparison.dpi).toBe(72);
+  expect(lanes.map(lane => lane.run.mock.calls.length)).toEqual([0, 0, 1]);
+  expect(document.getElementById("reviewList").querySelector("img").src).toBe("data:image/png;base64,crop");
+});
 
 // Break: failing to open/render the panel on successful comparison leaves indexed work inaccessible.
 test("visual success opens the panel and mode switches preserve review input and open state", async () => {

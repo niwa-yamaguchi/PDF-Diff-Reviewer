@@ -148,6 +148,9 @@
   .review-kind.removed{color:var(--removed)}
   .review-kind.changed{color:var(--signal)}
   .review-state{margin-left:auto;font-size:10px;color:var(--muted)}
+  .review-thumbnail{display:grid;place-items:center;margin:0 0 8px;outline:1px solid var(--line);outline-offset:-1px;background:var(--panel-2);color:var(--muted);font:11px var(--sans);overflow:hidden}
+  .review-thumbnail img{display:block;width:120px;height:80px;object-fit:contain;background:#fff}
+  .review-thumbnail.loading::after{content:"";width:28px;height:4px;background:var(--line-bright)}
   .review-status,.review-comment{width:100%;color:var(--fg);background:var(--ink);border:1px solid var(--line-bright);border-radius:2px;font:11px var(--sans)}
   .review-status{min-height:30px;padding:4px 8px}
   .review-comment{display:block;min-height:48px;resize:vertical;margin-top:7px;padding:7px 8px;line-height:1.5}

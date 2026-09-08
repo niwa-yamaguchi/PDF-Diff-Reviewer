@@ -1,10 +1,10 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import { createChangeReviewController } from "../../src/features/change-review/review-controller.js";
 import { createChangeReviewView } from "../../src/features/change-review/review-view.js";
 import { reviewDom } from "../helpers/review-dom.js";
 
-function harness() {
+function harness(options = {}) {
   const state = createAppState();
   const { document, dom } = reviewDom();
   const controller = createChangeReviewController({ state });
@@ -14,9 +14,38 @@ function harness() {
     boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "removed" }] });
   state.review.entriesById.set("change-2", { status: "confirmed", comment: "抵抗値を確認" });
   state.review.panelOpen = true;
-  const view = createChangeReviewView({ state, dom, document });
+  const view = createChangeReviewView({ state, dom, document, ...options });
   return { state, dom, document, controller, view };
 }
+
+// Break: eagerly opening all pages renders the entire document instead of requested groups.
+test("requests only open groups and shows fixed-size loading, images and failure placeholders", () => {
+  const requestPageThumbnails = vi.fn();
+  const { state, dom, view } = harness({ requestPageThumbnails });
+  view.render();
+  const groups = dom.reviewList.querySelectorAll("details");
+  expect(groups.map(group => group.open)).toEqual([true, false]);
+  expect(requestPageThumbnails.mock.calls.map(call => call[0])).toEqual([0]);
+  const loading = dom.reviewList.querySelector('[data-review-thumbnail="change-1"]');
+  expect([loading.style.width, loading.style.height]).toEqual(["120px", "80px"]);
+  expect(loading.getAttribute("aria-busy")).toBe("true");
+  requestPageThumbnails.mockClear();
+  groups[1].open = true;
+  view.render();
+  expect(requestPageThumbnails.mock.calls.map(call => call[0])).toEqual([0, 1]);
+  groups[1].open = false;
+  requestPageThumbnails.mockClear();
+  view.render();
+  expect(requestPageThumbnails).toHaveBeenCalledExactlyOnceWith(0);
+  state.review.thumbnailsByPage.set(0, new Map([["change-1", "data:image/png;base64,test"]]));
+  state.review.thumbnailsByPage.set(1, { error: true });
+  view.render();
+  const image = loading.querySelector("img");
+  expect(image.src).toBe("data:image/png;base64,test");
+  expect([image.width, image.height]).toEqual([120, 80]);
+  expect(loading.getAttribute("aria-busy")).toBe("false");
+  expect(dom.reviewList.querySelector('[data-review-thumbnail="change-2"]').textContent).toBe("画像なし");
+});
 
 // Break: missing aggregation, page grouping, or entry rendering hides actionable review data.
 test("renders progress, page groups, kinds, states and comments", () => {
