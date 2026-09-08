@@ -249,9 +249,10 @@ export function createChangeReviewController({
       if (!entries.has(item.id)) entries.set(item.id, { status: "pending", comment: "" });
     }
     review.entriesById = entries;
-    if (!current || current.length !== items.length || current.some((item, index) => {
-      const next = items[index];
-      return item.id !== next.id
+    const nextItemsById = new Map(items.map(item => [item.id, item]));
+    if (!current || current.length !== items.length || current.some(item => {
+      const next = nextItemsById.get(item.id);
+      return !next
         || ["x", "y", "w", "h"].some(key => item.normalizedRect[key] !== next.normalizedRect[key]);
     })) review.thumbnailsByPage.delete(pageIndex);
     review.itemsByPage.set(pageIndex, sortReviewItems(items));

@@ -103,6 +103,20 @@ test("refreshes thumbnails after geometry changes but preserves cache through id
   expect(renderThumbnailPage).toHaveBeenCalledTimes(2);
 });
 
+// Break: incoming box order alone must not evict unchanged ID/rectangle thumbnail crops.
+test("preserves cached thumbnails when equivalent manual boxes arrive in reverse display order", async () => {
+  const { state, controller, renderThumbnailPage } = thumbnailHarness();
+  await controller.requestPageThumbnails(1);
+  const cached = state.review.thumbnailsByPage.get(1);
+  controller.syncEditedPage({ pageIndex: 1, boxes: [
+    { ...box(50), id: "change-3", kind: "added", source: "auto" },
+    { ...box(10), id: "change-2", kind: "added", source: "auto" },
+  ] });
+  expect(state.review.thumbnailsByPage.get(1)).toBe(cached);
+  await controller.requestPageThumbnails(1);
+  expect(renderThumbnailPage).toHaveBeenCalledTimes(1);
+});
+
 // Break: a page retry can submit a Worker job while a thumbnail still owns the shared lane.
 test("waits for an in-flight thumbnail before retrying an index page", async () => {
   let finish;
