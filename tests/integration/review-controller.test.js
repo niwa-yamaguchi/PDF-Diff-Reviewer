@@ -124,6 +124,25 @@ test("retries only the requested failed page", async () => {
   expect(state.review.itemsByPage.get(1)).toHaveLength(1);
   expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "keep" });
 });
+
+// Break: a delayed retry failure must not resurrect an error cleared by a manual edit.
+test("a synchronized manual edit wins over a delayed retry failure", async () => {
+  let reject;
+  const { state, controller, renderIndexPage, reportError } = harness(1);
+  controller.commitPage(page(0));
+  state.review.indexErrors.set(0, "failed");
+  renderIndexPage.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  const running = controller.retryPage(0);
+  const manual = [{ ...box(70), id: controller.allocateId(), kind: "changed", source: "manual" }];
+  state.boxEditor.editsByPage.set(0, manual);
+  controller.syncEditedPage({ pageIndex: 0 });
+  reject(new Error("late retry failure"));
+  await running;
+  expect(state.review.indexErrors.has(0)).toBe(false);
+  expect(reportError).not.toHaveBeenCalled();
+  expect(state.review.itemsByPage.get(0)[0]).toMatchObject({ id: manual[0].id, rect: { x: 70 } });
+  expect(state.review.indexRunning).toBe(false);
+});
 function harness(pages = 3, render = async () => page(0)) {
   const state = createAppState();
   Object.assign(state.documents, { pages, oldSequence: [0, 1, 2], newSequence: [0, 1, 2] });

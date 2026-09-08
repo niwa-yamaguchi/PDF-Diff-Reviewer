@@ -53,6 +53,50 @@ test("preserves comment focus and selection while safely rendering literal marku
   expect(dom.reviewList.querySelectorAll("img")).toHaveLength(0);
 });
 
+// Break: replacing the textarea or its ancestors interrupts an active IME composition.
+test("keeps the comment and its ancestors mounted through input and index progress", () => {
+  const { state, dom, document, controller, view } = harness();
+  view.render();
+  const field = dom.reviewList.querySelector('[data-review-comment="change-1"]');
+  const article = field.parentElement;
+  const group = article.parentElement;
+  field.focus();
+  field.value = "にほん";
+  controller.setComment("change-1", field.value);
+  view.render();
+  expect(dom.reviewList.querySelector('[data-review-comment="change-1"]')).toBe(field);
+  expect(field.parentElement).toBe(article);
+  expect(article.parentElement).toBe(group);
+  // A composition update can precede its input event. External renders must not restore stale text.
+  field.value = "日本";
+  state.review.indexRunning = true;
+  state.review.indexedPages = 1;
+  state.review.indexErrors.set(0, "一時的な失敗");
+  controller.commitPage({ pageIndex: 2, width: 100, height: 100, boxes: [] });
+  view.render();
+  view.render();
+  expect(dom.reviewList.querySelector('[data-review-comment="change-1"]')).toBe(field);
+  expect(field.value).toBe("日本");
+  expect(document.activeElement).toBe(field);
+  expect(document.detachedActiveCount).toBe(0);
+  controller.setComment("change-1", field.value);
+  view.render();
+  expect(state.review.entriesById.get("change-1").comment).toBe("日本");
+});
+
+// Break: recreating a selected row button removes the keyboard user's active control.
+test("retains the selected item's button and keyboard focus after rendering", () => {
+  const { state, dom, document, view } = harness();
+  view.render();
+  const button = dom.reviewList.querySelector('[data-change-id="change-1"]').querySelector("button");
+  button.focus();
+  state.review.selectedId = "change-1";
+  view.render();
+  expect(dom.reviewList.querySelector('[data-change-id="change-1"]').querySelector("button")).toBe(button);
+  expect(document.activeElement).toBe(button);
+  expect(button.getAttribute("aria-pressed")).toBe("true");
+});
+
 // Break: using panel visibility as state erases the user's open state on text-mode switches.
 test("hides only the panel presentation in text mode and restores the selected item", () => {
   const { state, dom, view } = harness();

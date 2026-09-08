@@ -106,8 +106,19 @@ export function createChangeReviewController({
     } catch (error) {
       if (review !== state.review || generation !== review.indexGeneration) return;
       if (error?.name !== "RenderCancelled") {
-        review.indexErrors.set(pageIndex, error.message || String(error));
-        reportError(error, pageIndex);
+        let failure = error;
+        if (state.boxEditor.editsByPage.has(pageIndex)) {
+          try {
+            syncEditedPage({ pageIndex });
+            failure = null;
+          } catch (syncError) {
+            failure = syncError;
+          }
+        }
+        if (failure) {
+          review.indexErrors.set(pageIndex, failure.message || String(failure));
+          reportError(failure, pageIndex);
+        }
       }
     } finally {
       if (review === state.review && generation === review.indexGeneration) {

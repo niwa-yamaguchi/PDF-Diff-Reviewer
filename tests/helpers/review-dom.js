@@ -1,6 +1,6 @@
 // Minimal DOM boundary for node tests. The view and event controller remain real.
 export function reviewDocument() {
-  const document = { activeElement: null };
+  const document = { activeElement: null, detachedActiveCount: 0 };
   document.createElement = tag => {
     const attributes = new Map();
     const listeners = new Map();
@@ -16,6 +16,26 @@ export function reviewDocument() {
       setAttribute(name, value) { attributes.set(name, String(value)); },
       getAttribute(name) { return attributes.get(name) ?? null; },
       append(...nodes) { for (const child of nodes) { child.parentElement = node; node.children.push(child); } },
+      insertBefore(child, reference) {
+        if (child === reference) return child;
+        child.parentElement?.removeChild(child);
+        const index = reference ? node.children.indexOf(reference) : node.children.length;
+        if (index < 0) throw new Error("Reference is not a child");
+        node.children.splice(index, 0, child);
+        child.parentElement = node;
+        return child;
+      },
+      removeChild(child) {
+        const index = node.children.indexOf(child);
+        if (index < 0) throw new Error("Node is not a child");
+        node.children.splice(index, 1);
+        child.parentElement = null;
+        if (child.contains(document.activeElement)) {
+          document.detachedActiveCount += 1;
+          document.activeElement = document.body;
+        }
+        return child;
+      },
       replaceChildren(...nodes) { node.children = []; node.text = ""; node.append(...nodes); },
       contains(other) { return other === node || node.children.some(child => child.contains(other)); },
       matches(selector) {
