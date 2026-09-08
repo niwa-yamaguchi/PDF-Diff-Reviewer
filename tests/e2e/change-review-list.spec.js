@@ -4,6 +4,44 @@ import { jsPDF } from "jspdf";
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
 
+async function expectReadableStatus(page, select, testInfo, width) {
+  // Native selects can paint over their computed CSS background (WebKit).
+  // Inspect screenshot pixels from the label area, excluding the border/arrow.
+  const screenshot = await select.screenshot({ scale: "css" });
+  await testInfo.attach(`status-contrast-${width}`, { body: screenshot, contentType: "image/png" });
+  const readablePixels = await page.evaluate(async encoded => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${encoded}`;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    const luminance = (x, y) => {
+      const index = (y * canvas.width + x) * 4;
+      const rgb = [data[index], data[index + 1], data[index + 2]].map(value => {
+        const channel = value / 255;
+        return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+      });
+      return .2126 * rgb[0] + .7152 * rgb[1] + .0722 * rgb[2];
+    };
+    const background = luminance(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2));
+    let readable = 0;
+    for (let y = 6; y < canvas.height - 6; y++) {
+      for (let x = 8; x < Math.min(100, canvas.width / 2); x++) {
+        const ink = luminance(x, y);
+        const contrast = (Math.max(ink, background) + .05) / (Math.min(ink, background) + .05);
+        if (contrast >= 4.5) readable++;
+      }
+    }
+    return readable;
+  }, screenshot.toString("base64"));
+  expect(readablePixels, "the rendered status label must contain readable text against its painted background")
+    .toBeGreaterThan(15);
+}
+
 async function loadReview(page, { multipage = false } = {}) {
   await page.goto("/");
   for (const side of ["Old", "New"]) {
@@ -144,6 +182,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 820, height: 900 
     await page.keyboard.insertText("。抵抗値と配線を続けて入力しました。");
     await expect(comment).toHaveValue("変更箇所を確認。抵抗値と配線を続けて入力しました。");
     await expect(comment).toBeFocused();
+    await expectReadableStatus(page, card.locator("select"), testInfo, viewport.width);
     expect(await panel.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const bounds = await panel.boundingBox();

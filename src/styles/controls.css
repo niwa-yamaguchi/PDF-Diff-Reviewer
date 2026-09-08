@@ -152,7 +152,7 @@
   .review-thumbnail img{display:block;width:120px;height:80px;object-fit:contain;background:#fff}
   .review-thumbnail.loading::after{content:"";width:28px;height:4px;background:var(--line-bright)}
   .review-status,.review-comment{width:100%;color:var(--fg);background:var(--ink);border:1px solid var(--line-bright);border-radius:2px;font:11px var(--sans)}
-  .review-status{min-height:30px;padding:4px 8px}
+  .review-status{min-height:30px;padding:4px 8px;color-scheme:dark}
   .review-comment{display:block;min-height:48px;resize:vertical;margin-top:7px;padding:7px 8px;line-height:1.5}
   .review-comment::placeholder{color:var(--muted)}
   .review-empty,.review-error{padding:14px;font-size:12px;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
