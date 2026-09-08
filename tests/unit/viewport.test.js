@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   fitViewport,
+  focusRectViewport,
   zoomAt,
 } from "../../src/features/viewer/viewport.js";
 import { createViewerController } from "../../src/features/viewer/viewer-controller.js";
@@ -56,6 +57,15 @@ function viewerHarness() {
 }
 
 describe("viewport geometry", () => {
+  // Break: removing the scale cap, padding, or centering puts the target off center.
+  test("focuses a rectangle with padding and caps automatic scale", () => {
+    expect(focusRectViewport({ x: 40, y: 30, w: 20, h: 10 },
+      { width: 200, height: 100 }, { padding: 0.25, maxScale: 4 }))
+      .toEqual({ scale: 4, tx: -100, ty: -90 });
+    expect(focusRectViewport({ x: 10, y: 20, w: 100, h: 50 },
+      { width: 300, height: 300 }))
+      .toEqual({ scale: 2, tx: 30, ty: 60 });
+  });
   test("zooms around the requested cursor point without mutating the input", () => {
     const view = { scale: 1, tx: 0, ty: 0 };
 
@@ -85,6 +95,14 @@ describe("viewport geometry", () => {
 });
 
 describe("viewer controller", () => {
+  // Break: failing to apply focus leaves the visible canvas and overlay at the old transform.
+  test("applies rectangle focus to the visible canvas without entering box edit mode", () => {
+    const { controller, out, zoomLabel, state } = viewerHarness();
+    controller.focusRect({ x: 40, y: 30, w: 20, h: 10 }, { padding: 0.25, maxScale: 4 });
+    expect(out.style.transform).toBe("translate(50px,110px) scale(4)");
+    expect(zoomLabel.textContent).toBe("400%");
+    expect(state.boxEditor.editMode).toBe(false);
+  });
   test("returns defensive view copies and applies the fitted transform", () => {
     const { controller, out, zoomLabel, onTransform } = viewerHarness();
 

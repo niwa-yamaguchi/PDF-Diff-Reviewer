@@ -1,5 +1,7 @@
   section.view{position:relative;overflow:auto;background:var(--ink);
     display:flex;flex-direction:column;min-width:0}
+  .viewbar .modectl{flex-wrap:wrap;min-width:0}
+  .viewbar .modectl button{white-space:nowrap}
   .canvas-wrap{
     flex:1;overflow:hidden;position:relative;
     background-image:

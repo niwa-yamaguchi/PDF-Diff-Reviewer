@@ -10,6 +10,7 @@ export function bindControls({
   textController,
   textRenderer,
   exportController,
+  reviewController,
 }) {
   activeBindings.get(document)?.();
 
@@ -84,6 +85,27 @@ export function bindControls({
   listen(dom.boxDel, "click", () => boxEditorController.deleteSelected());
   listen(dom.boxReset, "click", () => boxEditorController.resetToAuto());
 
+  listen(dom.reviewToggle, "click", () => reviewController.togglePanel());
+  listen(dom.reviewClose, "click", () => reviewController.togglePanel(false));
+  listen(dom.reviewBackdrop, "click", () => reviewController.togglePanel(false));
+  listen(dom.reviewPrev, "click", () => reviewController.selectPrevious());
+  listen(dom.reviewNext, "click", () => reviewController.selectNext());
+  listen(dom.reviewList, "click", event => {
+    const retry = event.target.closest("[data-review-retry]");
+    if (retry) { void reviewController.retryPage(Number(retry.dataset.reviewRetry)); return; }
+    if (event.target.closest("textarea,select,option")) return;
+    const article = event.target.closest("[data-change-id]");
+    if (article) void reviewController.select(article.dataset.changeId);
+  });
+  listen(dom.reviewList, "change", event => {
+    const field = event.target.closest("[data-review-status]");
+    if (field) reviewController.setStatus(field.dataset.reviewStatus, field.value);
+  });
+  listen(dom.reviewList, "input", event => {
+    const field = event.target.closest("[data-review-comment]");
+    if (field) reviewController.setComment(field.dataset.reviewComment, field.value);
+  });
+
   listen(dom.dpi, "input", event => appController.previewRange("dpi", event));
   listen(dom.dpi, "change", event => appController.commitDpi(event));
   listen(dom.th, "input", event => appController.previewRange("th", event));
@@ -119,8 +141,8 @@ export function bindControls({
   listen(dom.runText, "click", () => textController.run());
   listen(dom.textPrev, "click", () => textController.previousPage());
   listen(dom.textNext, "click", () => textController.nextPage());
-  listen(dom.topVisual, "click", () => textController.setTopMode("visual"));
-  listen(dom.topText, "click", () => textController.setTopMode("text"));
+  listen(dom.topVisual, "click", () => appController.setTopMode("visual"));
+  listen(dom.topText, "click", () => appController.setTopMode("text"));
 
   listen(dom.dlPng, "click", () => exportController.saveVisualPng());
   listen(dom.dlPdf, "click", () => exportController.saveVisualPdf());

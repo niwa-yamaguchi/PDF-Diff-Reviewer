@@ -2,9 +2,128 @@ import { expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
 import { captureReviewMigration, invalidateDocuments } from "../../src/app/invalidation.js";
 import { createChangeReviewController } from "../../src/features/change-review/review-controller.js";
+import { createViewerController } from "../../src/features/viewer/viewer-controller.js";
+import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
 
 const box = (x = 10) => ({ x, y: 10, w: 20, h: 20, kind: "added" });
 const page = (pageIndex, boxes = [box()]) => ({ pageIndex, boxes, width: 100, height: 100 });
+
+function navigationHarness(show) {
+  const state = createAppState();
+  state.documents.pages = 2;
+  state.visual.rendered = true;
+  const out = { style: { display: "block" } };
+  const viewer = createViewerController({ state, dom: {
+    out, wrap: { clientWidth: 200, clientHeight: 200 }, zoomLabel: {},
+  } });
+  const visits = [];
+  const controller = createChangeReviewController({ state,
+    showPage: async index => {
+      visits.push(index);
+      const result = await show?.(index);
+      if (result?.committed === false) return result;
+      state.documents.currentPage = index;
+      return { committed: true };
+    },
+    focusRect: viewer.focusRect,
+  });
+  controller.commitPage(page(0, [box(10), box(60)]));
+  controller.commitPage(page(1, [box(40)]));
+  return { state, controller, out, visits };
+}
+
+// Break: skipping page navigation/focus or overwriting the other entry field loses review work.
+test("selects across pages and persists status and comments", async () => {
+  const { state, controller, out, visits } = navigationHarness();
+  await controller.select("change-3");
+  expect(visits).toEqual([1]);
+  expect(state.documents.currentPage).toBe(1);
+  expect(state.review.selectedId).toBe("change-3");
+  expect(out.style.transform).toBe("translate(-100px,20px) scale(4)");
+  expect(state.boxEditor.editMode).toBe(false);
+  controller.setStatus("change-3", "confirmed");
+  controller.setComment("change-3", "抵抗値を確認");
+  expect(state.review.entriesById.get("change-3")).toEqual({ status: "confirmed", comment: "抵抗値を確認" });
+  controller.setStatus("change-3", "excluded");
+  controller.setStatus("change-3", "invalid");
+  expect(state.review.entriesById.get("change-3")).toEqual({ status: "excluded", comment: "抵抗値を確認" });
+  controller.togglePanel();
+  expect(state.review.panelOpen).toBe(true);
+  controller.togglePanel(false);
+  expect(state.review.panelOpen).toBe(false);
+});
+
+// Break: using Map insertion order or stopping at either end breaks the inspection sequence.
+test("cycles previous and next in page then rectangle display order", async () => {
+  const { state, controller, visits } = navigationHarness();
+  state.review.itemsByPage.set(0, [...state.review.itemsByPage.get(0)].reverse());
+  await controller.selectNext();
+  expect(state.review.selectedId).toBe("change-1");
+  await controller.selectPrevious();
+  expect(state.review.selectedId).toBe("change-3");
+  await controller.selectNext();
+  expect(state.review.selectedId).toBe("change-1");
+  await controller.selectNext();
+  expect(state.review.selectedId).toBe("change-2");
+  expect(visits).toEqual([1, 0]);
+});
+
+// Break: removing the selection ticket focuses an old rectangle after a newer selection.
+test("rejects stale focus after another selection or failed page commit", async () => {
+  let resolve;
+  const { state, controller, out } = navigationHarness(index => index === 1
+    ? new Promise(done => { resolve = done; }) : undefined);
+  const old = controller.select("change-3");
+  await controller.select("change-2");
+  const transform = out.style.transform;
+  resolve({ committed: true });
+  await old;
+  expect(state.review.selectedId).toBe("change-2");
+  expect(out.style.transform).toBe(transform);
+  const failed = navigationHarness(async () => ({ committed: false }));
+  await failed.controller.select("change-3");
+  expect(failed.out.style.transform).toBeUndefined();
+});
+
+// Break: a new selection on the still-visible page must supersede the earlier page render too.
+test("selecting the visible page during navigation cancels an obsolete visual commit", async () => {
+  const state = createAppState();
+  state.documents.pages = 2;
+  state.visual.rendered = true;
+  const out = { style: {}, getContext: () => ({ clearRect() {}, drawImage() {} }) };
+  let resolveOld;
+  const result = pageLabel => ({ canvas: { width: 100, height: 100 }, boxes: [],
+    stats: { removed: "", added: "", boxes: "" }, pageLabel, status: "" });
+  const visual = createVisualController({ state,
+    dom: { out, placeholder: { style: {} }, pageLabel: {}, statRm: {}, statAd: {}, statBox: {},
+      status: {}, dlPng: {}, dlPdf: {}, boxToggle: {} },
+    renderDiffPage: snapshot => snapshot.pageIndex === 1
+      ? new Promise(done => { resolveOld = done; }) : Promise.resolve(result("1 / 2")),
+    drawBoxes() {},
+  });
+  const controller = createChangeReviewController({ state, showPage: visual.showPage, focusRect() {} });
+  controller.commitPage(page(0));
+  controller.commitPage(page(1));
+  const old = controller.select("change-2");
+  await controller.select("change-1");
+  resolveOld(result("2 / 2"));
+  await old;
+  expect(state.documents.currentPage).toBe(0);
+  expect(state.review.selectedId).toBe("change-1");
+});
+
+// Break: a retry must render the failed page and clear its error, without losing reviewed pages.
+test("retries only the requested failed page", async () => {
+  const { state, controller, renderIndexPage } = harness(2);
+  controller.commitPage(page(0));
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "keep" });
+  state.review.indexErrors.set(1, "failed");
+  await controller.retryPage(1);
+  expect(renderIndexPage.mock.calls.map(([index]) => index)).toEqual([1]);
+  expect(state.review.indexErrors.size).toBe(0);
+  expect(state.review.itemsByPage.get(1)).toHaveLength(1);
+  expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "keep" });
+});
 function harness(pages = 3, render = async () => page(0)) {
   const state = createAppState();
   Object.assign(state.documents, { pages, oldSequence: [0, 1, 2], newSequence: [0, 1, 2] });

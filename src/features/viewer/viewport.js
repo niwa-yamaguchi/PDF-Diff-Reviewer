@@ -10,6 +10,19 @@ export function clampScale(scale) {
   return Math.min(Math.max(scale, MIN_SCALE), MAX_SCALE);
 }
 
+export function focusRectViewport(rect, container, { padding = 0.25, maxScale = 4 } = {}) {
+  const scale = clampScale(Math.min(
+    container.width / (rect.w * (1 + padding * 2)),
+    container.height / (rect.h * (1 + padding * 2)),
+    maxScale,
+  ));
+  return {
+    scale,
+    tx: container.width / 2 - (rect.x + rect.w / 2) * scale,
+    ty: container.height / 2 - (rect.y + rect.h / 2) * scale,
+  };
+}
+
 export function zoomAt(view, factor, cx, cy) {
   const scale = clampScale(view.scale * factor);
   const ratio = scale / view.scale;

@@ -1,4 +1,4 @@
-import { fitViewport, zoomAt } from "./viewport.js";
+import { fitViewport, focusRectViewport, zoomAt } from "./viewport.js";
 
 export function createViewerController({ state, dom, window, onTransform = () => {} }) {
   let view = { scale: 1, tx: 0, ty: 0 };
@@ -90,6 +90,8 @@ export function createViewerController({ state, dom, window, onTransform = () =>
   return {
     apply,
     fit,
+    focusRect: (rect, options) => apply(focusRectViewport(rect,
+      { width: dom.wrap.clientWidth, height: dom.wrap.clientHeight }, options)),
     zoomCenter,
     zoomIn: () => zoomCenter(1.25),
     zoomOut: () => zoomCenter(1 / 1.25),

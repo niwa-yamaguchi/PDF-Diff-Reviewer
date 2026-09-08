@@ -1,5 +1,9 @@
 import { expect, test, vi } from "vitest";
 import { bindControls } from "../../src/app/bind-controls.js";
+import { createAppState } from "../../src/app/state.js";
+import { createChangeReviewController } from "../../src/features/change-review/review-controller.js";
+import { createChangeReviewView } from "../../src/features/change-review/review-view.js";
+import { reviewDom } from "../helpers/review-dom.js";
 
 function target() {
   const listeners = new Map();
@@ -31,6 +35,7 @@ test("binds controls once and delegates events to their owning public handlers",
     "dlPdf", "dlTextPng", "dlTextPdf", "runText", "textPrev", "textNext",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
+    "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
@@ -96,6 +101,7 @@ test("replaces every active event binding when the same document is bound again"
     "dlPdf", "dlTextPng", "dlTextPdf", "runText", "textPrev", "textNext",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
+    "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
@@ -143,4 +149,62 @@ test("replaces every active event binding when the same document is bound again"
   expect(latest.viewerController.handleResize).toHaveBeenCalledTimes(1);
   expect(latest.boxEditorController.pointerMove).toHaveBeenCalledTimes(1);
   expect(latest.appController.nudge).toHaveBeenCalledTimes(1);
+});
+
+// Break: a missing delegated handler, duplicate listener, or input click selection loses/changes review work.
+test("delegates review controls once to real review state while leaving text entry unselected", async () => {
+  const { document: documentBoundary, dom: reviewElements } = reviewDom();
+  const dom = new Proxy(reviewElements, { get: (value, key) => {
+    if (!(key in value)) value[key] = key.endsWith("Buttons") ? [] : target();
+    return value[key];
+  } });
+  const state = createAppState();
+  state.visual.rendered = true;
+  const view = createChangeReviewView({ state, dom, document: documentBoundary });
+  const focus = [];
+  const reviewController = createChangeReviewController({ state, onChanged: () => view.render(),
+    focusRect: rect => focus.push(rect.x),
+    showPage: async pageIndex => { state.documents.currentPage = pageIndex; return { committed: true }; },
+    renderIndexPage: async () => ({ boxes: [], width: 100, height: 100 }),
+  });
+  reviewController.commitPage({ pageIndex: 0, width: 100, height: 100,
+    boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "added" }, { x: 50, y: 10, w: 20, h: 20, kind: "removed" }] });
+  const document = target();
+  const owners = { document, window: target(), dom, reviewController,
+    appController: { setTopMode(mode) { state.ui.topMode = mode; view.render(); } } };
+  bindControls(owners);
+  bindControls(owners);
+  dom.reviewToggle.emit("click");
+  expect(state.review.panelOpen).toBe(true);
+  dom.reviewList.emit("click", { target: dom.reviewList.querySelector('[data-change-id="change-1"]').children[0].children[0] });
+  await vi.waitFor(() => expect(state.review.selectedId).toBe("change-1"));
+  expect(focus).toEqual([10]);
+  const comment = dom.reviewList.querySelector('[data-review-comment="change-2"]');
+  dom.reviewList.emit("click", { target: comment });
+  expect(state.review.selectedId).toBe("change-1");
+  comment.value = "入力を確認";
+  dom.reviewList.emit("input", { target: comment });
+  const status = dom.reviewList.querySelector('[data-review-status="change-2"]');
+  status.value = "confirmed";
+  dom.reviewList.emit("change", { target: status });
+  expect(state.review.entriesById.get("change-2")).toEqual({ status: "confirmed", comment: "入力を確認" });
+  expect(dom.reviewProgress.textContent).toBe("完了 1 / 2　未確認 1件");
+  dom.reviewNext.emit("click");
+  await vi.waitFor(() => expect(state.review.selectedId).toBe("change-2"));
+  dom.reviewPrev.emit("click");
+  await vi.waitFor(() => expect(state.review.selectedId).toBe("change-1"));
+  dom.reviewClose.emit("click");
+  expect(state.review.panelOpen).toBe(false);
+  dom.reviewToggle.emit("click");
+  dom.reviewBackdrop.emit("click");
+  expect(state.review.panelOpen).toBe(false);
+  state.review.indexErrors.set(1, "error");
+  view.render();
+  dom.reviewList.emit("click", { target: dom.reviewList.querySelector('[data-review-retry="1"]') });
+  await vi.waitFor(() => expect(state.review.indexErrors.size).toBe(0));
+  dom.topText.emit("click");
+  expect(state.ui.topMode).toBe("text");
+  dom.topVisual.emit("click");
+  expect(state.ui.topMode).toBe("visual");
+  for (const type of ["click", "change", "input"]) expect(dom.reviewList.listeners.get(type)).toHaveLength(1);
 });

@@ -31,6 +31,7 @@ import { createViewerController } from "../features/viewer/viewer-controller.js"
 import { createVisualController, createVisualSnapshot } from "../features/visual-diff/visual-controller.js";
 import { effectiveQuadrant, renderDiffPage, renderChangeIndexPage } from "../features/visual-diff/visual-renderer.js";
 import { createChangeReviewController } from "../features/change-review/review-controller.js";
+import { createChangeReviewView } from "../features/change-review/review-view.js";
 import { renderTogglePage } from "../features/visual-diff/toggle-renderer.js";
 import { createBoxEditorController } from "../features/box-editor/box-editor-controller.js";
 import { createBoxEditorView } from "../features/box-editor/box-editor-view.js";
@@ -63,6 +64,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   createViewerController,
   createVisualController,
   createChangeReviewController,
+  createChangeReviewView,
   renderChangeIndexPage,
   effectiveQuadrant,
   renderDiffPage,
@@ -100,6 +102,7 @@ export function createApp({ document, window, dependencies = {} }) {
   let exportController;
   let documentController;
   let reviewController;
+  let reviewView;
   let spaceHeld = false;
 
   const textColors = (() => {
@@ -301,8 +304,15 @@ export function createApp({ document, window, dependencies = {} }) {
     ...laneCompute(indexLane),
   });
 
+  reviewView = deps.createChangeReviewView({ state, dom, document });
   reviewController = deps.createChangeReviewController({
     state,
+    showPage: pageIndex => visualController.showPage(pageIndex),
+    focusRect: (rect, options) => viewerController.focusRect(rect, options),
+    onChanged() {
+      reviewView.render({ preserveCommentFocus: true });
+      boxEditorView?.redraw?.();
+    },
     renderIndexPage: pageIndex => deps.renderChangeIndexPage(
       createVisualSnapshot(state, pageIndex, "diff"), indexRenderDependencies(),
     ),
@@ -440,7 +450,10 @@ export function createApp({ document, window, dependencies = {} }) {
       reviewController.cancelIndex();
       deps.invalidateDocuments(state, options);
     },
-    onReady: () => boxEditorController?.syncInvalidated?.(),
+    onReady() {
+      boxEditorController?.syncInvalidated?.();
+      reviewView.render({ preserveCommentFocus: true });
+    },
     onLoadAccepted: ({ documentGeneration }) => {
       reviewController.cancelIndex();
       textController?.invalidateDocuments?.(documentGeneration);
@@ -450,7 +463,10 @@ export function createApp({ document, window, dependencies = {} }) {
   });
 
   const confirmDiscardBoxEdits = () => boxEditorController.confirmDiscard();
-  const syncInvalidatedBoxEditor = () => boxEditorController.syncInvalidated();
+  const syncInvalidatedBoxEditor = () => {
+    boxEditorController.syncInvalidated();
+    reviewView.render({ preserveCommentFocus: true });
+  };
   function applyComparisonSettingChange(update, invalidate) {
     const applied = deps.applyInvalidatingChange(state, {
       confirmDiscard: confirmDiscardBoxEdits,
@@ -667,12 +683,18 @@ export function createApp({ document, window, dependencies = {} }) {
       dom.modeToggle.disabled = false;
       const result = await visualController.showPage(0);
       if (!result?.committed) return;
+      reviewController.togglePanel(true);
       viewerController.fit();
       const currentPageDetected = state.visual.mode !== "toggle" || state.boxEditor.showBoxes
         || state.boxEditor.editsByPage.has(state.documents.currentPage);
       void reviewController.startIndex({
         skipPages: new Set(currentPageDetected ? [state.documents.currentPage] : []),
       });
+    },
+    async setTopMode(mode) {
+      const changing = textController.setTopMode(mode);
+      reviewView.render({ preserveCommentFocus: true });
+      return changing;
     },
     async alignAddNew() {
       if (!state.visual.rendered || !confirmDiscardBoxEdits()) return;
@@ -732,7 +754,10 @@ export function createApp({ document, window, dependencies = {} }) {
     textController,
     textRenderer,
     exportController,
+    reviewController,
   });
+
+  reviewView.render();
 
   return Object.freeze({
     state,

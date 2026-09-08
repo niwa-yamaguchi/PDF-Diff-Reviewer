@@ -1,8 +1,9 @@
 import { expect, test, vi } from "vitest";
 import { createApp } from "../../src/app/create-app.js";
-import { applyInvalidatingChange } from "../../src/app/invalidation.js";
+import { applyInvalidatingChange, invalidateDocuments, invalidateThreshold } from "../../src/app/invalidation.js";
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
+import { reviewDom } from "../helpers/review-dom.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
@@ -46,10 +47,14 @@ function element(id) {
 
 function fakeDocument() {
   const elements = new Map(ids.map(id => [id, element(id)]));
+  const review = reviewDom();
+  for (const [id, node] of Object.entries(review.dom)) elements.set(id, node);
   const canvasWrap = element("canvasWrap");
   const oldTextWrap = element("oldTextWrap");
   const newTextWrap = element("newTextWrap");
   const document = Object.assign(element("document"), {
+    body: review.document.body,
+    createElement: review.document.createElement,
     getElementById: id => elements.get(id) || null,
     querySelector(selector) {
       return new Map([
@@ -63,6 +68,72 @@ function fakeDocument() {
   document.eventTargets = [document, canvasWrap, oldTextWrap, newTextWrap, ...elements.values()];
   return document;
 }
+
+// Break: failing to open/render the panel on successful comparison leaves indexed work inaccessible.
+test("visual success opens the panel and mode switches preserve review input and open state", async () => {
+  let state;
+  const dependencies = fakeDependencies({ bindControls: vi.fn(),
+    createVisualController: ({ state: appState }) => {
+      state = appState;
+      return { showPage: async () => ({ committed: true }) };
+    },
+    createViewerController: () => ({ fit() {} }),
+    createTextController: () => ({ setTopMode(mode) { state.ui.topMode = mode; } }),
+    renderChangeIndexPage: async () => ({ boxes: [], width: 100, height: 100 }),
+  });
+  const document = fakeDocument();
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  const { appController } = dependencies.bindControls.mock.calls[0][0];
+  app.reviewController.commitPage({ pageIndex: 0, width: 100, height: 100,
+    boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "added" }] });
+  app.reviewController.setComment("change-1", "保管する入力");
+  await appController.runVisual();
+  expect(app.state.review.panelOpen).toBe(true);
+  expect(document.getElementById("reviewPanel").hidden).toBe(false);
+  expect(document.getElementById("reviewTotal").textContent).toBe("変更箇所 1件");
+  await appController.setTopMode("text");
+  expect(document.getElementById("reviewPanel").hidden).toBe(true);
+  expect(app.state.review.panelOpen).toBe(true);
+  expect(app.state.review.entriesById.get("change-1").comment).toBe("保管する入力");
+  await appController.setTopMode("visual");
+  expect(document.getElementById("reviewPanel").hidden).toBe(false);
+  expect(document.getElementById("reviewList").querySelector('[data-review-comment="change-1"]').value).toBe("保管する入力");
+  app.reviewController.togglePanel(false);
+  app.visualController.showPage = async () => ({ committed: false });
+  await appController.runVisual();
+  expect(app.state.review.panelOpen).toBe(false);
+});
+
+// Break: rendering before document invalidation leaves old drawing reviews in the new document UI.
+test("document replacement immediately refreshes the now-empty review panel", () => {
+  const dependencies = fakeDependencies({ bindControls: vi.fn(), invalidateDocuments });
+  const document = fakeDocument();
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  app.reviewController.commitPage({ pageIndex: 0, width: 100, height: 100,
+    boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "added" }] });
+  app.reviewController.togglePanel(true);
+  const documents = dependencies.createDocumentController.mock.calls[0][0];
+  documents.invalidateDocuments(app.state);
+  documents.onReady();
+  expect(document.getElementById("reviewTotal").textContent).toBe("変更箇所 0件");
+  expect(document.getElementById("reviewPanel").hidden).toBe(true);
+});
+
+// Break: stale review rows survive settings invalidation until a later render happens to commit.
+test("accepted comparison settings remove invalidated rows while awaiting fresh comparison", () => {
+  const dependencies = fakeDependencies({ bindControls: vi.fn(), applyInvalidatingChange, invalidateThreshold });
+  const document = fakeDocument();
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  app.reviewController.commitPage({ pageIndex: 0, width: 100, height: 100,
+    boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "added" }] });
+  const { appController } = dependencies.bindControls.mock.calls[0][0];
+  appController.commitThreshold();
+  expect(document.getElementById("reviewTotal").textContent).toBe("変更箇所 0件");
+  expect(document.getElementById("reviewList").querySelectorAll("article")).toHaveLength(0);
+});
 
 function fakeDependencies(overrides = {}) {
   const controller = name => Object.freeze({ name });

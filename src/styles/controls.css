@@ -124,3 +124,35 @@
   .viewbar .stat .rm{color:var(--removed)}
   .viewbar .stat .ad{color:var(--added)}
   .viewbar .stat .bx{color:var(--box)}
+  /* 変更箇所の検査台帳: 項目は罫線で区切り、確認操作を揃える。 */
+  .review-panel button{background:var(--panel-2);color:var(--fg);border:1px solid var(--line-bright);border-radius:2px;font:11px var(--sans);cursor:pointer}
+  .review-panel button:hover{border-color:var(--signal)}
+  .review-panel button:disabled{opacity:.4;cursor:not-allowed}
+  .review-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 14px 10px}
+  .review-head strong{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+  #reviewIndexStatus{display:block;font:10px var(--mono);color:var(--muted);margin-top:6px;line-height:1.6}
+  #reviewClose{min-width:32px;min-height:32px;font-size:18px}
+  #reviewProgress{padding:0 14px 12px;color:var(--signal);font:11px var(--mono);font-variant-numeric:tabular-nums}
+  .review-nav{display:flex;gap:8px;padding:0 14px 12px;border-bottom:1px solid var(--line)}
+  .review-nav button{flex:1;min-height:32px;white-space:nowrap}
+  #reviewNotice:not(:empty){padding:10px 14px;border-bottom:1px solid var(--line);font-size:11px;line-height:1.6;color:var(--muted)}
+  #reviewList{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+  .review-page{border-bottom:1px solid var(--line)}
+  .review-page-title{cursor:pointer;padding:11px 14px;font:11px var(--mono);color:var(--muted);background:var(--panel-2)}
+  .review-item{padding:10px 14px 12px;border-top:1px solid var(--line);border-left:3px solid transparent}
+  .review-item.selected{border-left-color:var(--signal);background:var(--ink)}
+  .review-panel .review-select{display:flex;width:100%;align-items:center;gap:9px;background:transparent;border:0;border-radius:0;text-align:left;padding:4px 0 8px;min-height:32px}
+  .review-number{font:11px var(--mono);color:var(--muted);min-width:30px}
+  .review-kind{font-size:12px;font-weight:600}
+  .review-kind.added{color:var(--added)}
+  .review-kind.removed{color:var(--removed)}
+  .review-kind.changed{color:var(--signal)}
+  .review-state{margin-left:auto;font-size:10px;color:var(--muted)}
+  .review-status,.review-comment{width:100%;color:var(--fg);background:var(--ink);border:1px solid var(--line-bright);border-radius:2px;font:11px var(--sans)}
+  .review-status{min-height:30px;padding:4px 8px}
+  .review-comment{display:block;min-height:48px;resize:vertical;margin-top:7px;padding:7px 8px;line-height:1.5}
+  .review-comment::placeholder{color:var(--muted)}
+  .review-empty,.review-error{padding:14px;font-size:12px;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
+  .review-error p{margin:0 0 8px;color:var(--removed)}
+  .review-panel :focus-visible,#reviewToggle:focus-visible,#reviewBackdrop:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  #reviewToggle[aria-expanded="true"]{color:var(--signal);border-color:var(--signal-dim)}

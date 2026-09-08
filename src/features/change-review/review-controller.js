@@ -27,11 +27,95 @@ function reconcileRedrawnItems({ previousItems, nextItems, entries, allocateId }
 
 export function createChangeReviewController({
   state, renderIndexPage, cancelIndex: cancelLane, onChanged = () => {}, reportError = () => {},
+  showPage, focusRect,
 }) {
   const dimensionsByPage = new Map();
   let migration = null;
   let migrationCounts = new Map();
   let dimensionReview = state.review;
+  let selectionTicket = 0;
+  let navigationTicket = null;
+
+  const orderedItems = () => sortReviewItems([...state.review.itemsByPage.values()].flat());
+
+  async function select(id) {
+    const ticket = ++selectionTicket;
+    const review = state.review;
+    const generation = review.indexGeneration;
+    const item = orderedItems().find(item => item.id === id);
+    if (!item || state.ui.topMode !== "visual") return false;
+    review.selectedId = id;
+    onChanged();
+    if (state.documents.currentPage !== item.pageIndex || !state.visual.rendered || navigationTicket !== null) {
+      navigationTicket = ticket;
+      try {
+        const result = await showPage(item.pageIndex);
+        if (!result?.committed) return false;
+      } finally {
+        if (navigationTicket === ticket) navigationTicket = null;
+      }
+    }
+    if (ticket !== selectionTicket || review !== state.review || generation !== review.indexGeneration
+      || state.ui.topMode !== "visual" || review.selectedId !== id) return false;
+    const current = orderedItems().find(item => item.id === id);
+    if (!current) return false;
+    focusRect(current.rect, { padding: 0.25, maxScale: 4 });
+    onChanged();
+    return true;
+  }
+
+  function selectRelative(direction) {
+    const items = orderedItems();
+    if (!items.length) return Promise.resolve(false);
+    const index = items.findIndex(item => item.id === state.review.selectedId);
+    const next = index < 0 ? (direction > 0 ? 0 : items.length - 1)
+      : (index + direction + items.length) % items.length;
+    return select(items[next].id);
+  }
+
+  function updateEntry(id, patch) {
+    if (!orderedItems().some(item => item.id === id)) return;
+    const entry = state.review.entriesById.get(id) || { status: "pending", comment: "" };
+    state.review.entriesById.set(id, { ...entry, ...patch });
+    onChanged();
+  }
+
+  function setStatus(id, status) {
+    if (["pending", "confirmed", "excluded"].includes(status)) updateEntry(id, { status });
+  }
+
+  function setComment(id, comment) { updateEntry(id, { comment }); }
+
+  function togglePanel(open = !state.review.panelOpen) {
+    state.review.panelOpen = open;
+    onChanged();
+  }
+
+  async function retryPage(pageIndex) {
+    const review = state.review;
+    if (review.indexRunning || !review.indexErrors.has(pageIndex)) return;
+    const generation = review.indexGeneration;
+    review.indexRunning = true;
+    onChanged();
+    try {
+      const result = await renderIndexPage(pageIndex);
+      if (review !== state.review || generation !== review.indexGeneration) return;
+      if (state.boxEditor.editsByPage.has(pageIndex)) {
+        syncEditedPage({ pageIndex, width: result.width, height: result.height });
+      } else commitPage({ ...result, pageIndex });
+    } catch (error) {
+      if (review !== state.review || generation !== review.indexGeneration) return;
+      if (error?.name !== "RenderCancelled") {
+        review.indexErrors.set(pageIndex, error.message || String(error));
+        reportError(error, pageIndex);
+      }
+    } finally {
+      if (review === state.review && generation === review.indexGeneration) {
+        review.indexRunning = false;
+        onChanged();
+      }
+    }
+  }
 
   function allocateId() {
     let id;
@@ -179,5 +263,7 @@ export function createChangeReviewController({
     }
   }
 
-  return { commitPage, startIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions };
+  return { commitPage, startIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions,
+    select, selectPrevious: () => selectRelative(-1), selectNext: () => selectRelative(1),
+    setStatus, setComment, togglePanel, retryPage };
 }

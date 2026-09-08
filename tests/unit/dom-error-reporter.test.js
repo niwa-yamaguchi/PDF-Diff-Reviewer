@@ -14,6 +14,8 @@ const ids = [
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
   "zoomLabel", "zoomOut",
+  "reviewPanel", "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext",
+  "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
 ];
 
 function fakeDocument({ missing, missingSelector } = {}) {
@@ -37,6 +39,11 @@ function fakeDocument({ missing, missingSelector } = {}) {
 }
 
 describe("collectDom", () => {
+  // Break: omitting a required review host defers a startup failure until the first review update.
+  test("rejects an absent review list at startup", () => {
+    expect(() => collectDom(fakeDocument({ missing: "reviewList" })))
+      .toThrow("Missing required element: reviewList");
+  });
   test("collects every required control and freezes references and collections", () => {
     const dom = collectDom(fakeDocument());
     expect(Object.isFrozen(dom)).toBe(true);
