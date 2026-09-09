@@ -1,9 +1,11 @@
 import { expect, test, vi } from "vitest";
 import { createAppState } from "../../src/app/state.js";
-import { captureReviewMigration, invalidateDocuments } from "../../src/app/invalidation.js";
+import { captureReviewMigration, invalidateDocuments, invalidateThreshold } from "../../src/app/invalidation.js";
 import { createChangeReviewController } from "../../src/features/change-review/review-controller.js";
 import { createViewerController } from "../../src/features/viewer/viewer-controller.js";
 import { createVisualController, createVisualSnapshot } from "../../src/features/visual-diff/visual-controller.js";
+import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
+import { createBoxHistory } from "../../src/features/box-editor/box-history.js";
 
 const box = (x = 10) => ({ x, y: 10, w: 20, h: 20, kind: "added" });
 const page = (pageIndex, boxes = [box()]) => ({ pageIndex, boxes, width: 100, height: 100 });
@@ -357,6 +359,115 @@ test("inherits matching entries and finalizes migration only after every page is
   expect(state.review.pendingMigration).toBeNull();
   expect(state.review.migrationSummary).toEqual({ inherited: 1, reset: 1 });
   expect(state.review.entriesById.get("change-1").comment).toBe("checked");
+});
+
+function editorForReview(state, controller) {
+  state.boxEditor.editMode = true;
+  return createBoxEditorController({ state, dom: {}, confirmDiscard: () => true,
+    view: { refresh() {}, getFrameSize: () => ({ width: 100, height: 100 }) },
+    makeManualBox: ({ box }) => ({ ...box, id: controller.allocateId(), kind: "changed", source: "manual" }),
+    onBoxesChanged: ({ pageIndex, boxes }) => controller.syncEditedPage({ pageIndex, boxes }),
+  });
+}
+
+// Break: migration retains a deleted review after Undo was cleared, or assigns it to a newly detected box.
+test("prunes deleted reviews only after comparison migration finishes and preserves live reviews", () => {
+  const { state, controller } = harness(2);
+  state.boxEditor.currentBoxes = controller.commitPage(page(0, [box(), box(60)])).currentBoxes;
+  controller.commitPage(page(1));
+  controller.setStatus("change-1", "confirmed");
+  controller.setComment("change-1", "deleted review");
+  controller.setStatus("change-2", "excluded");
+  controller.setComment("change-2", "current review");
+  controller.setStatus("change-3", "confirmed");
+  controller.setComment("change-3", "unprocessed page");
+  const editor = editorForReview(state, controller);
+  state.boxEditor.selectedIndex = 0;
+  editor.deleteSelected();
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(state.review.entriesById.get("change-1").comment).toBe("deleted review");
+
+  invalidateThreshold(state);
+  expect(state.boxEditor.undoByPage.size).toBe(0);
+  const redetected = controller.commitPage(page(0, [box(), box(60)]));
+  expect(redetected.currentBoxes.map(box => box.id)).toEqual(["change-4", "change-2"]);
+  expect(state.review.pendingMigration).not.toBeNull();
+  expect(state.review.entriesById.get("change-3").comment).toBe("unprocessed page");
+  controller.commitPage(page(1));
+
+  expect(state.review.pendingMigration).toBeNull();
+  expect([...state.review.entriesById.keys()].sort()).toEqual(["change-2", "change-3", "change-4"]);
+  expect(state.review.entriesById.get("change-4")).toEqual({ status: "pending", comment: "" });
+  expect(state.review.entriesById.get("change-2")).toEqual({ status: "excluded", comment: "current review" });
+  expect(state.review.entriesById.get("change-3")).toEqual({ status: "confirmed", comment: "unprocessed page" });
+});
+
+// Break: pruning all non-current IDs destroys a review that Undo can still restore during migration.
+test("migration cleanup keeps IDs reachable from Undo without consuming its history", () => {
+  const { state, controller } = harness(2);
+  controller.commitPage(page(0));
+  controller.commitPage(page(1));
+  controller.setStatus("change-1", "confirmed");
+  controller.setComment("change-1", "restore after migration");
+  invalidateThreshold(state);
+  state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
+  const editor = editorForReview(state, controller);
+  state.boxEditor.selectedIndex = 0;
+  editor.deleteSelected();
+  expect(state.review.itemsByPage.get(0)).toEqual([]);
+  controller.commitPage(page(1));
+
+  expect(state.review.pendingMigration).toBeNull();
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "restore after migration" });
+  expect(editor.undo()).toBe(true);
+  expect(state.review.itemsByPage.get(0)[0].id).toBe("change-1");
+  expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "restore after migration" });
+});
+
+// Break: an automatic box remains restorable even after its Undo snapshot expires during a long migration.
+test("migration cleanup preserves reviews reachable through reset to automatic boxes", () => {
+  const { state, controller } = harness(2);
+  controller.commitPage(page(0));
+  controller.commitPage(page(1));
+  controller.setStatus("change-1", "confirmed");
+  controller.setComment("change-1", "automatic review");
+  invalidateThreshold(state);
+  state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
+  const editor = editorForReview(state, controller);
+  state.boxEditor.undoByPage.set(0, createBoxHistory(1));
+  state.boxEditor.selectedIndex = 0;
+  editor.deleteSelected();
+  editor.pointerDown({ x: 60, y: 60, pointerId: 1, button: 0 });
+  editor.pointerMove({ x: 80, y: 80, pointerId: 1 });
+  editor.pointerUp({ pointerId: 1 });
+  controller.commitPage(page(1));
+  expect(state.review.pendingMigration).toBeNull();
+
+  expect(editor.resetToAuto()).toBe(true);
+  expect(state.review.itemsByPage.get(0)[0].id).toBe("change-1");
+  expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "automatic review" });
+});
+
+// Break: repeated delete/redetect cycles grow entriesById indefinitely even though no Undo or migration remains.
+test("repeated deletion and redetection retains only current entries without reusing deleted IDs", () => {
+  const { state, controller } = harness(1);
+  const editor = editorForReview(state, controller);
+  state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
+  const deleted = new Set();
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const id = state.boxEditor.currentBoxes[0].id;
+    deleted.add(id);
+    controller.setStatus(id, "confirmed");
+    controller.setComment(id, "do not transfer");
+    state.boxEditor.selectedIndex = 0;
+    editor.deleteSelected();
+    invalidateThreshold(state);
+    state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
+    const nextId = state.boxEditor.currentBoxes[0].id;
+    expect(deleted.has(nextId)).toBe(false);
+    expect(state.review.entriesById).toEqual(new Map([[nextId, { status: "pending", comment: "" }]]));
+  }
 });
 
 test("indexes sequentially and ignores an obsolete generation", async () => {

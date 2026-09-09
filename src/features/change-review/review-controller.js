@@ -28,7 +28,7 @@ function reconcileRedrawnItems({ previousItems, nextItems, entries, allocateId }
 
 export function createChangeReviewController({
   state, renderIndexPage, cancelIndex: cancelLane, onChanged = () => {}, reportError = () => {},
-  showPage, focusRect, renderThumbnailPage, createCanvas, createSnapshot,
+  showPage, focusRect, selectBox, cancelNavigation, renderThumbnailPage, createCanvas, createSnapshot,
 }) {
   const dimensionsByPage = new Map();
   let migration = null;
@@ -103,6 +103,7 @@ export function createChangeReviewController({
     const item = orderedItems().find(item => item.id === id);
     if (!item || state.ui.topMode !== "visual") return false;
     review.selectedId = id;
+    selectBox?.(null);
     onChanged();
     if (state.documents.currentPage !== item.pageIndex || !state.visual.rendered || navigationTicket !== null) {
       navigationTicket = ticket;
@@ -116,10 +117,23 @@ export function createChangeReviewController({
     if (ticket !== selectionTicket || review !== state.review || generation !== review.indexGeneration
       || state.ui.topMode !== "visual" || review.selectedId !== id) return false;
     const current = orderedItems().find(item => item.id === id);
-    if (!current) return false;
+    if (!current || current.pageIndex !== state.documents.currentPage) return false;
+    selectBox?.(id);
     focusRect(current.rect, { padding: 0.25, maxScale: 4 });
     onChanged();
     return true;
+  }
+
+  function selectFromBox({ pageIndex, id }) {
+    if (state.ui.topMode !== "visual" || pageIndex !== state.documents.currentPage) return;
+    if (id != null && !state.review.itemsByPage.get(pageIndex)?.some(item => item.id === id)) return;
+    selectionTicket += 1;
+    if (navigationTicket !== null) {
+      cancelNavigation?.();
+      navigationTicket = null;
+    }
+    state.review.selectedId = id;
+    onChanged();
   }
 
   function selectRelative(direction) {
@@ -271,6 +285,18 @@ export function createChangeReviewController({
             inherited: total.inherited + count.inherited, reset: total.reset + count.reset,
           }), { inherited: 0, reset: 0 }) : null;
         review.pendingMigration = null;
+        migration = null;
+        migrationCounts.clear();
+        const retainedIds = new Set([...review.itemsByPage.values()].flat().map(item => item.id));
+        for (const history of state.boxEditor.undoByPage.values()) {
+          for (const id of history.referencedIds()) retainedIds.add(id);
+        }
+        for (const boxes of state.boxEditor.autoByPage.values()) {
+          for (const box of boxes) retainedIds.add(box.id);
+        }
+        for (const id of review.entriesById.keys()) {
+          if (!retainedIds.has(id)) review.entriesById.delete(id);
+        }
       }
     }
     onChanged();
@@ -346,7 +372,14 @@ export function createChangeReviewController({
     }
   }
 
-  return { commitPage, startIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions,
-    select, selectPrevious: () => selectRelative(-1), selectNext: () => selectRelative(1),
+  function resumeIndex() {
+    const review = state.review;
+    if (!review.indexTotal || review.indexRunning
+      || (review.indexedPages >= review.indexTotal && !review.indexErrors.size)) return;
+    return startIndex({ skipPages: new Set(review.itemsByPage.keys()) });
+  }
+
+  return { commitPage, startIndex, resumeIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions,
+    select, selectFromBox, selectPrevious: () => selectRelative(-1), selectNext: () => selectRelative(1),
     setStatus, setComment, togglePanel, retryPage, requestPageThumbnails };
 }

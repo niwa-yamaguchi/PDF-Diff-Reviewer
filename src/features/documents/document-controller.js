@@ -69,6 +69,7 @@ export function createDocumentController({
   errorReporter,
   onReady,
   onLoadAccepted = () => {},
+  onLoadRestored = () => {},
   confirmDiscard = () => true,
   invalidateDocuments,
 }) {
@@ -103,12 +104,14 @@ export function createDocumentController({
     if (hasPending()) return;
     if (hasFailure()) {
       restoreReadyState(state, dom, readySnapshot);
+      onLoadRestored();
       resolveStaged(false);
       if (!hasStaged()) clearBatch();
       return;
     }
     if (!hasStaged()) {
       restoreReadyState(state, dom, readySnapshot);
+      onLoadRestored();
       clearBatch();
       return;
     }

@@ -177,6 +177,7 @@ export function createApp({ document, window, dependencies = {} }) {
     onBoxesChanged: ({ pageIndex, boxes }) => reviewController.syncEditedPage({
       pageIndex, boxes,
     }),
+    onSelectionChanged: selection => reviewController.selectFromBox(selection),
     confirmDiscard: () => window.confirm(
       "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
     ),
@@ -313,6 +314,8 @@ export function createApp({ document, window, dependencies = {} }) {
     state,
     showPage: pageIndex => visualController.showPage(pageIndex),
     focusRect: (rect, options) => viewerController.focusRect(rect, options),
+    selectBox: id => boxEditorController.selectById(id),
+    cancelNavigation: () => visualController.cancelPendingPage(),
     onChanged() {
       reviewView.render({ preserveCommentFocus: true });
       boxEditorView?.redraw?.();
@@ -465,6 +468,10 @@ export function createApp({ document, window, dependencies = {} }) {
       reviewController.cancelIndex();
       textController?.invalidateDocuments?.(documentGeneration);
       exportController?.invalidateDocuments?.(documentGeneration);
+    },
+    onLoadRestored() {
+      if (state.visual.rendered) void reviewController.resumeIndex();
+      reviewView.render({ preserveCommentFocus: true });
     },
     confirmDiscard: () => boxEditorController?.confirmDiscard?.() ?? true,
   });

@@ -72,6 +72,16 @@ export function createVisualController({
 }) {
   let activeInteractiveTicket = null;
   let pendingFlip = null;
+  let committedStatus = dom.status.textContent || "";
+
+  function cancelPendingPage() {
+    if (activeInteractiveTicket === null) return;
+    state.visual.renderGeneration += 1;
+    activeInteractiveTicket = null;
+    pendingFlip = null;
+    dom.cancelRender?.();
+    dom.status.textContent = committedStatus;
+  }
 
   function isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide) {
     return ticket.id === state.visual.renderGeneration
@@ -156,6 +166,7 @@ export function createVisualController({
     dom.statAd.textContent = result.stats.added;
     if (commitBoxes) dom.statBox.textContent = result.stats.boxes;
     dom.status.textContent = result.status;
+    committedStatus = result.status;
     dom.dlPng.disabled = false;
     dom.dlPdf.disabled = false;
     dom.boxToggle.disabled = false;
@@ -234,6 +245,7 @@ export function createVisualController({
     drawBoxes();
     updateToggleIndicator();
     dom.status.textContent = `新旧切替（${state.visual.toggleSide === "old" ? "OLD" : "NEW"}表示中）`;
+    committedStatus = dom.status.textContent;
     return true;
   }
 
@@ -280,5 +292,5 @@ export function createVisualController({
     return showPage(state.documents.currentPage);
   }
 
-  return { showPage, flipToggleSide, refreshAfterAlign };
+  return { showPage, flipToggleSide, refreshAfterAlign, cancelPendingPage };
 }

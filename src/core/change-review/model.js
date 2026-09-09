@@ -124,14 +124,23 @@ export function canInherit(best, second) {
 function rankedCandidates(previousItems, nextItems) {
   const byPrevious = previousItems.map(() => []);
   const byNext = nextItems.map(() => []);
+  const overlapsByPrevious = previousItems.map(() => 0);
+  const overlapsByNext = nextItems.map(() => 0);
 
   previousItems.forEach((previousItem, previousIndex) => {
     nextItems.forEach((nextItem, nextIndex) => {
-      if (previousItem.pageKey !== nextItem.pageKey || previousItem.kind !== nextItem.kind) return;
+      if (previousItem.pageKey !== nextItem.pageKey) return;
+      const score = matchScore(previousItem, nextItem);
+      // Splits and merges can change kind; only the inheritance ranking requires the same kind.
+      if (score.overlap > 0) {
+        overlapsByPrevious[previousIndex] += 1;
+        overlapsByNext[nextIndex] += 1;
+      }
+      if (previousItem.kind !== nextItem.kind) return;
       const candidate = {
         previousIndex,
         nextIndex,
-        score: matchScore(previousItem, nextItem),
+        score,
       };
       byPrevious[previousIndex].push(candidate);
       byNext[nextIndex].push(candidate);
@@ -141,11 +150,7 @@ function rankedCandidates(previousItems, nextItems) {
   const byDescendingScore = (left, right) => right.score.value - left.score.value;
   byPrevious.forEach(candidates => candidates.sort(byDescendingScore));
   byNext.forEach(candidates => candidates.sort(byDescendingScore));
-  return { byPrevious, byNext };
-}
-
-function hasMultipleOverlaps(candidates) {
-  return candidates.filter(candidate => candidate.score.overlap > 0).length > 1;
+  return { byPrevious, byNext, overlapsByPrevious, overlapsByNext };
 }
 
 export function reconcileReviewItems({ previousItems, nextItems, entries, allocateId }) {
@@ -162,8 +167,8 @@ export function reconcileReviewItems({ previousItems, nextItems, entries, alloca
       const isMutualBest = previousRanked[0]?.nextIndex === nextIndex;
       const clearForNext = canInherit(best.score, nextRanked[1]?.score);
       const clearForPrevious = canInherit(best.score, previousRanked[1]?.score);
-      const isSplit = hasMultipleOverlaps(previousRanked);
-      const isMerge = hasMultipleOverlaps(nextRanked);
+      const isSplit = candidates.overlapsByPrevious[best.previousIndex] > 1;
+      const isMerge = candidates.overlapsByNext[nextIndex] > 1;
       if (isMutualBest && clearForNext && clearForPrevious && !isSplit && !isMerge) {
         inherited += 1;
         return { ...nextItem, id: previousItems[best.previousIndex].id };

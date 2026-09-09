@@ -10,6 +10,9 @@ export function createBoxHistory(limit = 50) {
     get size() {
       return snapshots.length;
     },
+    referencedIds() {
+      return new Set(snapshots.flatMap(boxes => boxes.map(box => box.id)).filter(id => id != null));
+    },
     push(boxes) {
       snapshots.push(cloneBoxes(boxes));
       if (snapshots.length > capacity) snapshots.shift();

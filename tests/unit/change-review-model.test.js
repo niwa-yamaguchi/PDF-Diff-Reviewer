@@ -258,6 +258,61 @@ test("does not inherit the high-scoring side of an asymmetric 95/5 merge", () =>
   expect(result.summary).toEqual({ inherited: 0, reset: 1 });
 });
 
+// Break: restricting split geometry to the same kind transfers a confirmed review to only part of the change.
+test("resets every item in an asymmetric mixed-kind split", () => {
+  const result = reconcileReviewItems({
+    previousItems: [item("old-a", "changed", rect(0.10, 0.10, 0.20, 0.20))],
+    nextItems: [
+      item(null, "changed", rect(0.10, 0.10, 0.19, 0.20)),
+      item(null, "added", rect(0.29, 0.10, 0.01, 0.20)),
+    ],
+    entries: new Map([["old-a", { status: "confirmed", comment: "whole change" }]]),
+    allocateId: ids("new-major", "new-sliver"),
+  });
+
+  expect(result.items.map(reviewItem => reviewItem.id)).toEqual(["new-major", "new-sliver"]);
+  expect(result.items.map(reviewItem => result.entries.get(reviewItem.id))).toEqual([
+    { status: "pending", comment: "" }, { status: "pending", comment: "" },
+  ]);
+  expect(result.summary).toEqual({ inherited: 0, reset: 2 });
+});
+
+// Break: ignoring a merged sliver of another kind marks the combined change as already confirmed.
+test("resets an asymmetric mixed-kind merge", () => {
+  const result = reconcileReviewItems({
+    previousItems: [
+      item("old-major", "changed", rect(0.10, 0.10, 0.19, 0.20)),
+      item("old-sliver", "removed", rect(0.29, 0.10, 0.01, 0.20)),
+    ],
+    nextItems: [item(null, "changed", rect(0.10, 0.10, 0.20, 0.20))],
+    entries: new Map([
+      ["old-major", { status: "confirmed", comment: "major" }],
+      ["old-sliver", { status: "excluded", comment: "sliver" }],
+    ]),
+    allocateId: () => "new-merged",
+  });
+
+  expect(result.items[0].id).toBe("new-merged");
+  expect(result.entries.get("new-merged")).toEqual({ status: "pending", comment: "" });
+  expect(result.summary).toEqual({ inherited: 0, reset: 1 });
+});
+
+// Break: counting overlaps from unrelated pages discards an otherwise unambiguous review.
+test("ignores other page keys when checking mixed-kind geometry", () => {
+  const result = reconcileReviewItems({
+    previousItems: [item("old-a", "changed", rect(0.10, 0.10, 0.20, 0.20))],
+    nextItems: [
+      item(null, "changed", rect(0.10, 0.10, 0.20, 0.20)),
+      item(null, "added", rect(0.29, 0.10, 0.01, 0.20), { pageKey: "old:1|new:1" }),
+    ],
+    entries: new Map([["old-a", { status: "confirmed", comment: "same page" }]]),
+    allocateId: () => "new-other-page",
+  });
+
+  expect(result.items.map(reviewItem => reviewItem.id)).toEqual(["old-a", "new-other-page"]);
+  expect(result.entries.get("old-a")).toEqual({ status: "confirmed", comment: "same page" });
+});
+
 test("rejects a tied second candidate", () => {
   const sameRect = rect(0.10, 0.10, 0.20, 0.20);
   const result = reconcileReviewItems({

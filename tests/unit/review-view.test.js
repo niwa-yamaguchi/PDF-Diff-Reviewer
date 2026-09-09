@@ -65,6 +65,35 @@ test("renders progress, page groups, kinds, states and comments", () => {
   ]);
 });
 
+// Break: per-page numbering duplicates change numbers and leaves cached image labels stale when earlier pages grow.
+test("numbers all pages in display order and updates cached image labels without changing IDs", () => {
+  const { state, dom, controller, view } = harness();
+  state.review.thumbnailsByPage.set(1, new Map([["change-2", "data:image/png;base64,cached"]]));
+  view.render();
+  const cachedImage = dom.reviewList.querySelector('[data-change-id="change-2"]').querySelector("img");
+  controller.commitPage({ pageIndex: 0, width: 100, height: 100, boxes: [
+    { x: 10, y: 10, w: 20, h: 20, kind: "added" },
+    { x: 60, y: 60, w: 20, h: 20, kind: "changed" },
+  ] });
+  view.render();
+  const rows = dom.reviewList.querySelectorAll("article[data-change-id]");
+  expect(rows.map(row => row.dataset.changeId)).toEqual(["change-1", "change-3", "change-2"]);
+  expect(rows.map(row => row.querySelectorAll("span").find(node => node.className === "review-number").textContent))
+    .toEqual(["1", "2", "3"]);
+  expect(rows.map(row => row.querySelector("button").getAttribute("aria-label"))).toEqual([
+    "ページ 1 変更 1を表示", "ページ 1 変更 2を表示", "ページ 2 変更 3を表示",
+  ]);
+  expect(rows.map(row => row.querySelector("select").getAttribute("aria-label"))).toEqual([
+    "ページ 1 変更 1の状態", "ページ 1 変更 2の状態", "ページ 2 変更 3の状態",
+  ]);
+  expect(rows.map(row => row.querySelector("textarea").getAttribute("aria-label"))).toEqual([
+    "ページ 1 変更 1のコメント", "ページ 1 変更 2のコメント", "ページ 2 変更 3のコメント",
+  ]);
+  expect(rows[2].querySelector("img")).toBe(cachedImage);
+  expect(cachedImage.alt).toBe("ページ 2 変更 3の差分画像");
+  expect(rows[2].querySelector("textarea").value).toBe("抵抗値を確認");
+});
+
 // Break: rebuilding a focused textarea without restoring the selection interrupts typing.
 test("preserves comment focus and selection while safely rendering literal markup", () => {
   const { state, dom, document, view } = harness();
@@ -184,4 +213,15 @@ test("shows indexing progress, migration results and retryable failed pages", ()
   state.review.indexRunning = false;
   view.render();
   expect(dom.reviewList.querySelector('[data-review-retry="2"]').disabled).toBe(false);
+});
+
+// Break: an interrupted, error-free index must not claim completion before all pages are accounted for.
+test("shows an incomplete idle index as waiting and a fully processed index as complete", () => {
+  const { state, dom, view } = harness();
+  Object.assign(state.review, { indexRunning: false, indexedPages: 1, indexTotal: 3 });
+  view.render();
+  expect(dom.reviewIndexStatus.textContent).toBe("分析待機中 1 / 3 ページ");
+  state.review.indexedPages = 3;
+  view.render();
+  expect(dom.reviewIndexStatus.textContent).toBe("分析完了 3 / 3 ページ");
 });

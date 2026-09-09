@@ -3,6 +3,8 @@ import { createApp } from "../../src/app/create-app.js";
 import { applyInvalidatingChange, invalidateDocuments, invalidateThreshold } from "../../src/app/invalidation.js";
 import { createBoxEditorController } from "../../src/features/box-editor/box-editor-controller.js";
 import { createVisualController } from "../../src/features/visual-diff/visual-controller.js";
+import { createViewerController } from "../../src/features/viewer/viewer-controller.js";
+import { createDocumentController } from "../../src/features/documents/document-controller.js";
 import { reviewDom } from "../helpers/review-dom.js";
 import { bindControls } from "../../src/app/bind-controls.js";
 
@@ -213,7 +215,7 @@ function fakeDependencies(overrides = {}) {
   };
 }
 
-function editableVisualApp(renderTogglePage) {
+function editableVisualApp(renderTogglePage, overrides = {}) {
   const document = fakeDocument();
   const out = document.getElementById("out");
   out.getContext = () => ({ clearRect() {}, drawImage() {} });
@@ -224,7 +226,9 @@ function editableVisualApp(renderTogglePage) {
       getFrameSize: () => ({ width: out.width, height: out.height }),
       getScale: () => 1,
     }),
+    ...overrides,
   });
+  Object.assign(document.querySelector(".canvas-wrap"), { clientWidth: 200, clientHeight: 200 });
   const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
   const app = createApp({ document, window, dependencies });
   Object.assign(app.state.documents, { pages: 2, oldSequence: [0, 1], newSequence: [0, 1] });
@@ -238,6 +242,103 @@ function hiddenTogglePage(width = 100, height = 200) {
     stats: { removed: "削除 —", added: "追加 —", boxes: "変更箇所 —" },
     status: "新旧切替", pageLabel: "1 / 2" };
 }
+
+const selectionBoxes = [
+  { x: 10, y: 10, w: 20, h: 20, kind: "added" },
+  { x: 60, y: 60, w: 20, h: 20, kind: "changed" },
+];
+const selectionPage = () => ({ ...hiddenTogglePage(), boxes: selectionBoxes, autoBoxes: selectionBoxes });
+function selectionApp(render = async () => selectionPage()) {
+  const app = editableVisualApp(render, { createViewerController });
+  app.state.boxEditor.showBoxes = true;
+  return app;
+}
+function clickBox(app, x, y) {
+  app.boxEditorController.pointerDown({ x, y, pointerId: 1, button: 0 });
+  app.boxEditorController.pointerUp({ pointerId: 1 });
+}
+
+// Break: list B leaves edit A selected, so Delete removes the wrong drawing change.
+test("list selection replaces the edit selection before Delete on the same page", async () => {
+  const app = selectionApp();
+  await app.visualController.showPage(0);
+  app.boxEditorController.setEditMode(true);
+  clickBox(app, 20, 20);
+  expect(app.state.boxEditor.selectedIndex).toBe(0);
+  await app.reviewController.select("change-2");
+  app.boxEditorController.deleteSelected();
+  expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1"]);
+  expect(app.state.review.itemsByPage.get(0).map(item => item.id)).toEqual(["change-1"]);
+  expect(app.state.boxEditor.editMode).toBe(true);
+});
+
+// Break: list selection either enters edit mode or fails to map the selected ID to current boxes.
+test("list selection synchronizes the box ID without entering edit mode", async () => {
+  const app = selectionApp();
+  await app.visualController.showPage(0);
+  await app.reviewController.select("change-2");
+  expect(app.state.boxEditor.selectedIndex).toBe(1);
+  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex].id).toBe("change-2");
+  expect(app.state.boxEditor.editMode).toBe(false);
+});
+
+// Break: entering edit mode clears the list-selected ID, so the newly enabled Delete control has no target.
+test("entering edit mode keeps the box selected from the list", async () => {
+  const app = selectionApp();
+  await app.visualController.showPage(0);
+  await app.reviewController.select("change-2");
+  app.boxEditorController.setEditMode(true);
+  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex]?.id).toBe("change-2");
+});
+
+// Break: a diagram selection never reaches the review ID and leaves the wrong list row highlighted.
+test("diagram selection updates the review row without moving the viewport", async () => {
+  const app = selectionApp();
+  await app.visualController.showPage(0);
+  await app.reviewController.select("change-2");
+  const transform = app.viewerController.getView();
+  app.boxEditorController.setEditMode(true);
+  clickBox(app, 20, 20);
+  expect(app.state.review.selectedId).toBe("change-1");
+  expect(app.viewerController.getView()).toEqual(transform);
+});
+
+// Break: a pending page change keeps the old Delete target, or its late completion restores an obsolete selection.
+test("the last list selection wins a pending cross-page render and edit selection", async () => {
+  let finish;
+  const app = selectionApp(snapshot => snapshot.pageIndex === 1
+    ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(selectionPage()));
+  await app.visualController.showPage(0);
+  app.reviewController.commitPage({ pageIndex: 1, width: 100, height: 200, boxes: [selectionBoxes[0]] });
+  app.boxEditorController.setEditMode(true);
+  clickBox(app, 20, 20);
+  const stale = app.reviewController.select("change-3");
+  const pendingSelection = app.state.boxEditor.selectedIndex;
+  await app.reviewController.select("change-2");
+  finish(selectionPage());
+  expect(await stale).toBe(false);
+  expect(pendingSelection).toBe(-1);
+  expect(app.state.documents.currentPage).toBe(0);
+  expect(app.state.review.selectedId).toBe("change-2");
+  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex]?.id).toBe("change-2");
+});
+
+// Break: a delayed list navigation overwrites a more recent selection made in the visible drawing.
+test("diagram selection supersedes a pending list navigation", async () => {
+  let finish;
+  const app = selectionApp(snapshot => snapshot.pageIndex === 1
+    ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(selectionPage()));
+  await app.visualController.showPage(0);
+  app.reviewController.commitPage({ pageIndex: 1, width: 100, height: 200, boxes: [selectionBoxes[0]] });
+  app.boxEditorController.setEditMode(true);
+  const stale = app.reviewController.select("change-3");
+  clickBox(app, 20, 20);
+  finish(selectionPage());
+  expect(await stale).toBe(false);
+  expect(app.state.documents.currentPage).toBe(0);
+  expect(app.state.review.selectedId).toBe("change-1");
+  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex]?.id).toBe("change-1");
+});
 
 test("editing a hidden toggle page preserves saved automatic reviews during immediate manual creation", async () => {
   const autoBoxes = [{ x: 50, y: 100, w: 20, h: 40, kind: "added" }];
@@ -506,6 +607,68 @@ test("document acceptance cancels an in-flight index before PDF replacement fini
   await indexing;
   expect(app.state.review.itemsByPage.size).toBe(0);
   expect(app.state.review.indexRunning).toBe(false);
+});
+
+function interruptedIndexApp() {
+  let finishStale;
+  const renderChangeIndexPage = vi.fn()
+    .mockImplementationOnce(() => new Promise(resolve => { finishStale = resolve; }))
+    .mockImplementation(async () => ({ boxes: [selectionBoxes[0]], width: 100, height: 200 }));
+  const document = fakeDocument();
+  for (const side of ["Old", "New"]) document.getElementById(`drop${side}`).querySelector = () => ({});
+  const dependencies = fakeDependencies({ bindControls: vi.fn(), createDocumentController,
+    invalidateDocuments, renderChangeIndexPage,
+    pdfjsLib: { Util: { transform() {} }, getDocument: () => ({ promise: Promise.resolve({ numPages: 3 }) }) },
+  });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  Object.assign(app.state.documents, { pages: 3, oldSequence: [0, 1, 2], newSequence: [0, 1, 2],
+    oldDoc: { numPages: 3 }, newDoc: { numPages: 3 } });
+  app.state.visual.rendered = true;
+  app.reviewController.commitPage({ pageIndex: 0, width: 100, height: 200, boxes: [selectionBoxes[0]] });
+  app.reviewController.setStatus("change-1", "confirmed");
+  app.reviewController.setComment("change-1", "前の文書の確認記録");
+  const indexing = app.reviewController.startIndex({ skipPages: new Set([0]) });
+  return { app, document, indexing, renderChangeIndexPage,
+    finishStale: () => finishStale({ boxes: [{ ...selectionBoxes[0], x: 77 }], width: 100, height: 200 }) };
+}
+
+// Break: a failed PDF replacement restores the drawing but strands a 1/3 index and labels it complete.
+test("failed PDF replacement resumes unfinished indexing on the retained documents", async () => {
+  const { app, document, indexing, renderChangeIndexPage, finishStale } = interruptedIndexApp();
+  const oldNewDoc = app.state.documents.newDoc;
+  expect(app.state.review.indexedPages).toBe(1);
+  expect(app.state.review.indexRunning).toBe(true);
+  expect(await app.documentController.load("new", {
+    name: "broken.pdf", arrayBuffer: async () => { throw new Error("broken replacement"); },
+  })).toBe(false);
+  finishStale();
+  await indexing;
+  await vi.waitFor(() => expect(app.state.review.itemsByPage.size).toBe(3));
+  await vi.waitFor(() => expect(app.state.review.indexRunning).toBe(false));
+  expect(app.state.documents.newDoc).toBe(oldNewDoc);
+  expect(app.state.visual.rendered).toBe(true);
+  expect(renderChangeIndexPage.mock.calls.map(([snapshot]) => snapshot.pageIndex)).toEqual([1, 1, 2]);
+  expect(app.state.review.itemsByPage.get(1)[0].rect.x).toBe(10);
+  expect(app.state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "前の文書の確認記録" });
+  expect(document.getElementById("reviewIndexStatus").textContent).toBe("分析完了 3 / 3 ページ");
+});
+
+// Break: reusing the failure-resume path for a successful replacement leaks old reviews and index results.
+test("successful PDF replacement resets reviews and rejects the canceled index", async () => {
+  const { app, indexing, renderChangeIndexPage, finishStale } = interruptedIndexApp();
+  const oldNewDoc = app.state.documents.newDoc;
+  expect(await app.documentController.load("new", {
+    name: "replacement.pdf", arrayBuffer: async () => new ArrayBuffer(1),
+  })).toBe(true);
+  finishStale();
+  await indexing;
+  expect(app.state.documents.newDoc).not.toBe(oldNewDoc);
+  expect(app.state.review.itemsByPage.size).toBe(0);
+  expect(app.state.review.entriesById.size).toBe(0);
+  expect(app.state.review.indexTotal).toBe(0);
+  expect(app.state.review.indexRunning).toBe(false);
+  expect(renderChangeIndexPage).toHaveBeenCalledTimes(1);
 });
 
 test("repeated createApp replaces the previous document event owners", () => {

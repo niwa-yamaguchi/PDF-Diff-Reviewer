@@ -99,6 +99,28 @@ test("reviews all visual changes from the change list", async ({ page }) => {
   await expect(cards.first().locator("textarea")).toHaveValue("R105の抵抗値を確認");
 });
 
+// Break: page-local numbering gives a different identifier to the visible row and its accessible controls.
+test("numbers changes continuously across all pages", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await loadReview(page, { multipage: true });
+  const cards = page.locator("[data-change-id]");
+  const count = await cards.count();
+  expect(count).toBeGreaterThanOrEqual(3);
+  await expect(page.locator(".review-number")).toHaveText(Array.from({ length: count }, (_, index) => String(index + 1)));
+  for (const group of await page.locator("[data-review-page]").all()) {
+    if (!await group.evaluate(node => node.open)) await group.locator("summary").click();
+  }
+  for (const [index, card] of (await cards.all()).entries()) {
+    const pageIndex = await card.evaluate(node => Number(node.closest("[data-review-page]").dataset.reviewPage));
+    const label = `ページ ${pageIndex + 1} 変更 ${index + 1}`;
+    await expect(card.locator(".review-select")).toHaveAttribute("aria-label", `${label}を表示`);
+    await expect(card.locator("select")).toHaveAttribute("aria-label", `${label}の状態`);
+    await expect(card.locator("textarea")).toHaveAttribute("aria-label", `${label}のコメント`);
+    await expect(card.locator("img")).toHaveAttribute("alt", `${label}の差分画像`);
+  }
+  await page.screenshot({ path: testInfo.outputPath("global-change-numbers.png"), fullPage: true });
+});
+
 test("inherits only matching reviews after threshold redetection", async ({ page }) => {
   await loadReview(page, { multipage: true });
   const first = page.locator("[data-change-id]").first();

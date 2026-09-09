@@ -65,13 +65,14 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         direction: active.selectionDirection } : null;
     const activeStatusId = dom.reviewList.contains(active) ? active.dataset.reviewStatus : null;
     const items = sortReviewItems([...review.itemsByPage.values()].flat());
+    const numbersById = new Map(items.map((item, index) => [item.id, index + 1]));
     const summary = summarizeReviews(items, review.entriesById);
     dom.reviewTotal.textContent = `変更箇所 ${summary.total}件`;
     dom.reviewProgress.textContent = `完了 ${summary.complete} / ${summary.total}　未確認 ${summary.pending}件`;
     dom.reviewIndexStatus.textContent = review.indexRunning
       ? `索引作成中 ${review.indexedPages} / ${review.indexTotal} ページ`
       : review.indexErrors.size ? `索引エラー ${review.indexErrors.size}ページ`
-        : review.indexTotal ? `分析完了 ${review.indexedPages} / ${review.indexTotal} ページ` : "";
+        : review.indexTotal ? `${review.indexedPages >= review.indexTotal ? "分析完了" : "分析待機中"} ${review.indexedPages} / ${review.indexTotal} ページ` : "";
     dom.reviewPrev.disabled = dom.reviewNext.disabled = !items.length;
     dom.reviewNotice.textContent = review.migrationSummary
       ? `レビュー${review.migrationSummary.inherited}件を継承し、${review.migrationSummary.reset}件を未確認へ戻しました` : "";
@@ -104,7 +105,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         error.append(retry);
         children.push(error);
       }
-      for (const [index, item] of pageItems.entries()) {
+      for (const item of pageItems) {
+        const changeNumber = numbersById.get(item.id);
         const entry = review.entriesById.get(item.id) || { status: "pending", comment: "" };
         if (!itemViews.has(item.id)) itemViews.set(item.id, createItem(item));
         const { article, select, number, kind, stateLabel, status, comment, thumbnail } = itemViews.get(item.id);
@@ -120,22 +122,23 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
             image.src = url;
             image.width = 120;
             image.height = 80;
-            image.alt = `ページ ${pageIndex + 1} 変更 ${index + 1}の差分画像`;
             thumbnail.replaceChildren(image);
           } else thumbnail.textContent = thumbnails?.error ? "画像なし" : "";
         }
+        const image = thumbnail.querySelector("img");
+        if (image) image.alt = `ページ ${pageIndex + 1} 変更 ${changeNumber}の差分画像`;
         article.classList.toggle("selected", review.selectedId === item.id);
         article.setAttribute("aria-current", String(review.selectedId === item.id));
         select.setAttribute("aria-pressed", String(review.selectedId === item.id));
-        number.textContent = `${pageIndex + 1}.${index + 1}`;
+        number.textContent = String(changeNumber);
         kind.className = `review-kind ${item.kind}`;
         kind.textContent = KIND_LABELS[item.kind] || "変更";
         stateLabel.textContent = STATUS_LABELS[entry.status];
-        select.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${index + 1}を表示`);
-        status.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${index + 1}の状態`);
+        select.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${changeNumber}を表示`);
+        status.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${changeNumber}の状態`);
         status.value = entry.status;
         if (activeStatusId === item.id) focusedStatus = status;
-        comment.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${index + 1}のコメント`);
+        comment.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${changeNumber}のコメント`);
         if (active !== comment) {
           if (comment.textContent !== entry.comment) comment.textContent = entry.comment;
           if (comment.value !== entry.comment) comment.value = entry.comment;

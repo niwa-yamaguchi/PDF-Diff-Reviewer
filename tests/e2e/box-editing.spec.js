@@ -3,6 +3,45 @@ import { fileURLToPath } from "node:url";
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
 
+// Break: selecting B in the list retains A as the keyboard Delete target.
+test("list selection changes the edited box before Delete", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.locator("#fileOld").setInputFiles(fixture("old.pdf"));
+  await page.locator("#fileNew").setInputFiles(fixture("new.pdf"));
+  await page.locator("#run").click();
+  await expect(page.locator("#reviewIndexStatus")).toContainText("分析完了");
+  const cards = page.locator('[data-review-page="0"] [data-change-id]');
+  const firstId = await cards.nth(0).getAttribute("data-change-id");
+  const secondId = await cards.nth(1).getAttribute("data-change-id");
+  const first = page.locator(`[data-change-id="${firstId}"]`);
+  const second = page.locator(`[data-change-id="${secondId}"]`);
+  await first.locator(".review-select").click();
+  await page.locator("#boxEdit").click();
+  const layer = await page.locator("#boxLayer").boundingBox();
+  await page.mouse.click(layer.x + layer.width / 2, layer.y + layer.height / 2);
+  await second.locator(".review-select").click();
+  await expect(second).toHaveAttribute("aria-current", "true");
+  await page.screenshot({ path: testInfo.outputPath("selected-list-and-editor.png"), fullPage: true });
+  await page.keyboard.press("Delete");
+  await expect(second).toHaveCount(0);
+  await expect(first).toHaveCount(1);
+});
+
+// Break: a diagram click leaves the review list's previous selection unchanged.
+test("diagram selection selects its review row", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#fileOld").setInputFiles(fixture("old.pdf"));
+  await page.locator("#fileNew").setInputFiles(fixture("new.pdf"));
+  await page.locator("#run").click();
+  await expect(page.locator("#reviewIndexStatus")).toContainText("分析完了");
+  const cards = page.locator('[data-review-page="0"] [data-change-id]');
+  await page.locator("#boxEdit").click();
+  // Fixture REV A/B is at (90,130) pt; use the PDF canvas bounds to hit that detected box.
+  const paper = await page.locator("#out").boundingBox();
+  await page.mouse.click(paper.x + paper.width * 130 / 595.28, paper.y + paper.height * 126 / 841.89);
+  await expect(cards.first()).toHaveAttribute("aria-current", "true");
+});
+
 test("creates, deletes and restores a manual change box", async ({ page }) => {
   await page.goto("/");
   await page.locator("#fileOld").setInputFiles(fixture("old.pdf"));

@@ -36,6 +36,7 @@ export function createBoxEditorController({
   confirmDiscard,
   makeManualBox,
   onBoxesChanged,
+  onSelectionChanged,
 }) {
   const refresh = () => {
     if (view.refresh) view.refresh();
@@ -69,6 +70,18 @@ export function createBoxEditorController({
   function commitChange(pageIndex, reason, boxes = state.boxEditor.currentBoxes || []) {
     bumpRevision(pageIndex);
     onBoxesChanged?.({ pageIndex, boxes: cloneBoxes(boxes), reason });
+  }
+
+  function notifySelection() {
+    onSelectionChanged?.({ pageIndex: state.documents.currentPage,
+      id: state.boxEditor.currentBoxes?.[state.boxEditor.selectedIndex]?.id ?? null });
+  }
+
+  function selectById(id) {
+    cancelDrag();
+    state.boxEditor.selectedIndex = id == null ? -1
+      : (state.boxEditor.currentBoxes || []).findIndex(box => box.id === id);
+    refresh();
   }
 
   function materializeEdits(pageIndex = state.documents.currentPage) {
@@ -143,6 +156,7 @@ export function createBoxEditorController({
         kind: "resize", handle, i: index, page, pointerId,
         orig: { ...state.boxEditor.currentBoxes[index] }, preview: null,
       };
+      notifySelection();
       refresh();
       return true;
     }
@@ -162,6 +176,7 @@ export function createBoxEditorController({
         x0: point.x, y0: point.y, x1: point.x, y1: point.y,
       };
     }
+    notifySelection();
     refresh();
     return true;
   }
@@ -217,6 +232,7 @@ export function createBoxEditorController({
         edits.push(makeManualBox?.({ pageIndex: page, box }) ?? box);
         commitChange(page, "create");
         state.boxEditor.selectedIndex = edits.length - 1;
+        notifySelection();
       }
     } else {
       const boxes = state.boxEditor.currentBoxes;
@@ -259,6 +275,10 @@ export function createBoxEditorController({
     if (on && !state.boxEditor.showBoxes) {
       state.boxEditor.showBoxes = true;
       restoreShownBoxes();
+    }
+    if (on && state.review?.selectedId) {
+      state.boxEditor.selectedIndex = (state.boxEditor.currentBoxes || [])
+        .findIndex(box => box.id === state.review.selectedId);
     }
     if (!on) view.setCursor?.("");
     refresh();
@@ -346,6 +366,7 @@ export function createBoxEditorController({
   function clearSelection() {
     cancelDrag();
     state.boxEditor.selectedIndex = -1;
+    notifySelection();
     refresh();
   }
 
@@ -374,6 +395,7 @@ export function createBoxEditorController({
     confirmDiscard: confirmDiscardEdits,
     syncInvalidated,
     clearSelection,
+    selectById,
     updateCursor,
   };
 }
