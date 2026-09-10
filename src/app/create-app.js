@@ -150,7 +150,6 @@ export function createApp({ document, window, dependencies = {} }) {
       wrap: dom.canvasWrap,
       statBox: dom.statBox,
       boxToggle: dom.boxToggle,
-      boxReset: dom.boxReset,
     },
     getView: () => viewerController.getView(),
   });
@@ -173,8 +172,15 @@ export function createApp({ document, window, dependencies = {} }) {
       pageIndex, boxes,
     }),
     onEditingChanged: () => reviewView?.render({ preserveCommentFocus: true }),
+    onNotice(message) {
+      state.review.actionNotice = message;
+      reviewView?.render({ preserveCommentFocus: true });
+    },
     confirmDiscard: () => window.confirm(
       "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
+    ),
+    confirmResetToAuto: () => window.confirm(
+      "このページの手編集を破棄して自動検出に戻します。よろしいですか？",
     ),
   });
 
@@ -310,8 +316,10 @@ export function createApp({ document, window, dependencies = {} }) {
     showPage: pageIndex => visualController.showPage(pageIndex),
     focusRect: (rect, options) => viewerController.focusRect(rect, options),
     beginBoxEdit: id => boxEditorController.startEdit(id),
+    beginBoxCreate: () => boxEditorController.startCreate(),
     stopBoxEditing: () => boxEditorController.stopEditing(),
     deleteBox: id => boxEditorController.deleteById(id),
+    resetBoxes: () => boxEditorController.resetToAuto(),
     onChanged() {
       reviewView.render({ preserveCommentFocus: true });
       boxEditorView?.redraw?.();
@@ -349,6 +357,7 @@ export function createApp({ document, window, dependencies = {} }) {
         updateAlignReadout();
         updateManualAlignReadout();
         boxEditorView?.updateControls?.();
+        reviewView?.render({ preserveCommentFocus: true });
       },
       reportError: error => errorReporter.report(error, "レンダリングに失敗しました"),
     },
@@ -553,15 +562,24 @@ export function createApp({ document, window, dependencies = {} }) {
         return;
       }
       if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")) {
+        if (!state.visual.rendered) return;
         event.preventDefault();
         boxEditorController.undo();
         return;
       }
-      if (state.boxEditor.mode !== "edit") return;
       if (event.key === "Escape") {
+        if (state.boxEditor.mode === "create") {
+          event.preventDefault();
+          boxEditorController.stopEditing();
+          return;
+        }
+        if (state.boxEditor.mode !== "edit") return;
         event.preventDefault();
         boxEditorController.stopEditing();
-      } else if (event.key === "Delete" || event.key === "Backspace") {
+        return;
+      }
+      if (state.boxEditor.mode !== "edit") return;
+      if (event.key === "Delete" || event.key === "Backspace") {
         if (!state.review.selectedId) return;
         event.preventDefault();
         boxEditorController.deleteById(state.review.selectedId);

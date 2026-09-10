@@ -79,6 +79,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
       : review.indexErrors.size ? `索引エラー ${review.indexErrors.size}ページ`
         : review.indexTotal ? `${review.indexedPages >= review.indexTotal ? "分析完了" : "分析待機中"} ${review.indexedPages} / ${review.indexTotal} ページ` : "";
     dom.reviewPrev.disabled = dom.reviewNext.disabled = !items.length;
+    dom.reviewAdd.disabled = !state.visual.rendered;
+    dom.reviewReset.disabled = !state.boxEditor.editsByPage.has(state.documents.currentPage);
     dom.reviewNotice.textContent = review.actionNotice || (review.migrationSummary
       ? `レビュー${review.migrationSummary.inherited}件を継承し、${review.migrationSummary.reset}件を未確認へ戻しました` : "");
 

@@ -131,10 +131,8 @@ export function createBoxEditorView({ state, dom, getView }) {
   }
 
   function updateControls() {
-    const on = state.boxEditor.mode === "edit";
+    const on = state.boxEditor.mode === "edit" || state.boxEditor.mode === "create";
     dom.wrap.classList.toggle("boxedit", on);
-    dom.boxReset.style.display = on ? "" : "none";
-    dom.boxReset.disabled = !state.boxEditor.editsByPage.has(state.documents.currentPage);
     dom.boxToggle.classList.toggle("active", state.boxEditor.showBoxes);
   }
 

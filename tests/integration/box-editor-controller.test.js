@@ -29,14 +29,18 @@ function harness({
     releasePointer: vi.fn(),
   };
   const confirmDiscard = vi.fn(() => true);
+  const confirmResetToAuto = vi.fn(() => true);
+  const onNotice = vi.fn();
   const controller = createBoxEditorController({
     state,
     dom: {},
     view,
     confirmDiscard,
+    confirmResetToAuto,
+    onNotice,
     onBoxesChanged,
   });
-  return { state, view, confirmDiscard, controller };
+  return { state, view, confirmDiscard, confirmResetToAuto, onNotice, controller };
 }
 
 function drag(controller, from, to, pointerId = 1) {
@@ -299,8 +303,8 @@ test("delete, undo, reset-to-auto, and page histories remain page-local", () => 
   state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(0);
   expect(controller.resetToAuto()).toBe(true);
   expect(state.boxEditor.editsByPage.has(0)).toBe(false);
-  expect(state.boxEditor.undoByPage.has(0)).toBe(false);
-  expect(state.boxEditor.currentBoxes).toBe(state.boxEditor.autoByPage.get(0));
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
+  expect(state.boxEditor.currentBoxes).toEqual(state.boxEditor.autoByPage.get(0));
   expect(state.boxEditor.revisionByPage.get(0)).toBe(3);
 });
 
@@ -319,4 +323,54 @@ test("discard confirmation and clear edits preserve cancellation and clear all d
   expect(state.boxEditor.mode).toBe("idle");
   expect(state.boxEditor.drag).toBeNull();
   expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
+});
+
+test("too-small create is discarded and notifies without changing boxes", () => {
+  const { state, controller, onNotice } = harness({ boxes: [{ x: 10, y: 10, w: 20, h: 20 }] });
+  const before = state.boxEditor.currentBoxes.map(box => ({ ...box }));
+
+  expect(controller.startCreate()).toBe(true);
+  drag(controller, { x: 70, y: 70 }, { x: 71, y: 71 });
+
+  expect(onNotice).toHaveBeenCalledWith("枠が小さすぎます");
+  expect(state.boxEditor.mode).toBe("idle");
+  expect(state.boxEditor.currentBoxes).toEqual(before);
+  expect(state.boxEditor.editsByPage.size).toBe(0);
+});
+
+test("startCreate adds a manual box that undo can remove", () => {
+  const { state, controller } = harness({ boxes: [{ x: 10, y: 10, w: 20, h: 20 }] });
+
+  expect(controller.startCreate()).toBe(true);
+  expect(state.boxEditor.mode).toBe("create");
+  drag(controller, { x: 70, y: 70 }, { x: 90, y: 90 });
+  expect(state.boxEditor.mode).toBe("edit");
+  expect(state.review.selectedId).toBe("manual-1");
+  expect(state.boxEditor.currentBoxes.at(-1)).toMatchObject({
+    id: "manual-1", kind: "changed", source: "manual",
+  });
+  expect(controller.undo()).toBe(true);
+  expect(state.boxEditor.currentBoxes.some(box => box.id === "manual-1")).toBe(false);
+});
+
+test("resetToAuto keeps undo history and restores the previous hand edits", () => {
+  const { state, controller, confirmResetToAuto } = harness({
+    boxes: [{ x: 10, y: 10, w: 20, h: 20 }],
+  });
+
+  expect(controller.startCreate()).toBe(true);
+  drag(controller, { x: 70, y: 70 }, { x: 90, y: 90 });
+  const edited = state.boxEditor.currentBoxes.map(box => ({ ...box }));
+  expect(controller.resetToAuto()).toBe(true);
+  expect(state.boxEditor.editsByPage.has(0)).toBe(false);
+  expect(state.boxEditor.currentBoxes).toEqual(state.boxEditor.autoByPage.get(0));
+  expect(state.boxEditor.mode).toBe("idle");
+  expect(controller.undo()).toBe(true);
+  expect(state.boxEditor.editsByPage.get(0)).toEqual(edited);
+  expect(state.boxEditor.currentBoxes).toEqual(edited);
+  expect(state.boxEditor.currentBoxes.at(-1)).toMatchObject({ id: "manual-1" });
+
+  confirmResetToAuto.mockReturnValue(false);
+  expect(controller.resetToAuto()).toBe(false);
+  expect(state.boxEditor.editsByPage.get(0)).toEqual(edited);
 });

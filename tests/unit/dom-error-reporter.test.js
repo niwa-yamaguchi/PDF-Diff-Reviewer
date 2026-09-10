@@ -4,7 +4,7 @@ import { createErrorReporter } from "../../src/app/error-reporter.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
-  "boxDel", "boxEdit", "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
+  "boxLayer", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",
@@ -16,6 +16,7 @@ const ids = [
   "zoomLabel", "zoomOut",
   "reviewPanel", "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext",
   "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
+  "reviewAdd", "reviewReset",
 ];
 
 function fakeDocument({ missing, missingSelector } = {}) {

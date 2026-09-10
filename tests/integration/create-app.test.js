@@ -10,7 +10,7 @@ import { bindControls } from "../../src/app/bind-controls.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
-  "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
+  "boxLayer", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",
@@ -248,8 +248,10 @@ const selectionBoxes = [
   { x: 60, y: 60, w: 20, h: 20, kind: "changed" },
 ];
 const selectionPage = () => ({ ...hiddenTogglePage(), boxes: selectionBoxes, autoBoxes: selectionBoxes });
-function selectionApp(render = async () => selectionPage()) {
-  const app = editableVisualApp(render, { createViewerController });
+function selectionApp(render, overrides = {}) {
+  const app = editableVisualApp(render ?? (async () => selectionPage()), {
+    createViewerController, ...overrides,
+  });
   app.state.boxEditor.showBoxes = true;
   return app;
 }
@@ -578,4 +580,69 @@ test("repeated createApp replaces the previous document event owners", () => {
       expect(registrations).toHaveLength(1);
     }
   }
+});
+
+test("Ctrl+Z in a comment field does not undo boxes, then restores after leaving the field", async () => {
+  const bindControls = vi.fn();
+  const app = selectionApp(undefined, { bindControls });
+  await app.visualController.showPage(0);
+  const { appController } = bindControls.mock.calls[0][0];
+  const undo = vi.spyOn(app.boxEditorController, "undo");
+  expect(app.reviewController.remove("change-2")).toBe(true);
+  undo.mockClear();
+
+  const preventDefault = vi.fn();
+  appController.handleKeyDown({
+    key: "z", ctrlKey: true, preventDefault,
+    target: { tagName: "TEXTAREA" },
+  });
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(undo).not.toHaveBeenCalled();
+  expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1"]);
+
+  appController.handleKeyDown({
+    key: "z", ctrlKey: true, preventDefault,
+    target: { tagName: "BUTTON" },
+  });
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(undo).toHaveBeenCalledOnce();
+  expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1", "change-2"]);
+});
+
+test("Ctrl+Z is ignored until a visual comparison has been rendered", async () => {
+  const bindControls = vi.fn();
+  const app = selectionApp(undefined, { bindControls });
+  const { appController } = bindControls.mock.calls[0][0];
+  const undo = vi.spyOn(app.boxEditorController, "undo");
+  const preventDefault = vi.fn();
+  app.state.visual.rendered = false;
+
+  appController.handleKeyDown({
+    key: "z", ctrlKey: true, preventDefault,
+    target: { tagName: "BUTTON" },
+  });
+
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(undo).not.toHaveBeenCalled();
+});
+
+test("undo after reset-to-auto restores a removed manual box comment", async () => {
+  const app = selectionApp();
+  await app.visualController.showPage(0);
+  expect(app.boxEditorController.startCreate()).toBe(true);
+  app.boxEditorController.pointerDown({ x: 70, y: 70, pointerId: 1, button: 0, preventDefault() {} });
+  app.boxEditorController.pointerMove({ x: 90, y: 90, pointerId: 1 });
+  app.boxEditorController.pointerUp({ x: 90, y: 90, pointerId: 1 });
+  expect(app.state.review.selectedId).toBe("manual-1");
+  app.reviewController.setComment("manual-1", "復帰後も戻すコメント");
+
+  expect(app.reviewController.resetCurrentPage()).toBe(true);
+  expect(app.state.review.itemsByPage.get(0).some(item => item.id === "manual-1")).toBe(false);
+  expect(app.state.review.entriesById.has("manual-1")).toBe(false);
+
+  expect(app.boxEditorController.undo()).toBe(true);
+  expect(app.state.review.itemsByPage.get(0).some(item => item.id === "manual-1")).toBe(true);
+  expect(app.state.review.entriesById.get("manual-1")).toEqual({
+    status: "pending", comment: "復帰後も戻すコメント",
+  });
 });

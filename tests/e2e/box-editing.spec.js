@@ -118,3 +118,42 @@ test("deletes from the list and with Delete, then restores reviewed metadata wit
   await expect(reviewed.locator("[data-review-confirmed]")).toBeChecked();
   await expect(reviewed.locator("textarea")).toHaveValue("削除後も戻すコメント");
 });
+
+async function dragInside(locator, x0, y0, x1, y1) {
+  const box = await locator.boundingBox();
+  const page = locator.page();
+  await page.mouse.move(box.x + box.width * x0, box.y + box.height * y0);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * x1, box.y + box.height * y1, { steps: 4 });
+  await page.mouse.up();
+}
+
+test("adds a pending change from the list, deletes it, and restores it with Undo", async ({ page }) => {
+  await loadReview(page);
+  await page.locator("#reviewAdd").click();
+  await dragInside(page.locator("#boxLayer"), .70, .70, .84, .82);
+  const manual = page.locator('[data-change-id]').filter({ hasText: "変更" }).last();
+  await expect(manual.locator('[data-review-confirmed]')).not.toBeChecked();
+  await manual.locator('[data-review-delete]').click();
+  await page.keyboard.press("Control+z");
+  await expect(manual).toBeVisible();
+});
+
+test("reset to auto after confirmation removes hand edits and Undo restores the same id and comment", async ({ page }) => {
+  await loadReview(page);
+  await page.locator("#reviewAdd").click();
+  await dragInside(page.locator("#boxLayer"), .70, .70, .84, .82);
+  const manual = page.locator('[data-change-id]').filter({ hasText: "変更" }).last();
+  const manualId = await manual.getAttribute("data-change-id");
+  await manual.locator("textarea").fill("復帰後も戻すコメント");
+  await expect(page.locator("#reviewReset")).toBeEnabled();
+
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#reviewReset").click();
+  await expect(page.locator(`[data-change-id="${manualId}"]`)).toHaveCount(0);
+
+  await page.keyboard.press("Control+z");
+  const restored = page.locator(`[data-change-id="${manualId}"]`);
+  await expect(restored).toBeVisible();
+  await expect(restored.locator("textarea")).toHaveValue("復帰後も戻すコメント");
+});

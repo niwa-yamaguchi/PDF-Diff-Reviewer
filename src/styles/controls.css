@@ -133,8 +133,10 @@
   #reviewIndexStatus{display:block;font:10px var(--mono);color:var(--muted);margin-top:6px;line-height:1.6}
   #reviewClose{min-width:32px;min-height:32px;font-size:18px}
   #reviewProgress{padding:0 14px 12px;color:var(--signal);font:11px var(--mono);font-variant-numeric:tabular-nums}
-  .review-nav{display:flex;gap:8px;padding:0 14px 12px;border-bottom:1px solid var(--line)}
+  .review-nav{display:flex;gap:8px;padding:0 14px 12px}
   .review-nav button{flex:1;min-height:32px;white-space:nowrap}
+  .review-tools{display:flex;flex-direction:column;gap:8px;padding:0 14px 12px;border-bottom:1px solid var(--line)}
+  .review-tools button{min-height:32px;white-space:nowrap}
   #reviewNotice:not(:empty){padding:10px 14px;border-bottom:1px solid var(--line);font-size:11px;line-height:1.6;color:var(--muted)}
   #reviewList{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
   .review-page{border-bottom:1px solid var(--line)}

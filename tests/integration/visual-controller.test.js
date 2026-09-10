@@ -343,8 +343,8 @@ test("commits a render shell after reset-to-auto without restoring the old manua
   expect(await rendering).toEqual({ committed: true });
   expect(context.drawImage).toHaveBeenCalledOnce();
   expect(state.boxEditor.editsByPage.has(0)).toBe(false);
-  expect(state.boxEditor.currentBoxes).toBe(automaticBoxes);
-  expect(state.boxEditor.undoByPage.has(0)).toBe(false);
+  expect(state.boxEditor.currentBoxes).toEqual(automaticBoxes);
+  expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
   expect(dom.statBox.textContent).toBe("変更箇所 1");
   expect(dom.status.textContent).toBe("差分を表示中");
 });

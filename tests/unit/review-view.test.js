@@ -242,3 +242,23 @@ test("shows an incomplete idle index as waiting and a fully processed index as c
   view.render();
   expect(dom.reviewIndexStatus.textContent).toBe("分析完了 3 / 3 ページ");
 });
+
+test("enables add after visual render and reset only when the current page has hand edits", () => {
+  const { state, dom, view } = harness();
+  view.render();
+  expect(dom.reviewAdd.disabled).toBe(true);
+  expect(dom.reviewReset.disabled).toBe(true);
+
+  state.visual.rendered = true;
+  view.render();
+  expect(dom.reviewAdd.disabled).toBe(false);
+  expect(dom.reviewReset.disabled).toBe(true);
+
+  state.boxEditor.editsByPage.set(0, [{ id: "change-1", x: 10, y: 10, w: 20, h: 20 }]);
+  view.render();
+  expect(dom.reviewReset.disabled).toBe(false);
+
+  state.documents.currentPage = 1;
+  view.render();
+  expect(dom.reviewReset.disabled).toBe(true);
+});

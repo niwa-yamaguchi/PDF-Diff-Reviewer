@@ -81,13 +81,14 @@ export function bindControls({
   listen(dom.modeToggle, "click", () => appController.setToggleMode());
   listen(dom.toggleFlip, "click", () => appController.flipSide());
   listen(dom.boxToggle, "click", () => boxEditorController.toggleBoxes());
-  listen(dom.boxReset, "click", () => boxEditorController.resetToAuto());
 
   listen(dom.reviewToggle, "click", () => reviewController.togglePanel());
   listen(dom.reviewClose, "click", () => reviewController.togglePanel(false));
   listen(dom.reviewBackdrop, "click", () => reviewController.togglePanel(false));
   listen(dom.reviewPrev, "click", () => reviewController.selectPrevious());
   listen(dom.reviewNext, "click", () => reviewController.selectNext());
+  listen(dom.reviewAdd, "click", () => reviewController.startCreate());
+  listen(dom.reviewReset, "click", () => reviewController.resetCurrentPage());
   // details.toggle does not bubble; keep the single delegated listener in capture phase.
   listen(dom.reviewList, "toggle", event => {
     const group = event.target;

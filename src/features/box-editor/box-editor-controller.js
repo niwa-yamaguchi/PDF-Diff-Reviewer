@@ -34,10 +34,13 @@ export function createBoxEditorController({
   dom,
   view,
   confirmDiscard,
+  confirmResetToAuto = () => true,
+  onNotice,
   onBoxesChanged,
   onEditingChanged,
 }) {
   const deletedEntriesById = new Map();
+  let nextManualId = 1;
   const refresh = () => {
     if (view.refresh) view.refresh();
     else view.redraw?.();
@@ -74,6 +77,19 @@ export function createBoxEditorController({
 
   function selectedBoxIndex(boxes = state.boxEditor.currentBoxes || []) {
     return boxes.findIndex(box => box.id === state.review.selectedId);
+  }
+
+  function cacheDeletedEntry(id) {
+    const entry = state.review.entriesById.get(id)
+      || state.review.pendingMigration?.entriesById.get(id);
+    if (entry) deletedEntriesById.set(id, { ...entry });
+  }
+
+  function cacheLeavingEntries(boxes, remaining) {
+    const remainingIds = new Set((remaining || []).map(box => box.id));
+    for (const box of boxes || []) {
+      if (!remainingIds.has(box.id)) cacheDeletedEntry(box.id);
+    }
   }
 
   function restoreDeletedEntries(boxes) {
@@ -142,11 +158,33 @@ export function createBoxEditorController({
     return box.w * scale() < MIN_DRAG_SCREEN_PX || box.h * scale() < MIN_DRAG_SCREEN_PX;
   }
 
+  function makeManualBox(rect) {
+    return {
+      ...rect,
+      id: `manual-${nextManualId++}`,
+      kind: "changed",
+      source: "manual",
+    };
+  }
+
   function pointerDown(event) {
-    if (state.boxEditor.mode !== "edit" || event.button === 2) return false;
+    if (event.button === 2) return false;
     const point = pointFrom(event);
     const pointerId = event.pointerId;
     const page = state.documents.currentPage;
+
+    if (state.boxEditor.mode === "create") {
+      event.preventDefault?.();
+      view.capturePointer?.(pointerId);
+      state.boxEditor.drag = {
+        kind: "create", page, pointerId, i: -1,
+        x0: point.x, y0: point.y, x1: point.x, y1: point.y,
+      };
+      refresh();
+      return true;
+    }
+
+    if (state.boxEditor.mode !== "edit") return false;
 
     const handle = hitHandle(point);
     if (handle >= 0) {
@@ -200,6 +238,9 @@ export function createBoxEditorController({
       if (sy < 0) { const bottom = y + h; y = point.y; h = bottom - y; }
       else if (sy > 0) h = point.y - y;
       drag.preview = clampBox(normalizeRect(x, y, x + w, y + h), width, height);
+    } else if (drag.kind === "create") {
+      drag.x1 = point.x;
+      drag.y1 = point.y;
     }
     refresh();
     return true;
@@ -216,6 +257,26 @@ export function createBoxEditorController({
     }
     const page = drag.page;
     const { width, height } = frameSize();
+
+    if (drag.kind === "create") {
+      const rect = clampBox(normalizeRect(drag.x0, drag.y0, drag.x1, drag.y1), width, height);
+      if (isTooSmall(rect)) {
+        onNotice?.("枠が小さすぎます");
+        state.boxEditor.mode = "idle";
+        view.setCursor?.("");
+        refresh();
+        return true;
+      }
+      const created = makeManualBox(rect);
+      const source = state.boxEditor.currentBoxes || [];
+      pushUndo(page, source);
+      materializeEdits(page).push(created);
+      state.review.selectedId = created.id;
+      state.boxEditor.mode = "edit";
+      commitChange(page, "create");
+      refresh();
+      return true;
+    }
 
     const boxes = state.boxEditor.currentBoxes;
     if (drag.i >= 0 && boxes && drag.i < boxes.length) {
@@ -246,6 +307,17 @@ export function createBoxEditorController({
     } else {
       dom.onBoxesShown?.();
     }
+  }
+
+  function startCreate() {
+    cancelDrag();
+    if (!state.visual.rendered) return false;
+    state.boxEditor.mode = "create";
+    state.boxEditor.showBoxes = true;
+    state.review.selectedId = null;
+    view.setCursor?.("crosshair");
+    refresh();
+    return true;
   }
 
   function startEdit(id) {
@@ -302,9 +374,7 @@ export function createBoxEditorController({
       || state.boxEditor.autoByPage.get(page) || [];
     const index = source.findIndex(box => box.id === id);
     if (index < 0) return false;
-    const entry = state.review.entriesById.get(id)
-      || state.review.pendingMigration?.entriesById.get(id);
-    if (entry) deletedEntriesById.set(id, { ...entry });
+    cacheDeletedEntry(id);
     const deletedSelection = state.review.selectedId === id;
     pushUndo(page, source);
     const edits = materializeEdits(page);
@@ -319,20 +389,17 @@ export function createBoxEditorController({
   function resetToAuto() {
     cancelDrag();
     const page = state.documents.currentPage;
-    if (!state.boxEditor.editsByPage.has(page)) return false;
+    const edits = state.boxEditor.editsByPage.get(page);
+    if (!edits || !confirmResetToAuto()) return false;
+    const autoBoxes = cloneBoxes(state.boxEditor.autoByPage.get(page) || []);
+    cacheLeavingEntries(edits, autoBoxes);
+    pushUndo(page, edits);
     state.boxEditor.editsByPage.delete(page);
-    state.boxEditor.undoByPage.delete(page);
+    state.boxEditor.currentBoxes = autoBoxes;
     state.boxEditor.mode = "idle";
-    if (state.boxEditor.autoByPage.has(page)) {
-      state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(page);
-      restoreDeletedEntries(state.boxEditor.currentBoxes);
-      commitChange(page, "reset");
-      refresh();
-    } else {
-      state.boxEditor.currentBoxes = null;
-      commitChange(page, "reset");
-      dom.onAutoMissing?.();
-    }
+    restoreDeletedEntries(state.boxEditor.currentBoxes);
+    commitChange(page, "reset", state.boxEditor.currentBoxes);
+    refresh();
     return true;
   }
 
@@ -376,6 +443,7 @@ export function createBoxEditorController({
     cancelDrag,
     hitBox,
     hitHandle,
+    startCreate,
     startEdit,
     stopEditing,
     toggleBoxes,

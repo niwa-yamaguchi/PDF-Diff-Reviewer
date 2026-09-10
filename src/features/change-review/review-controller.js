@@ -28,7 +28,7 @@ function reconcileRedrawnItems({ previousItems, nextItems, entries, allocateId }
 
 export function createChangeReviewController({
   state, renderIndexPage, cancelIndex: cancelLane, onChanged = () => {}, reportError = () => {},
-  showPage, focusRect, beginBoxEdit, stopBoxEditing, deleteBox, cancelNavigation,
+  showPage, focusRect, beginBoxEdit, beginBoxCreate, stopBoxEditing, deleteBox, resetBoxes, cancelNavigation,
   renderThumbnailPage, createCanvas, createSnapshot,
 }) {
   const dimensionsByPage = new Map();
@@ -144,6 +144,21 @@ export function createChangeReviewController({
       onChanged();
     }
     return deleted;
+  }
+
+  function startCreate() {
+    const started = beginBoxCreate?.() ?? false;
+    if (started) onChanged();
+    return started;
+  }
+
+  function resetCurrentPage() {
+    const reset = resetBoxes?.() ?? false;
+    if (reset) {
+      state.review.actionNotice = "";
+      onChanged();
+    }
+    return reset;
   }
 
   function selectRelative(direction) {
@@ -398,6 +413,6 @@ export function createChangeReviewController({
   }
 
   return { commitPage, startIndex, resumeIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions,
-    select, edit, remove, selectPrevious: () => selectRelative(-1), selectNext: () => selectRelative(1),
-    setConfirmed, setComment, togglePanel, retryPage, requestPageThumbnails };
+    select, edit, remove, startCreate, resetCurrentPage, selectPrevious: () => selectRelative(-1),
+    selectNext: () => selectRelative(1), setConfirmed, setComment, togglePanel, retryPage, requestPageThumbnails };
 }

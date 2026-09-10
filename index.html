@@ -159,7 +159,6 @@
         <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
         <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
         <button id="reviewToggle" aria-controls="reviewPanel" aria-expanded="false">変更箇所一覧</button>
-        <button id="boxReset" disabled style="display:none" title="このページの手編集を破棄して自動検出に戻す">自動検出に戻す</button>
       </div>
       <div class="toggleind" id="toggleInd" style="display:none">
         <span class="side old active" id="sideOld">OLD</span>
@@ -226,6 +225,10 @@
     <div class="review-nav">
       <button id="reviewPrev" disabled>← 前の変更</button>
       <button id="reviewNext" disabled>次の変更 →</button>
+    </div>
+    <div class="review-tools">
+      <button id="reviewAdd" disabled>＋ 新規変更箇所</button>
+      <button id="reviewReset" disabled>このページを自動検出に戻す</button>
     </div>
     <div id="reviewNotice" role="status"></div>
     <div id="reviewList"></div>

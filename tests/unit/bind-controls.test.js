@@ -77,6 +77,21 @@ test("delegates item edit and delete before row selection", () => {
   expect(reviewController.select).not.toHaveBeenCalled();
 });
 
+test("delegates review add and reset to public review operations", () => {
+  const dom = new Proxy({}, { get: (value, key) => {
+    if (!(key in value)) value[key] = key.endsWith("Buttons") ? [] : target();
+    return value[key];
+  } });
+  const reviewController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
+  bindControls({ document: target(), window: target(), dom, reviewController });
+
+  dom.reviewAdd.emit("click");
+  dom.reviewReset.emit("click");
+
+  expect(reviewController.startCreate).toHaveBeenCalledOnce();
+  expect(reviewController.resetCurrentPage).toHaveBeenCalledOnce();
+});
+
 test("binds controls once and delegates events to their owning public handlers", () => {
   const names = [
     "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle",
@@ -87,6 +102,7 @@ test("binds controls once and delegates events to their owning public handlers",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
     "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
+    "reviewAdd", "reviewReset",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
@@ -153,6 +169,7 @@ test("replaces every active event binding when the same document is bound again"
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
     "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
+    "reviewAdd", "reviewReset",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
