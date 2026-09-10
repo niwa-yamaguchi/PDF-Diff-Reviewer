@@ -152,8 +152,8 @@ export function createChangeReviewController({
     onChanged();
   }
 
-  function setStatus(id, status) {
-    if (["pending", "confirmed", "excluded"].includes(status)) updateEntry(id, { status });
+  function setConfirmed(id, confirmed) {
+    updateEntry(id, { status: confirmed ? "confirmed" : "pending" });
   }
 
   function setComment(id, comment) { updateEntry(id, { comment }); }
@@ -381,5 +381,5 @@ export function createChangeReviewController({
 
   return { commitPage, startIndex, resumeIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions,
     select, selectFromBox, selectPrevious: () => selectRelative(-1), selectNext: () => selectRelative(1),
-    setStatus, setComment, togglePanel, retryPage, requestPageThumbnails };
+    setConfirmed, setComment, togglePanel, retryPage, requestPageThumbnails };
 }

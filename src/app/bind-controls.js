@@ -100,13 +100,13 @@ export function bindControls({
   listen(dom.reviewList, "click", event => {
     const retry = event.target.closest("[data-review-retry]");
     if (retry) { void reviewController.retryPage(Number(retry.dataset.reviewRetry)); return; }
-    if (event.target.closest("textarea,select,option")) return;
+    if (event.target.closest("textarea,input,label,select,option")) return;
     const article = event.target.closest("[data-change-id]");
     if (article) void reviewController.select(article.dataset.changeId);
   });
   listen(dom.reviewList, "change", event => {
-    const field = event.target.closest("[data-review-status]");
-    if (field) reviewController.setStatus(field.dataset.reviewStatus, field.value);
+    const field = event.target.closest("[data-review-confirmed]");
+    if (field) reviewController.setConfirmed(field.dataset.reviewConfirmed, field.checked);
   });
   listen(dom.reviewList, "input", event => {
     const field = event.target.closest("[data-review-comment]");

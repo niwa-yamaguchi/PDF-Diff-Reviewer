@@ -7,7 +7,7 @@ export function reviewDocument() {
     const classes = new Set();
     const node = {
       tagName: tag.toUpperCase(), ownerDocument: document, children: [], dataset: {}, style: {},
-      value: "", hidden: false, text: "", open: false, parentElement: null,
+      value: "", type: "", checked: false, hidden: false, text: "", open: false, parentElement: null,
       classList: { toggle(name, force) {
         const on = force ?? !classes.has(name);
         if (on) classes.add(name); else classes.delete(name);

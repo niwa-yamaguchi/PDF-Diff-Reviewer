@@ -48,21 +48,21 @@ test("requests only open groups and shows fixed-size loading, images and failure
 });
 
 // Break: missing aggregation, page grouping, or entry rendering hides actionable review data.
-test("renders progress, page groups, kinds, states and comments", () => {
+test("renders progress, page groups, kinds, confirmation checks and comments", () => {
   const { dom, view } = harness();
   view.render();
   expect(dom.reviewTotal.textContent).toBe("変更箇所 2件");
-  expect(dom.reviewProgress.textContent).toBe("完了 1 / 2　未確認 1件");
+  expect(dom.reviewProgress.textContent).toBe("確認済み 1 / 2　未確認 1件");
   expect(dom.reviewList.querySelectorAll("details")).toHaveLength(2);
   expect(dom.reviewList.querySelectorAll("article[data-change-id]")).toHaveLength(2);
   expect(dom.reviewList.textContent).toContain("追加");
   expect(dom.reviewList.textContent).toContain("削除");
   expect(dom.reviewList.textContent).toContain("抵抗値を確認");
-  expect(dom.reviewList.querySelector('[data-review-status="change-2"]').value).toBe("confirmed");
+  const checkbox = dom.reviewList.querySelector('[data-review-confirmed="change-2"]');
+  expect(checkbox.type).toBe("checkbox");
+  expect(checkbox.checked).toBe(true);
   expect(dom.reviewList.querySelector('[data-review-comment="change-2"]').value).toBe("抵抗値を確認");
-  expect(dom.reviewList.querySelectorAll("option").map(option => option.value)).toEqual([
-    "pending", "confirmed", "excluded", "pending", "confirmed", "excluded",
-  ]);
+  expect(dom.reviewList.textContent).not.toContain("対象外");
 });
 
 // Break: per-page numbering duplicates change numbers and leaves cached image labels stale when earlier pages grow.
@@ -83,9 +83,7 @@ test("numbers all pages in display order and updates cached image labels without
   expect(rows.map(row => row.querySelector("button").getAttribute("aria-label"))).toEqual([
     "ページ 1 変更 1を表示", "ページ 1 変更 2を表示", "ページ 2 変更 3を表示",
   ]);
-  expect(rows.map(row => row.querySelector("select").getAttribute("aria-label"))).toEqual([
-    "ページ 1 変更 1の状態", "ページ 1 変更 2の状態", "ページ 2 変更 3の状態",
-  ]);
+  expect(rows.map(row => row.querySelector("input").type)).toEqual(["checkbox", "checkbox", "checkbox"]);
   expect(rows.map(row => row.querySelector("textarea").getAttribute("aria-label"))).toEqual([
     "ページ 1 変更 1のコメント", "ページ 1 変更 2のコメント", "ページ 2 変更 3のコメント",
   ]);
@@ -174,15 +172,17 @@ test("hides only the panel presentation in text mode and restores the selected i
   expect(dom.reviewList.querySelector('[data-review-comment="change-2"]').value).toBe("抵抗値を確認");
 });
 
-// Break: replacing an active status control drops keyboard focus during a confirmation change.
-test("preserves keyboard focus on the state control after its value changes", () => {
+// Break: replacing an active confirmation checkbox drops keyboard focus during a confirmation change.
+test("preserves the confirmation checkbox node and keyboard focus after its value changes", () => {
   const { state, dom, document, view } = harness();
   view.render();
-  dom.reviewList.querySelector('[data-review-status="change-1"]').focus();
-  state.review.entriesById.set("change-1", { status: "excluded", comment: "" });
+  const checkbox = dom.reviewList.querySelector('[data-review-confirmed="change-1"]');
+  checkbox.focus();
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "" });
   view.render();
-  expect(document.activeElement === dom.reviewList.querySelector('[data-review-status="change-1"]')).toBe(true);
-  expect(document.activeElement.value).toBe("excluded");
+  expect(dom.reviewList.querySelector('[data-review-confirmed="change-1"]')).toBe(checkbox);
+  expect(document.activeElement).toBe(checkbox);
+  expect(checkbox.checked).toBe(true);
 });
 
 // Break: navigation into a collapsed page leaves its newly selected change invisible in the list.

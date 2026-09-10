@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  REVIEW_STATUS,
   canInherit,
   createReviewItems,
   matchScore,
@@ -42,7 +43,8 @@ test("builds page keys from aligned source indexes and marks blank slots as null
   expect(pageKeyFor({ oldSequence: null }, 3)).toBe("old:null|new:null");
 });
 
-test("creates DPI-independent review items and summarizes terminal states", () => {
+// Break: treating an obsolete status as complete hides a change that still needs confirmation.
+test("creates DPI-independent review items and counts only confirmed reviews as complete", () => {
   let next = 1;
   const boxes = Object.freeze([
     Object.freeze({ x: 50, y: 100, w: 20, h: 10, kind: "added" }),
@@ -63,6 +65,7 @@ test("creates DPI-independent review items and summarizes terminal states", () =
     [sorted[1].id, { status: "excluded", comment: "図枠" }],
   ]);
 
+  expect(REVIEW_STATUS).toEqual({ pending: "pending", confirmed: "confirmed" });
   expect(items.map(reviewItem => reviewItem.id)).toEqual(["change-1", "change-2"]);
   expect(sorted.map(reviewItem => reviewItem.id)).toEqual(["change-2", "change-1"]);
   expect(sorted[1]).toMatchObject({
@@ -73,16 +76,14 @@ test("creates DPI-independent review items and summarizes terminal states", () =
   });
   expect(summarizeReviews(sorted, entries)).toEqual({
     total: 2,
-    pending: 0,
+    pending: 1,
     confirmed: 1,
-    excluded: 1,
-    complete: 2,
+    complete: 1,
     byPage: new Map([[0, {
       total: 2,
-      pending: 0,
+      pending: 1,
       confirmed: 1,
-      excluded: 1,
-      complete: 2,
+      complete: 1,
     }]]),
   });
   expect(boxes).toEqual([
@@ -120,11 +121,10 @@ test("counts missing and unknown review statuses as pending globally and by page
     total: 3,
     pending: 2,
     confirmed: 1,
-    excluded: 0,
     complete: 1,
     byPage: new Map([
-      [0, { total: 1, pending: 1, confirmed: 0, excluded: 0, complete: 0 }],
-      [2, { total: 2, pending: 1, confirmed: 1, excluded: 0, complete: 1 }],
+      [0, { total: 1, pending: 1, confirmed: 0, complete: 0 }],
+      [2, { total: 2, pending: 1, confirmed: 1, complete: 1 }],
     ]),
   });
 });
@@ -214,7 +214,7 @@ test("does not inherit a many-to-one merge", () => {
     nextItems: [item(null, "added", rect(0.10, 0.10, 0.20, 0.20))],
     entries: new Map([
       ["old-left", { status: "confirmed", comment: "left" }],
-      ["old-right", { status: "excluded", comment: "right" }],
+      ["old-right", { status: "confirmed", comment: "right" }],
     ]),
     allocateId: () => "new-merged",
   });
@@ -248,7 +248,7 @@ test("does not inherit the high-scoring side of an asymmetric 95/5 merge", () =>
     nextItems: [item(null, "added", rect(0.10, 0.10, 0.20, 0.20))],
     entries: new Map([
       ["old-major", { status: "confirmed", comment: "major" }],
-      ["old-sliver", { status: "excluded", comment: "sliver" }],
+      ["old-sliver", { status: "confirmed", comment: "sliver" }],
     ]),
     allocateId: () => "new-merged",
   });
@@ -287,7 +287,7 @@ test("resets an asymmetric mixed-kind merge", () => {
     nextItems: [item(null, "changed", rect(0.10, 0.10, 0.20, 0.20))],
     entries: new Map([
       ["old-major", { status: "confirmed", comment: "major" }],
-      ["old-sliver", { status: "excluded", comment: "sliver" }],
+      ["old-sliver", { status: "confirmed", comment: "sliver" }],
     ]),
     allocateId: () => "new-merged",
   });

@@ -1,7 +1,6 @@
 export const REVIEW_STATUS = Object.freeze({
   pending: "pending",
   confirmed: "confirmed",
-  excluded: "excluded",
 });
 
 const EMPTY_REVIEW = Object.freeze({ status: REVIEW_STATUS.pending, comment: "" });
@@ -51,19 +50,19 @@ export function sortReviewItems(items) {
 }
 
 function emptySummary() {
-  return { total: 0, pending: 0, confirmed: 0, excluded: 0, complete: 0 };
+  return { total: 0, pending: 0, confirmed: 0, complete: 0 };
 }
 
 function reviewStatus(entry) {
-  return entry?.status === REVIEW_STATUS.confirmed || entry?.status === REVIEW_STATUS.excluded
-    ? entry.status
+  return entry?.status === REVIEW_STATUS.confirmed
+    ? REVIEW_STATUS.confirmed
     : REVIEW_STATUS.pending;
 }
 
 function countReview(summary, status) {
   summary.total += 1;
   summary[status] += 1;
-  if (status !== REVIEW_STATUS.pending) summary.complete += 1;
+  if (status === REVIEW_STATUS.confirmed) summary.complete += 1;
 }
 
 export function summarizeReviews(items, entries) {

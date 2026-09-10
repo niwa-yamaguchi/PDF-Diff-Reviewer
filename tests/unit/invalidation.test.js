@@ -183,7 +183,7 @@ test("partial migration capture replaces current pages while independently retai
   state.review.itemsByPage.set(0, [reviewItem("change-0", { pageIndex: 0, x: 0.1 })]);
   state.review.itemsByPage.set(1, [reviewItem("change-1", { pageIndex: 1, x: 0.2 })]);
   state.review.entriesById.set("change-0", { status: "pending", comment: "old" });
-  state.review.entriesById.set("change-1", { status: "excluded", comment: "保持" });
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "保持" });
   captureReviewMigration(state);
   const firstPendingItem = state.review.pendingMigration.itemsByPage.get(1)[0];
   const firstPendingEntry = state.review.pendingMigration.entriesById.get("change-1");
@@ -203,7 +203,7 @@ test("partial migration capture replaces current pages while independently retai
     status: "confirmed",
     comment: "latest",
   });
-  expect(retainedSnapshotEntry).toEqual({ status: "excluded", comment: "保持" });
+  expect(retainedSnapshotEntry).toEqual({ status: "confirmed", comment: "保持" });
   expect(retainedSnapshotItem).not.toBe(firstPendingItem);
   expect(retainedSnapshotItem.rect).not.toBe(firstPendingItem.rect);
   expect(retainedSnapshotItem.normalizedRect).not.toBe(firstPendingItem.normalizedRect);

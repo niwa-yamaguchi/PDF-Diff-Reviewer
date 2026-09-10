@@ -1,7 +1,6 @@
 import { sortReviewItems, summarizeReviews } from "../../core/change-review/model.js";
 
 const KIND_LABELS = { added: "追加", removed: "削除", changed: "変更" };
-const STATUS_LABELS = { pending: "未確認", confirmed: "確認済み", excluded: "対象外" };
 
 export function createChangeReviewView({ state, dom, document = dom.reviewList.ownerDocument,
   requestPageThumbnails = () => {} }) {
@@ -32,13 +31,11 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     const kind = element("span");
     const stateLabel = element("span", "review-state");
     select.append(number, kind, stateLabel);
-    const status = element("select", "review-status");
-    status.dataset.reviewStatus = item.id;
-    for (const [value, label] of Object.entries(STATUS_LABELS)) {
-      const option = element("option", "", label);
-      option.value = value;
-      status.append(option);
-    }
+    const confirmedLabel = element("label", "review-confirmed-label");
+    const confirmed = element("input", "review-confirmed");
+    confirmed.type = "checkbox";
+    confirmed.dataset.reviewConfirmed = item.id;
+    confirmedLabel.append(confirmed, element("span", "", "確認済み"));
     const comment = element("textarea", "review-comment");
     comment.dataset.reviewComment = item.id;
     comment.rows = 2;
@@ -47,8 +44,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     thumbnail.dataset.reviewThumbnail = item.id;
     thumbnail.style.width = "120px";
     thumbnail.style.height = "80px";
-    article.append(select, thumbnail, status, comment);
-    return { article, select, number, kind, stateLabel, status, comment, thumbnail };
+    article.append(select, thumbnail, confirmedLabel, comment);
+    return { article, select, number, kind, stateLabel, confirmed, comment, thumbnail };
   }
 
   function render({ preserveCommentFocus = true } = {}) {
@@ -63,12 +60,12 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     const focus = preserveCommentFocus && dom.reviewList.contains(active) && active.dataset.reviewComment
       ? { id: active.dataset.reviewComment, start: active.selectionStart, end: active.selectionEnd,
         direction: active.selectionDirection } : null;
-    const activeStatusId = dom.reviewList.contains(active) ? active.dataset.reviewStatus : null;
+    const activeConfirmedId = dom.reviewList.contains(active) ? active.dataset.reviewConfirmed : null;
     const items = sortReviewItems([...review.itemsByPage.values()].flat());
     const numbersById = new Map(items.map((item, index) => [item.id, index + 1]));
     const summary = summarizeReviews(items, review.entriesById);
     dom.reviewTotal.textContent = `変更箇所 ${summary.total}件`;
-    dom.reviewProgress.textContent = `完了 ${summary.complete} / ${summary.total}　未確認 ${summary.pending}件`;
+    dom.reviewProgress.textContent = `確認済み ${summary.complete} / ${summary.total}　未確認 ${summary.pending}件`;
     dom.reviewIndexStatus.textContent = review.indexRunning
       ? `索引作成中 ${review.indexedPages} / ${review.indexTotal} ページ`
       : review.indexErrors.size ? `索引エラー ${review.indexErrors.size}ページ`
@@ -80,7 +77,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     const pages = [...new Set([...review.itemsByPage.keys(), ...review.indexErrors.keys()])].sort((a, b) => a - b);
     const groups = [];
     let focusedField;
-    let focusedStatus;
+    let focusedConfirmed;
     for (const pageIndex of pages) {
       const pageItems = items.filter(item => item.pageIndex === pageIndex);
       const counts = summary.byPage.get(pageIndex);
@@ -109,7 +106,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         const changeNumber = numbersById.get(item.id);
         const entry = review.entriesById.get(item.id) || { status: "pending", comment: "" };
         if (!itemViews.has(item.id)) itemViews.set(item.id, createItem(item));
-        const { article, select, number, kind, stateLabel, status, comment, thumbnail } = itemViews.get(item.id);
+        const { article, select, number, kind, stateLabel, confirmed, comment, thumbnail } = itemViews.get(item.id);
         const thumbnails = review.thumbnailsByPage.get(pageIndex);
         const url = thumbnails instanceof Map ? thumbnails.get(item.id) : null;
         const thumbnailState = url || (thumbnails?.error ? "error" : "loading");
@@ -133,11 +130,11 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         number.textContent = String(changeNumber);
         kind.className = `review-kind ${item.kind}`;
         kind.textContent = KIND_LABELS[item.kind] || "変更";
-        stateLabel.textContent = STATUS_LABELS[entry.status];
+        const isConfirmed = entry.status === "confirmed";
+        stateLabel.textContent = isConfirmed ? "確認済み" : "未確認";
         select.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${changeNumber}を表示`);
-        status.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${changeNumber}の状態`);
-        status.value = entry.status;
-        if (activeStatusId === item.id) focusedStatus = status;
+        confirmed.checked = isConfirmed;
+        if (activeConfirmedId === item.id) focusedConfirmed = confirmed;
         comment.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${changeNumber}のコメント`);
         if (active !== comment) {
           if (comment.textContent !== entry.comment) comment.textContent = entry.comment;
@@ -159,8 +156,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     if (focusedField && visible && document.activeElement !== focusedField) {
       focusedField.focus({ preventScroll: true });
       focusedField.setSelectionRange(focus.start, focus.end, focus.direction);
-    } else if (focusedStatus && visible && document.activeElement !== focusedStatus) {
-      focusedStatus.focus({ preventScroll: true });
+    } else if (focusedConfirmed && visible && document.activeElement !== focusedConfirmed) {
+      focusedConfirmed.focus({ preventScroll: true });
     }
     if (visible) for (const [pageIndex, { group }] of pageViews) {
       if (group.open) requestPageThumbnails(pageIndex);

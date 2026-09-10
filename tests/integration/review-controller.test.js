@@ -166,7 +166,7 @@ function navigationHarness(show) {
 }
 
 // Break: skipping page navigation/focus or overwriting the other entry field loses review work.
-test("selects across pages and persists status and comments", async () => {
+test("selects across pages and persists confirmation and comments", async () => {
   const { state, controller, out, visits } = navigationHarness();
   await controller.select("change-3");
   expect(visits).toEqual([1]);
@@ -174,12 +174,11 @@ test("selects across pages and persists status and comments", async () => {
   expect(state.review.selectedId).toBe("change-3");
   expect(out.style.transform).toBe("translate(-100px,20px) scale(4)");
   expect(state.boxEditor.editMode).toBe(false);
-  controller.setStatus("change-3", "confirmed");
+  controller.setConfirmed("change-3", true);
   controller.setComment("change-3", "抵抗値を確認");
   expect(state.review.entriesById.get("change-3")).toEqual({ status: "confirmed", comment: "抵抗値を確認" });
-  controller.setStatus("change-3", "excluded");
-  controller.setStatus("change-3", "invalid");
-  expect(state.review.entriesById.get("change-3")).toEqual({ status: "excluded", comment: "抵抗値を確認" });
+  controller.setConfirmed("change-3", false);
+  expect(state.review.entriesById.get("change-3")).toEqual({ status: "pending", comment: "抵抗値を確認" });
   controller.togglePanel();
   expect(state.review.panelOpen).toBe(true);
   controller.togglePanel(false);
@@ -307,12 +306,12 @@ test.each([
   const { state, controller } = harness(1);
   controller.commitPage(page(0, boxes));
   state.review.entriesById.set("change-1", { status: "confirmed", comment: "outer" });
-  state.review.entriesById.set("change-2", { status: "excluded", comment: "inner" });
+  state.review.entriesById.set("change-2", { status: "confirmed", comment: "inner" });
   const redraw = controller.commitPage(page(0, boxes.map(box => ({ ...box }))));
   expect(redraw.currentBoxes.map(box => box.id)).toEqual(["change-1", "change-2"]);
   expect(redraw.currentBoxes.map(box => state.review.entriesById.get(box.id))).toEqual([
     { status: "confirmed", comment: "outer" },
-    { status: "excluded", comment: "inner" },
+    { status: "confirmed", comment: "inner" },
   ]);
 });
 
@@ -375,11 +374,11 @@ test("prunes deleted reviews only after comparison migration finishes and preser
   const { state, controller } = harness(2);
   state.boxEditor.currentBoxes = controller.commitPage(page(0, [box(), box(60)])).currentBoxes;
   controller.commitPage(page(1));
-  controller.setStatus("change-1", "confirmed");
+  controller.setConfirmed("change-1", true);
   controller.setComment("change-1", "deleted review");
-  controller.setStatus("change-2", "excluded");
+  controller.setConfirmed("change-2", true);
   controller.setComment("change-2", "current review");
-  controller.setStatus("change-3", "confirmed");
+  controller.setConfirmed("change-3", true);
   controller.setComment("change-3", "unprocessed page");
   const editor = editorForReview(state, controller);
   state.boxEditor.selectedIndex = 0;
@@ -398,7 +397,7 @@ test("prunes deleted reviews only after comparison migration finishes and preser
   expect(state.review.pendingMigration).toBeNull();
   expect([...state.review.entriesById.keys()].sort()).toEqual(["change-2", "change-3", "change-4"]);
   expect(state.review.entriesById.get("change-4")).toEqual({ status: "pending", comment: "" });
-  expect(state.review.entriesById.get("change-2")).toEqual({ status: "excluded", comment: "current review" });
+  expect(state.review.entriesById.get("change-2")).toEqual({ status: "confirmed", comment: "current review" });
   expect(state.review.entriesById.get("change-3")).toEqual({ status: "confirmed", comment: "unprocessed page" });
 });
 
@@ -407,7 +406,7 @@ test("migration cleanup keeps IDs reachable from Undo without consuming its hist
   const { state, controller } = harness(2);
   controller.commitPage(page(0));
   controller.commitPage(page(1));
-  controller.setStatus("change-1", "confirmed");
+  controller.setConfirmed("change-1", true);
   controller.setComment("change-1", "restore after migration");
   invalidateThreshold(state);
   state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
@@ -430,7 +429,7 @@ test("migration cleanup preserves reviews reachable through reset to automatic b
   const { state, controller } = harness(2);
   controller.commitPage(page(0));
   controller.commitPage(page(1));
-  controller.setStatus("change-1", "confirmed");
+  controller.setConfirmed("change-1", true);
   controller.setComment("change-1", "automatic review");
   invalidateThreshold(state);
   state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
@@ -458,7 +457,7 @@ test("repeated deletion and redetection retains only current entries without reu
   for (let cycle = 0; cycle < 3; cycle++) {
     const id = state.boxEditor.currentBoxes[0].id;
     deleted.add(id);
-    controller.setStatus(id, "confirmed");
+    controller.setConfirmed(id, true);
     controller.setComment(id, "do not transfer");
     state.boxEditor.selectedIndex = 0;
     editor.deleteSelected();
@@ -489,11 +488,11 @@ test("a second invalidation keeps unresolved pages and uses the latest reviewed 
   state.review.entriesById.set("change-2", { status: "confirmed", comment: "second page" });
   captureReviewMigration(state);
   controller.commitPage(page(0, [box(11)]));
-  state.review.entriesById.set("change-1", { status: "excluded", comment: "updated" });
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "updated" });
   captureReviewMigration(state);
   controller.commitPage(page(0, [box(12)]));
   controller.commitPage(page(1));
-  expect(state.review.entriesById.get("change-1")).toEqual({ status: "excluded", comment: "updated" });
+  expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "updated" });
   expect(state.review.entriesById.get("change-2").comment).toBe("second page");
   expect(state.review.migrationSummary).toEqual({ inherited: 2, reset: 0 });
 });

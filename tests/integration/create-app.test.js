@@ -626,7 +626,7 @@ function interruptedIndexApp() {
     oldDoc: { numPages: 3 }, newDoc: { numPages: 3 } });
   app.state.visual.rendered = true;
   app.reviewController.commitPage({ pageIndex: 0, width: 100, height: 200, boxes: [selectionBoxes[0]] });
-  app.reviewController.setStatus("change-1", "confirmed");
+  app.reviewController.setConfirmed("change-1", true);
   app.reviewController.setComment("change-1", "前の文書の確認記録");
   const indexing = app.reviewController.startIndex({ skipPages: new Set([0]) });
   return { app, document, indexing, renderChangeIndexPage,
