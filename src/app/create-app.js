@@ -306,6 +306,20 @@ export function createApp({ document, window, dependencies = {} }) {
     ...laneCompute(indexLane),
   });
 
+  function reviewLayoutVisible() {
+    return state.review.panelOpen && state.ui.topMode === "visual";
+  }
+
+  let lastReviewLayout = reviewLayoutVisible();
+  function scheduleViewportSyncIfLayoutChanged() {
+    const visible = reviewLayoutVisible();
+    if (visible === lastReviewLayout) return;
+    lastReviewLayout = visible;
+    const run = () => viewerController.handleResize?.();
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(run);
+    else run();
+  }
+
   reviewView = deps.createChangeReviewView({ state, dom, document,
     requestPageThumbnails: pageIndex => {
       void Promise.resolve().then(() => reviewController.requestPageThumbnails(pageIndex));
@@ -323,6 +337,7 @@ export function createApp({ document, window, dependencies = {} }) {
     onChanged() {
       reviewView.render({ preserveCommentFocus: true });
       boxEditorView?.redraw?.();
+      scheduleViewportSyncIfLayoutChanged();
     },
     renderIndexPage: pageIndex => deps.renderChangeIndexPage(
       createVisualSnapshot(state, pageIndex, "diff"), indexRenderDependencies(),
@@ -573,9 +588,15 @@ export function createApp({ document, window, dependencies = {} }) {
           boxEditorController.stopEditing();
           return;
         }
-        if (state.boxEditor.mode !== "edit") return;
-        event.preventDefault();
-        boxEditorController.stopEditing();
+        if (state.boxEditor.mode === "edit") {
+          event.preventDefault();
+          boxEditorController.stopEditing();
+          return;
+        }
+        if (state.review.panelOpen && window.innerWidth <= 1099) {
+          event.preventDefault();
+          reviewController.togglePanel(false);
+        }
         return;
       }
       if (state.boxEditor.mode !== "edit") return;
@@ -720,6 +741,7 @@ export function createApp({ document, window, dependencies = {} }) {
     async setTopMode(mode) {
       const changing = textController.setTopMode(mode);
       reviewView.render({ preserveCommentFocus: true });
+      scheduleViewportSyncIfLayoutChanged();
       return changing;
     },
     async alignAddNew() {

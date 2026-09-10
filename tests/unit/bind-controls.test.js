@@ -101,7 +101,7 @@ test("binds controls once and delegates events to their owning public handlers",
     "dlPdf", "dlTextPng", "dlTextPdf", "runText", "textPrev", "textNext",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
-    "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
+    "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
     "reviewAdd", "reviewReset",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
@@ -168,7 +168,7 @@ test("replaces every active event binding when the same document is bound again"
     "dlPdf", "dlTextPng", "dlTextPdf", "runText", "textPrev", "textNext",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
-    "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
+    "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
     "reviewAdd", "reviewReset",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
@@ -242,7 +242,7 @@ test("delegates review controls once to real review state while leaving text ent
     appController: { setTopMode(mode) { state.ui.topMode = mode; view.render(); } } };
   bindControls(owners);
   bindControls(owners);
-  dom.reviewToggle.emit("click");
+  dom.reviewRailToggle.emit("click");
   expect(state.review.panelOpen).toBe(true);
   dom.reviewList.emit("click", { target: dom.reviewList.querySelector('[data-change-id="change-1"]').children[0].children[0] });
   await vi.waitFor(() => expect(state.review.selectedId).toBe("change-1"));
@@ -266,9 +266,12 @@ test("delegates review controls once to real review state while leaving text ent
   await vi.waitFor(() => expect(state.review.selectedId).toBe("change-2"));
   dom.reviewPrev.emit("click");
   await vi.waitFor(() => expect(state.review.selectedId).toBe("change-1"));
-  dom.reviewClose.emit("click");
+  expect(state.review.entriesById.get("change-2")).toEqual({ status: "pending", comment: "入力を確認" });
+  dom.reviewRailToggle.emit("click");
   expect(state.review.panelOpen).toBe(false);
-  dom.reviewToggle.emit("click");
+  expect(state.review.entriesById.get("change-2")).toEqual({ status: "pending", comment: "入力を確認" });
+  dom.reviewRailToggle.emit("click");
+  expect(state.review.panelOpen).toBe(true);
   dom.reviewBackdrop.emit("click");
   expect(state.review.panelOpen).toBe(false);
   state.review.indexErrors.set(1, "error");

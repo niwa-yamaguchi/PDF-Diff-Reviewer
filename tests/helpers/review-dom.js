@@ -73,12 +73,13 @@ export function reviewDocument() {
 }
 
 export function reviewDom(document = reviewDocument()) {
-  const names = ["reviewPanel", "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext",
+  const names = ["reviewPanel", "reviewRail", "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext",
     "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
     "reviewAdd", "reviewReset"];
-  const dom = Object.fromEntries(names.map(name => [name, document.createElement(name === "reviewList" ? "div" : "button")]));
-  document.body.append(dom.reviewPanel, dom.reviewToggle, dom.reviewBackdrop);
-  dom.reviewPanel.append(dom.reviewClose, dom.reviewPrev, dom.reviewNext, dom.reviewAdd, dom.reviewReset,
+  const dom = Object.fromEntries(names.map(name => [name, document.createElement(name === "reviewList" || name === "reviewRail" ? "div" : "button")]));
+  document.body.append(dom.reviewPanel, dom.reviewRail, dom.reviewBackdrop);
+  dom.reviewRail.append(dom.reviewRailToggle);
+  dom.reviewPanel.append(dom.reviewPrev, dom.reviewNext, dom.reviewAdd, dom.reviewReset,
     dom.reviewTotal, dom.reviewProgress, dom.reviewIndexStatus, dom.reviewNotice, dom.reviewList);
   return { document, dom };
 }

@@ -33,6 +33,18 @@ export function zoomAt(view, factor, cx, cy) {
   };
 }
 
+export function preserveViewportCenter(view, oldViewport, newViewport) {
+  const pageCenter = {
+    x: (oldViewport.width / 2 - view.tx) / view.scale,
+    y: (oldViewport.height / 2 - view.ty) / view.scale,
+  };
+  return {
+    scale: view.scale,
+    tx: newViewport.width / 2 - pageCenter.x * view.scale,
+    ty: newViewport.height / 2 - pageCenter.y * view.scale,
+  };
+}
+
 export function fitViewport(content, container) {
   if (
     !finitePositive(content?.width)

@@ -58,10 +58,15 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
 
   function render({ preserveCommentFocus = true } = {}) {
     const { review } = state;
-    const visible = review.panelOpen && state.ui.topMode === "visual";
+    const visual = state.ui.topMode === "visual";
+    const visible = review.panelOpen && visual;
     dom.reviewPanel.hidden = !visible;
     dom.reviewBackdrop.hidden = !visible;
-    dom.reviewToggle.setAttribute("aria-expanded", String(visible));
+    if (dom.reviewRail) dom.reviewRail.hidden = !visual;
+    const toggle = dom.reviewRailToggle;
+    toggle.textContent = visible ? "»" : "«";
+    toggle.setAttribute("aria-expanded", String(visible));
+    toggle.setAttribute("aria-label", visible ? "変更箇所を閉じる" : "変更箇所を開く");
     document.body.classList.toggle("review-open", visible);
 
     const active = document.activeElement;

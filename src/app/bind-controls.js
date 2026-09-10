@@ -82,8 +82,7 @@ export function bindControls({
   listen(dom.toggleFlip, "click", () => appController.flipSide());
   listen(dom.boxToggle, "click", () => boxEditorController.toggleBoxes());
 
-  listen(dom.reviewToggle, "click", () => reviewController.togglePanel());
-  listen(dom.reviewClose, "click", () => reviewController.togglePanel(false));
+  listen(dom.reviewRailToggle, "click", () => reviewController.togglePanel());
   listen(dom.reviewBackdrop, "click", () => reviewController.togglePanel(false));
   listen(dom.reviewPrev, "click", () => reviewController.selectPrevious());
   listen(dom.reviewNext, "click", () => reviewController.selectNext());

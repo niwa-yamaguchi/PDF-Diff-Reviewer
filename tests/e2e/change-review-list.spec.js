@@ -194,11 +194,47 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 820, height: 900 
     expect(selectedFrame.orange).toBeGreaterThan(0);
     const beforeWidth = (await wrap.boundingBox()).width;
     if (viewport.width === 1280) expect(bounds.x).toBeGreaterThanOrEqual((await wrap.boundingBox()).x + beforeWidth);
+    await expect(page.locator("#reviewRailToggle")).toHaveText("»");
+    await page.locator("#reviewRailToggle").click();
+    await expect(page.locator("#reviewPanel")).toBeHidden();
+    await expect(page.locator("#reviewRailToggle")).toHaveText("«");
+    await page.locator("#reviewRailToggle").click();
+    await expect(page.locator("#reviewPanel")).toBeVisible();
+    const pageCenter = () => page.evaluate(() => {
+      const wrapNode = document.querySelector(".canvas-wrap");
+      const out = document.getElementById("out");
+      const match = out.style.transform.match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\) scale\(([\d.]+)\)/);
+      const tx = Number(match[1]);
+      const ty = Number(match[2]);
+      const scale = Number(match[3]);
+      return { x: (wrapNode.clientWidth / 2 - tx) / scale, y: (wrapNode.clientHeight / 2 - ty) / scale };
+    });
+    const waitFrame = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (viewport.width === 1280) {
+      const transform = () => page.locator("#out").evaluate(node => node.style.transform);
+      const beforeZoom = await transform();
+      await page.locator("#zoomIn").click();
+      await expect.poll(transform).not.toBe(beforeZoom);
+      const centerBefore = await pageCenter();
+      await page.locator("#reviewRailToggle").click();
+      await expect(page.locator("#reviewPanel")).toBeHidden();
+      await waitFrame();
+      const centerClosed = await pageCenter();
+      expect(centerClosed.x).toBeCloseTo(centerBefore.x, 1);
+      expect(centerClosed.y).toBeCloseTo(centerBefore.y, 1);
+      await page.locator("#reviewRailToggle").click();
+      await expect(page.locator("#reviewPanel")).toBeVisible();
+      await waitFrame();
+      const centerOpened = await pageCenter();
+      expect(centerOpened.x).toBeCloseTo(centerBefore.x, 1);
+      expect(centerOpened.y).toBeCloseTo(centerBefore.y, 1);
+    }
     await page.screenshot({ path: testInfo.outputPath(`review-${viewport.width}.png`), fullPage: true });
     await testInfo.attach(`review-${viewport.width}`, { path: testInfo.outputPath(`review-${viewport.width}.png`), contentType: "image/png" });
     if (viewport.width === 820) await page.locator("#reviewBackdrop").click({ position: { x: 30, y: 300 } });
-    else await page.locator("#reviewClose").click();
+    else await page.locator("#reviewRailToggle").click();
     await expect(panel).toBeHidden();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (viewport.width === 1280) expect((await wrap.boundingBox()).width).toBeGreaterThan(beforeWidth);
     const transform = () => page.locator("#out").evaluate(node => node.style.transform);
     const beforeZoom = await transform();

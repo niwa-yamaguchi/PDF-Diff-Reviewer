@@ -216,6 +216,7 @@ function fakeDependencies(overrides = {}) {
 }
 
 function editableVisualApp(renderTogglePage, overrides = {}) {
+  const { window: windowOverrides, ...depOverrides } = overrides;
   const document = fakeDocument();
   const out = document.getElementById("out");
   out.getContext = () => ({ clearRect() {}, drawImage() {} });
@@ -226,10 +227,15 @@ function editableVisualApp(renderTogglePage, overrides = {}) {
       getFrameSize: () => ({ width: out.width, height: out.height }),
       getScale: () => 1,
     }),
-    ...overrides,
+    ...depOverrides,
   });
   Object.assign(document.querySelector(".canvas-wrap"), { clientWidth: 200, clientHeight: 200 });
-  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const window = {
+    confirm: () => true, console: { error() {} },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+    innerWidth: 1280,
+    ...windowOverrides,
+  };
   const app = createApp({ document, window, dependencies });
   Object.assign(app.state.documents, { pages: 2, oldSequence: [0, 1], newSequence: [0, 1] });
   app.state.visual.mode = "toggle";
@@ -645,4 +651,72 @@ test("undo after reset-to-auto restores a removed manual box comment", async () 
   expect(app.state.review.entriesById.get("manual-1")).toEqual({
     status: "pending", comment: "復帰後も戻すコメント",
   });
+});
+
+test("closing the review panel stops editing without dropping selection or confirmation", async () => {
+  const app = selectionApp();
+  await app.visualController.showPage(0);
+  await app.reviewController.edit("change-1");
+  app.reviewController.setConfirmed("change-1", true);
+  app.reviewController.togglePanel(true);
+
+  app.reviewController.togglePanel(false);
+
+  expect(app.state.boxEditor.mode).toBe("idle");
+  expect(app.state.review.selectedId).toBe("change-1");
+  expect(app.state.review.panelOpen).toBe(false);
+  expect(app.state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "" });
+  expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1", "change-2"]);
+});
+
+test("toggling the review panel resizes the viewer after the next animation frame", () => {
+  const handleResize = vi.fn(() => ({ scale: 1, tx: 0, ty: 0 }));
+  const frames = [];
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createViewerController: () => ({ fit() {}, handleResize }),
+  });
+  const window = {
+    confirm: () => true,
+    console: { error() {} },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+    requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
+  };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  app.reviewController.togglePanel(true);
+  expect(handleResize).not.toHaveBeenCalled();
+  while (frames.length) frames.shift()();
+  expect(handleResize).toHaveBeenCalledOnce();
+});
+
+test("Escape closes a narrow open drawer only when not creating or editing", async () => {
+  const bindControls = vi.fn();
+  const app = selectionApp(undefined, { bindControls, window: { innerWidth: 820 } });
+  await app.visualController.showPage(0);
+  const { appController } = bindControls.mock.calls[0][0];
+  const preventDefault = vi.fn();
+  app.reviewController.togglePanel(true);
+  await app.reviewController.edit("change-1");
+
+  appController.handleKeyDown({ key: "Escape", preventDefault, target: { tagName: "BUTTON" } });
+  expect(app.state.boxEditor.mode).toBe("idle");
+  expect(app.state.review.panelOpen).toBe(true);
+
+  appController.handleKeyDown({ key: "Escape", preventDefault, target: { tagName: "BUTTON" } });
+  expect(app.state.review.panelOpen).toBe(false);
+
+  app.reviewController.togglePanel(true);
+  expect(app.reviewController.startCreate()).toBe(true);
+  appController.handleKeyDown({ key: "Escape", preventDefault, target: { tagName: "BUTTON" } });
+  expect(app.state.boxEditor.mode).toBe("idle");
+  expect(app.state.review.panelOpen).toBe(true);
+
+  const desktopBind = vi.fn();
+  const desktop = selectionApp(undefined, { bindControls: desktopBind, window: { innerWidth: 1280 } });
+  await desktop.visualController.showPage(0);
+  desktop.reviewController.togglePanel(true);
+  desktopBind.mock.calls[0][0].appController.handleKeyDown({
+    key: "Escape", preventDefault, target: { tagName: "BUTTON" },
+  });
+  expect(desktop.state.review.panelOpen).toBe(true);
 });

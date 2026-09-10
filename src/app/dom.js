@@ -10,7 +10,7 @@ const REQUIRED_IDS = Object.freeze([
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
   "zoomLabel", "zoomOut",
-  "reviewPanel", "reviewToggle", "reviewClose", "reviewBackdrop", "reviewPrev", "reviewNext",
+  "reviewPanel", "reviewRail", "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext",
   "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
   "reviewAdd", "reviewReset",
 ]);

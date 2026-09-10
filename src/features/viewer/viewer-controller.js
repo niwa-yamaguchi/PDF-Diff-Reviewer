@@ -1,8 +1,9 @@
-import { fitViewport, focusRectViewport, zoomAt } from "./viewport.js";
+import { fitViewport, focusRectViewport, preserveViewportCenter, zoomAt } from "./viewport.js";
 
 export function createViewerController({ state, dom, window, onTransform = () => {} }) {
   let view = { scale: 1, tx: 0, ty: 0 };
   let pan = null;
+  let lastViewport = viewportSize();
 
   const hasImage = () => (
     typeof dom.hasImage === "function"
@@ -12,8 +13,23 @@ export function createViewerController({ state, dom, window, onTransform = () =>
   const visualIsActive = () => state.ui.topMode === "visual";
   const copyView = () => ({ ...view });
 
+  function viewportSize() {
+    return { width: dom.wrap.clientWidth, height: dom.wrap.clientHeight };
+  }
+
+  function viewsWithinPercent(current, fitted, percent = 0.01) {
+    if (!fitted) return false;
+    const scaleTol = Math.max(Math.abs(fitted.scale), Math.abs(current.scale)) * percent;
+    const txTol = Math.max(1, Math.abs(fitted.tx), Math.abs(current.tx)) * percent;
+    const tyTol = Math.max(1, Math.abs(fitted.ty), Math.abs(current.ty)) * percent;
+    return Math.abs(current.scale - fitted.scale) <= scaleTol
+      && Math.abs(current.tx - fitted.tx) <= txTol
+      && Math.abs(current.ty - fitted.ty) <= tyTol;
+  }
+
   function apply(nextView = view) {
     view = { ...nextView };
+    lastViewport = viewportSize();
     dom.out.style.transform = `translate(${view.tx}px,${view.ty}px) scale(${view.scale})`;
     dom.zoomLabel.textContent = `${Math.round(view.scale * 100)}%`;
     onTransform(copyView());
@@ -102,7 +118,21 @@ export function createViewerController({ state, dom, window, onTransform = () =>
     handlePointerUp: cancelPan,
     handlePointerCancel: cancelPan,
     handleDoubleClick: fit,
-    handleResize: () => apply(),
+    handleResize() {
+      const newViewport = viewportSize();
+      const oldViewport = lastViewport || newViewport;
+      if (!hasImage()) {
+        lastViewport = newViewport;
+        return apply();
+      }
+      const content = { width: dom.out.width, height: dom.out.height };
+      const fitted = fitViewport(content, oldViewport);
+      const next = viewsWithinPercent(view, fitted)
+        ? fitViewport(content, newViewport)
+        : preserveViewportCenter(view, oldViewport, newViewport);
+      lastViewport = newViewport;
+      return next ? apply(next) : copyView();
+    },
     getView: copyView,
   };
 }

@@ -170,22 +170,40 @@ test("retains the selected item's button and keyboard focus after rendering", ()
   expect(button.getAttribute("aria-pressed")).toBe("true");
 });
 
+test("shows the boundary rail labels for closed and open review panels", () => {
+  const { state, dom, view } = harness();
+  state.review.panelOpen = false;
+  view.render();
+  expect(dom.reviewRailToggle.textContent).toBe("«");
+  expect(dom.reviewRailToggle.getAttribute("aria-label")).toBe("変更箇所を開く");
+  expect(dom.reviewRailToggle.getAttribute("aria-expanded")).toBe("false");
+
+  state.review.panelOpen = true;
+  view.render();
+  expect(dom.reviewRailToggle.textContent).toBe("»");
+  expect(dom.reviewRailToggle.getAttribute("aria-label")).toBe("変更箇所を閉じる");
+  expect(dom.reviewRailToggle.getAttribute("aria-expanded")).toBe("true");
+});
+
 // Break: using panel visibility as state erases the user's open state on text-mode switches.
 test("hides only the panel presentation in text mode and restores the selected item", () => {
   const { state, dom, view } = harness();
   state.review.selectedId = "change-2";
   view.render();
   expect(dom.reviewPanel.hidden).toBe(false);
-  expect(dom.reviewToggle.getAttribute("aria-expanded")).toBe("true");
+  expect(dom.reviewRail.hidden).toBe(false);
+  expect(dom.reviewRailToggle.getAttribute("aria-expanded")).toBe("true");
   expect(dom.reviewList.querySelector('[data-change-id="change-2"]').classList.contains("selected")).toBe(true);
   state.ui.topMode = "text";
   view.render();
   expect(dom.reviewPanel.hidden).toBe(true);
+  expect(dom.reviewRail.hidden).toBe(true);
   expect(dom.reviewBackdrop.hidden).toBe(true);
   expect(state.review.panelOpen).toBe(true);
   state.ui.topMode = "visual";
   view.render();
   expect(dom.reviewPanel.hidden).toBe(false);
+  expect(dom.reviewRail.hidden).toBe(false);
   expect(dom.reviewList.querySelector('[data-review-comment="change-2"]').value).toBe("抵抗値を確認");
 });
 

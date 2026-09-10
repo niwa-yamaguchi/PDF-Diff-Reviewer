@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   fitViewport,
   focusRectViewport,
+  preserveViewportCenter,
   zoomAt,
 } from "../../src/features/viewer/viewport.js";
 import { createViewerController } from "../../src/features/viewer/viewer-controller.js";
@@ -92,6 +93,14 @@ describe("viewport geometry", () => {
   ])("does not invent a transform for empty content or containers", (content, container) => {
     expect(fitViewport(content, container)).toBeNull();
   });
+
+  test("preserves the zoomed page center in a narrower viewport", () => {
+    expect(preserveViewportCenter(
+      { scale: 2, tx: -300, ty: -100 },
+      { width: 800, height: 600 },
+      { width: 500, height: 600 },
+    )).toEqual({ scale: 2, tx: -450, ty: -100 });
+  });
 });
 
 describe("viewer controller", () => {
@@ -160,5 +169,27 @@ describe("viewer controller", () => {
     expect(controller.getView()).toEqual({ scale: 0.46, tx: 20, ty: 135 });
     expect(out.style.transform).toBe("translate(20px,135px) scale(0.46)");
     expect(onTransform).toHaveBeenCalledWith({ scale: 0.46, tx: 20, ty: 135 });
+  });
+
+  test("refits a fitted view when the viewport becomes narrower", () => {
+    const { controller, wrap } = viewerHarness();
+    wrap.clientWidth = 800;
+    wrap.clientHeight = 600;
+    controller.fit();
+    wrap.clientWidth = 500;
+
+    expect(controller.handleResize()).toEqual(
+      fitViewport({ width: 1000, height: 500 }, { width: 500, height: 600 }),
+    );
+  });
+
+  test("preserves the zoomed page center when the viewport becomes narrower", () => {
+    const { controller, wrap } = viewerHarness();
+    wrap.clientWidth = 800;
+    wrap.clientHeight = 600;
+    controller.apply({ scale: 2, tx: -300, ty: -100 });
+    wrap.clientWidth = 500;
+
+    expect(controller.handleResize()).toEqual({ scale: 2, tx: -450, ty: -100 });
   });
 });

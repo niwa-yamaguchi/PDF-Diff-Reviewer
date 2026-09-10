@@ -184,6 +184,7 @@ export function createChangeReviewController({
   function setComment(id, comment) { updateEntry(id, { comment }); }
 
   function togglePanel(open = !state.review.panelOpen) {
+    if (state.review.panelOpen && !open) stopBoxEditing?.();
     state.review.panelOpen = open;
     onChanged();
   }

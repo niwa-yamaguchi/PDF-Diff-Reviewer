@@ -158,7 +158,6 @@
         <button id="modeDiff" class="active" disabled title="差分表示">差分</button>
         <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
         <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
-        <button id="reviewToggle" aria-controls="reviewPanel" aria-expanded="false">変更箇所一覧</button>
       </div>
       <div class="toggleind" id="toggleInd" style="display:none">
         <span class="side old active" id="sideOld">OLD</span>
@@ -216,10 +215,13 @@
       </div>
     </div>
   </section>
+  <div id="reviewRail" class="review-rail">
+    <button id="reviewRailToggle" aria-controls="reviewPanel" aria-expanded="false"
+      aria-label="変更箇所を開く">«</button>
+  </div>
   <aside id="reviewPanel" class="review-panel" aria-label="変更箇所" hidden>
     <div class="review-head">
       <div><strong id="reviewTotal">変更箇所 0件</strong><span id="reviewIndexStatus" role="status"></span></div>
-      <button id="reviewClose" aria-label="変更箇所を閉じる">×</button>
     </div>
     <div id="reviewProgress">完了 0 / 0　未確認 0件</div>
     <div class="review-nav">

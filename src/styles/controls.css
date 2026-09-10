@@ -131,7 +131,12 @@
   .review-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 14px 10px}
   .review-head strong{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
   #reviewIndexStatus{display:block;font:10px var(--mono);color:var(--muted);margin-top:6px;line-height:1.6}
-  #reviewClose{min-width:32px;min-height:32px;font-size:18px}
+  #reviewRailToggle{
+    flex:1;width:100%;min-height:44px;border:0;border-radius:0;background:transparent;color:var(--fg);
+    font:16px var(--mono);cursor:pointer;padding:0;
+  }
+  #reviewRailToggle:hover{color:var(--signal)}
+  #reviewRailToggle[aria-expanded="true"]{color:var(--signal)}
   #reviewProgress{padding:0 14px 12px;color:var(--signal);font:11px var(--mono);font-variant-numeric:tabular-nums}
   .review-nav{display:flex;gap:8px;padding:0 14px 12px}
   .review-nav button{flex:1;min-height:32px;white-space:nowrap}
@@ -164,5 +169,4 @@
   .review-comment::placeholder{color:var(--muted)}
   .review-empty,.review-error{padding:14px;font-size:12px;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
   .review-error p{margin:0 0 8px;color:var(--removed)}
-  .review-panel :focus-visible,#reviewToggle:focus-visible,#reviewBackdrop:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
-  #reviewToggle[aria-expanded="true"]{color:var(--signal);border-color:var(--signal-dim)}
+  .review-panel :focus-visible,#reviewRailToggle:focus-visible,#reviewBackdrop:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
