@@ -37,6 +37,7 @@ export function createBoxEditorController({
   onBoxesChanged,
   onEditingChanged,
 }) {
+  const deletedEntriesById = new Map();
   const refresh = () => {
     if (view.refresh) view.refresh();
     else view.redraw?.();
@@ -73,6 +74,15 @@ export function createBoxEditorController({
 
   function selectedBoxIndex(boxes = state.boxEditor.currentBoxes || []) {
     return boxes.findIndex(box => box.id === state.review.selectedId);
+  }
+
+  function restoreDeletedEntries(boxes) {
+    for (const box of boxes || []) {
+      const entry = deletedEntriesById.get(box.id);
+      if (!entry || state.review.entriesById.has(box.id)) continue;
+      state.review.entriesById.set(box.id, { ...entry });
+      deletedEntriesById.delete(box.id);
+    }
   }
 
   function materializeEdits(pageIndex = state.documents.currentPage) {
@@ -275,6 +285,7 @@ export function createBoxEditorController({
     const page = state.documents.currentPage;
     const snapshot = state.boxEditor.undoByPage.get(page)?.undo?.();
     if (!snapshot) return false;
+    restoreDeletedEntries(snapshot);
     state.boxEditor.editsByPage.set(page, cloneBoxes(snapshot));
     state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(page);
     commitChange(page, "undo");
@@ -291,6 +302,9 @@ export function createBoxEditorController({
       || state.boxEditor.autoByPage.get(page) || [];
     const index = source.findIndex(box => box.id === id);
     if (index < 0) return false;
+    const entry = state.review.entriesById.get(id)
+      || state.review.pendingMigration?.entriesById.get(id);
+    if (entry) deletedEntriesById.set(id, { ...entry });
     const deletedSelection = state.review.selectedId === id;
     pushUndo(page, source);
     const edits = materializeEdits(page);
@@ -311,6 +325,7 @@ export function createBoxEditorController({
     state.boxEditor.mode = "idle";
     if (state.boxEditor.autoByPage.has(page)) {
       state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(page);
+      restoreDeletedEntries(state.boxEditor.currentBoxes);
       commitChange(page, "reset");
       refresh();
     } else {
@@ -329,7 +344,9 @@ export function createBoxEditorController({
     state.boxEditor.mode = "idle";
     state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(state.documents.currentPage) ?? null;
     for (const page of editedPages) {
-      commitChange(page, "discard", state.boxEditor.autoByPage.get(page) || []);
+      const autoBoxes = state.boxEditor.autoByPage.get(page) || [];
+      restoreDeletedEntries(autoBoxes);
+      commitChange(page, "discard", autoBoxes);
     }
     refresh();
   }

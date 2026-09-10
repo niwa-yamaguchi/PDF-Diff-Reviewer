@@ -272,6 +272,14 @@ export function createChangeReviewController({
     for (const item of items) {
       if (!entries.has(item.id)) entries.set(item.id, { status: "pending", comment: "" });
     }
+    if (source === "manual" && current) {
+      const retainedIds = new Set(items.map(item => item.id));
+      for (const item of current) {
+        if (retainedIds.has(item.id)) continue;
+        entries.delete(item.id);
+        pending?.entriesById.delete(item.id);
+      }
+    }
     review.entriesById = entries;
     const nextItemsById = new Map(items.map(item => [item.id, item]));
     if (!current || current.length !== items.length || current.some(item => {

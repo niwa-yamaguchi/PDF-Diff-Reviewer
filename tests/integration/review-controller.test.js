@@ -419,7 +419,7 @@ test("prunes deleted reviews only after comparison migration finishes and preser
   state.review.selectedId = "change-1";
   editor.deleteById("change-1");
   expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
-  expect(state.review.entriesById.get("change-1").comment).toBe("deleted review");
+  expect(state.review.entriesById.has("change-1")).toBe(false);
 
   invalidateThreshold(state);
   expect(state.boxEditor.undoByPage.size).toBe(0);
@@ -453,7 +453,7 @@ test("migration cleanup keeps IDs reachable from Undo without consuming its hist
 
   expect(state.review.pendingMigration).toBeNull();
   expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
-  expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "restore after migration" });
+  expect(state.review.entriesById.has("change-1")).toBe(false);
   expect(editor.undo()).toBe(true);
   expect(state.review.itemsByPage.get(0)[0].id).toBe("change-1");
   expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "restore after migration" });
@@ -560,7 +560,7 @@ test("document replacement rejects an old result even when generation numbers re
   expect(state.review.itemsByPage.size).toBe(0);
 });
 
-test("synchronizes edited pages without workers and preserves reviews through move delete and undo", async () => {
+test("synchronizes edited pages without workers and removes metadata for deleted IDs", async () => {
   const { state, controller, renderIndexPage } = harness(1);
   const original = controller.commitPage(page(0)).currentBoxes;
   state.review.entriesById.set(original[0].id, { status: "confirmed", comment: "keep" });
@@ -571,8 +571,25 @@ test("synchronizes edited pages without workers and preserves reviews through mo
   expect(state.review.itemsByPage.get(0)[0].rect.x).toBe(65);
   controller.syncEditedPage({ pageIndex: 0, boxes: [] });
   expect(state.review.itemsByPage.get(0)).toEqual([]);
-  controller.syncEditedPage({ pageIndex: 0, boxes: original });
-  expect(state.review.entriesById.get(original[0].id).comment).toBe("keep");
+  expect(state.review.entriesById.has(original[0].id)).toBe(false);
+});
+
+test("delete removes live metadata and undo restores the saved review entry", () => {
+  const { state, controller } = harness(1);
+  state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
+  const id = state.boxEditor.currentBoxes[0].id;
+  controller.setConfirmed(id, true);
+  controller.setComment(id, "Undoで復元するコメント");
+  const editor = editorForReview(state, controller);
+  state.review.selectedId = id;
+
+  expect(editor.deleteById(id)).toBe(true);
+  expect(state.review.entriesById.has(id)).toBe(false);
+
+  expect(editor.undo()).toBe(true);
+  expect(state.review.entriesById.get(id)).toEqual({
+    status: "confirmed", comment: "Undoで復元するコメント",
+  });
 });
 
 test("a manual edit during indexing wins over an in-flight automatic result", async () => {
