@@ -187,7 +187,7 @@ test("shows the boundary rail labels for closed and open review panels", () => {
 
 // Break: using panel visibility as state erases the user's open state on text-mode switches.
 test("hides only the panel presentation in text mode and restores the selected item", () => {
-  const { state, dom, view } = harness();
+  const { state, dom, document, view } = harness();
   state.review.selectedId = "change-2";
   view.render();
   expect(dom.reviewPanel.hidden).toBe(false);
@@ -199,11 +199,13 @@ test("hides only the panel presentation in text mode and restores the selected i
   expect(dom.reviewPanel.hidden).toBe(true);
   expect(dom.reviewRail.hidden).toBe(true);
   expect(dom.reviewBackdrop.hidden).toBe(true);
+  expect(document.body.classList.contains("review-rail-hidden")).toBe(true);
   expect(state.review.panelOpen).toBe(true);
   state.ui.topMode = "visual";
   view.render();
   expect(dom.reviewPanel.hidden).toBe(false);
   expect(dom.reviewRail.hidden).toBe(false);
+  expect(document.body.classList.contains("review-rail-hidden")).toBe(false);
   expect(dom.reviewList.querySelector('[data-review-comment="change-2"]').value).toBe("抵抗値を確認");
 });
 

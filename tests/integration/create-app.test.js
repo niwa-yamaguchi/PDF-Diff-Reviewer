@@ -669,6 +669,49 @@ test("closing the review panel stops editing without dropping selection or confi
   expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1", "change-2"]);
 });
 
+test("open panel then text then visual keeps the zoomed page center", async () => {
+  const frames = [];
+  const document = fakeDocument();
+  const wrap = document.querySelector(".canvas-wrap");
+  const out = document.getElementById("out");
+  Object.assign(wrap, { clientWidth: 800, clientHeight: 600 });
+  Object.assign(out, { width: 1000, height: 500 });
+  out.style.display = "block";
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createViewerController,
+    createTextController: ({ state }) => ({
+      setTopMode(mode) {
+        state.ui.topMode = mode;
+        const visual = mode === "visual";
+        out.style.display = visual ? "block" : "none";
+        wrap.clientWidth = visual ? 800 : 0;
+        wrap.clientHeight = visual ? 600 : 0;
+        return true;
+      },
+    }),
+  });
+  const window = {
+    confirm: () => true,
+    console: { error() {} },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+    requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
+  };
+  const app = createApp({ document, window, dependencies });
+  const { appController } = dependencies.bindControls.mock.calls[0][0];
+  app.viewerController.apply({ scale: 2, tx: -300, ty: -100 });
+  app.reviewController.togglePanel(true);
+  while (frames.length) frames.shift()();
+  expect(app.viewerController.getView()).toEqual({ scale: 2, tx: -300, ty: -100 });
+
+  await appController.setTopMode("text");
+  while (frames.length) frames.shift()();
+  await appController.setTopMode("visual");
+  while (frames.length) frames.shift()();
+
+  expect(app.viewerController.getView()).toEqual({ scale: 2, tx: -300, ty: -100 });
+});
+
 test("toggling the review panel resizes the viewer after the next animation frame", () => {
   const handleResize = vi.fn(() => ({ scale: 1, tx: 0, ty: 0 }));
   const frames = [];

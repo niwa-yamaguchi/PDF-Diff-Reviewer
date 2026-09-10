@@ -17,6 +17,11 @@ export function createViewerController({ state, dom, window, onTransform = () =>
     return { width: dom.wrap.clientWidth, height: dom.wrap.clientHeight };
   }
 
+  function viewportIsLaidOut(size) {
+    return Number.isFinite(size?.width) && size.width > 0
+      && Number.isFinite(size?.height) && size.height > 0;
+  }
+
   function viewsWithinPercent(current, fitted, percent = 0.01) {
     if (!fitted) return false;
     const scaleTol = Math.max(Math.abs(fitted.scale), Math.abs(current.scale)) * percent;
@@ -29,7 +34,8 @@ export function createViewerController({ state, dom, window, onTransform = () =>
 
   function apply(nextView = view) {
     view = { ...nextView };
-    lastViewport = viewportSize();
+    const size = viewportSize();
+    if (viewportIsLaidOut(size)) lastViewport = size;
     dom.out.style.transform = `translate(${view.tx}px,${view.ty}px) scale(${view.scale})`;
     dom.zoomLabel.textContent = `${Math.round(view.scale * 100)}%`;
     onTransform(copyView());
@@ -120,17 +126,14 @@ export function createViewerController({ state, dom, window, onTransform = () =>
     handleDoubleClick: fit,
     handleResize() {
       const newViewport = viewportSize();
-      const oldViewport = lastViewport || newViewport;
-      if (!hasImage()) {
-        lastViewport = newViewport;
-        return apply();
-      }
+      if (!viewportIsLaidOut(newViewport)) return copyView();
+      const oldViewport = viewportIsLaidOut(lastViewport) ? lastViewport : newViewport;
+      if (!hasImage()) return apply();
       const content = { width: dom.out.width, height: dom.out.height };
       const fitted = fitViewport(content, oldViewport);
       const next = viewsWithinPercent(view, fitted)
         ? fitViewport(content, newViewport)
         : preserveViewportCenter(view, oldViewport, newViewport);
-      lastViewport = newViewport;
       return next ? apply(next) : copyView();
     },
     getView: copyView,

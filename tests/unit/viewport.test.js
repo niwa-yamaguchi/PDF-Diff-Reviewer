@@ -192,4 +192,21 @@ describe("viewer controller", () => {
 
     expect(controller.handleResize()).toEqual({ scale: 2, tx: -450, ty: -100 });
   });
+
+  test("does not consume a 0-size viewport while the canvas wrap is hidden", () => {
+    const { controller, wrap, out } = viewerHarness();
+    wrap.clientWidth = 800;
+    wrap.clientHeight = 600;
+    controller.apply({ scale: 2, tx: -300, ty: -100 });
+    out.style.display = "none";
+    wrap.clientWidth = 0;
+    wrap.clientHeight = 0;
+
+    expect(controller.handleResize()).toEqual({ scale: 2, tx: -300, ty: -100 });
+
+    out.style.display = "block";
+    wrap.clientWidth = 500;
+    wrap.clientHeight = 600;
+    expect(controller.handleResize()).toEqual({ scale: 2, tx: -450, ty: -100 });
+  });
 });

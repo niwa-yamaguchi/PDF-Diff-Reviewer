@@ -68,6 +68,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     toggle.setAttribute("aria-expanded", String(visible));
     toggle.setAttribute("aria-label", visible ? "変更箇所を閉じる" : "変更箇所を開く");
     document.body.classList.toggle("review-open", visible);
+    document.body.classList.toggle("review-rail-hidden", !visual);
 
     const active = document.activeElement;
     const focus = preserveCommentFocus && dom.reviewList.contains(active) && active.dataset.reviewComment

@@ -30,6 +30,8 @@
 
   main{flex:1;display:grid;grid-template-columns:288px minmax(0,1fr) 28px 0;min-height:0}
   .review-open main{grid-template-columns:288px minmax(0,1fr) 28px 320px}
+  body.review-rail-hidden main,
+  body.review-rail-hidden.review-open main{grid-template-columns:288px minmax(0,1fr)}
   .review-rail{grid-column:3;position:relative;display:flex;align-items:stretch;background:var(--panel);border-left:1px solid var(--line)}
   .review-rail[hidden]{display:none}
   .review-panel{grid-column:4}
@@ -39,7 +41,9 @@
   }
   #reviewBackdrop{display:none}
   @media(max-width:1099px){
-    main,.review-open main{grid-template-columns:288px minmax(0,1fr)}
+    main,.review-open main,
+    body.review-rail-hidden main,
+    body.review-rail-hidden.review-open main{grid-template-columns:288px minmax(0,1fr)}
     .review-rail{
       position:fixed;top:0;bottom:0;width:28px;z-index:32;right:0;grid-column:2;grid-row:1;border-left:1px solid var(--line);
     }
@@ -51,7 +55,9 @@
     #reviewBackdrop:not([hidden]){display:block;position:fixed;inset:0;z-index:30;border:0;border-radius:0;background:#0008}
   }
   @media(max-width:820px){
-    main,.review-open main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,2fr)}
+    main,.review-open main,
+    body.review-rail-hidden main,
+    body.review-rail-hidden.review-open main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,2fr)}
     main > aside:not(.review-panel){min-height:0}
     .review-rail,.review-panel{grid-column:1;grid-row:2}
   }
