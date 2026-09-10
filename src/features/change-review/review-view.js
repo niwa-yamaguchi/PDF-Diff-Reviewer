@@ -44,8 +44,16 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     thumbnail.dataset.reviewThumbnail = item.id;
     thumbnail.style.width = "120px";
     thumbnail.style.height = "80px";
-    article.append(select, thumbnail, confirmedLabel, comment);
-    return { article, select, number, kind, stateLabel, confirmed, comment, thumbnail };
+    const actions = element("div", "review-actions");
+    const editingLabel = element("span", "review-editing", "編集中");
+    const edit = element("button", "review-edit", "編集");
+    edit.dataset.reviewEdit = item.id;
+    const remove = element("button", "review-delete", "削除");
+    remove.dataset.reviewDelete = item.id;
+    actions.append(editingLabel, edit, remove);
+    article.append(select, thumbnail, actions, confirmedLabel, comment);
+    return { article, select, number, kind, stateLabel, confirmed, comment, thumbnail,
+      editingLabel, edit, remove };
   }
 
   function render({ preserveCommentFocus = true } = {}) {
@@ -71,8 +79,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
       : review.indexErrors.size ? `索引エラー ${review.indexErrors.size}ページ`
         : review.indexTotal ? `${review.indexedPages >= review.indexTotal ? "分析完了" : "分析待機中"} ${review.indexedPages} / ${review.indexTotal} ページ` : "";
     dom.reviewPrev.disabled = dom.reviewNext.disabled = !items.length;
-    dom.reviewNotice.textContent = review.migrationSummary
-      ? `レビュー${review.migrationSummary.inherited}件を継承し、${review.migrationSummary.reset}件を未確認へ戻しました` : "";
+    dom.reviewNotice.textContent = review.actionNotice || (review.migrationSummary
+      ? `レビュー${review.migrationSummary.inherited}件を継承し、${review.migrationSummary.reset}件を未確認へ戻しました` : "");
 
     const pages = [...new Set([...review.itemsByPage.keys(), ...review.indexErrors.keys()])].sort((a, b) => a - b);
     const groups = [];
@@ -106,7 +114,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         const changeNumber = numbersById.get(item.id);
         const entry = review.entriesById.get(item.id) || { status: "pending", comment: "" };
         if (!itemViews.has(item.id)) itemViews.set(item.id, createItem(item));
-        const { article, select, number, kind, stateLabel, confirmed, comment, thumbnail } = itemViews.get(item.id);
+        const { article, select, number, kind, stateLabel, confirmed, comment, thumbnail,
+          editingLabel, edit } = itemViews.get(item.id);
         const thumbnails = review.thumbnailsByPage.get(pageIndex);
         const url = thumbnails instanceof Map ? thumbnails.get(item.id) : null;
         const thumbnailState = url || (thumbnails?.error ? "error" : "loading");
@@ -125,6 +134,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         const image = thumbnail.querySelector("img");
         if (image) image.alt = `ページ ${pageIndex + 1} 変更 ${changeNumber}の差分画像`;
         article.classList.toggle("selected", review.selectedId === item.id);
+        const editing = state.boxEditor.mode === "edit" && review.selectedId === item.id;
+        article.classList.toggle("editing", editing);
         article.setAttribute("aria-current", String(review.selectedId === item.id));
         select.setAttribute("aria-pressed", String(review.selectedId === item.id));
         number.textContent = String(changeNumber);
@@ -132,6 +143,8 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         kind.textContent = KIND_LABELS[item.kind] || "変更";
         const isConfirmed = entry.status === "confirmed";
         stateLabel.textContent = isConfirmed ? "確認済み" : "未確認";
+        editingLabel.hidden = !editing;
+        edit.textContent = editing ? "編集を終了" : "編集";
         select.setAttribute("aria-label", `ページ ${pageIndex + 1} 変更 ${changeNumber}を表示`);
         confirmed.checked = isConfirmed;
         if (activeConfirmedId === item.id) focusedConfirmed = confirmed;

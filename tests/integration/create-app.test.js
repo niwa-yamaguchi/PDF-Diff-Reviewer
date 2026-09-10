@@ -10,7 +10,7 @@ import { bindControls } from "../../src/app/bind-controls.js";
 
 const ids = [
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
-  "boxDel", "boxEdit", "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
+  "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",
@@ -187,7 +187,7 @@ function fakeDependencies(overrides = {}) {
     createBoxEditorView: vi.fn(() => ({ ...controller("boxView"), redraw() {}, refresh() {}, updateControls() {} })),
     createBoxEditorController: vi.fn(() => ({
       ...controller("boxEditor"), confirmDiscard: () => true, syncInvalidated() {},
-      cancelDrag() {}, setEditMode() {}, draw() {},
+      cancelDrag() {}, startEdit: () => true, stopEditing() {}, deleteById: () => true, draw() {},
     })),
     createVisualController: vi.fn(({ drawBoxes }) => {
       expect(() => drawBoxes()).not.toThrow();
@@ -253,54 +253,48 @@ function selectionApp(render = async () => selectionPage()) {
   app.state.boxEditor.showBoxes = true;
   return app;
 }
-function clickBox(app, x, y) {
-  app.boxEditorController.pointerDown({ x, y, pointerId: 1, button: 0 });
-  app.boxEditorController.pointerUp({ pointerId: 1 });
-}
-
-// Break: list B leaves edit A selected, so Delete removes the wrong drawing change.
-test("list selection replaces the edit selection before Delete on the same page", async () => {
+// Break: a normal list selection leaves the previous item editable.
+test("list selection changes the selected ID and exits item editing", async () => {
   const app = selectionApp();
   await app.visualController.showPage(0);
-  app.boxEditorController.setEditMode(true);
-  clickBox(app, 20, 20);
-  expect(app.state.boxEditor.selectedIndex).toBe(0);
+  await app.reviewController.edit("change-1");
+  expect(app.state.boxEditor.mode).toBe("edit");
+
   await app.reviewController.select("change-2");
-  app.boxEditorController.deleteSelected();
+
+  expect(app.state.review.selectedId).toBe("change-2");
+  expect(app.state.boxEditor.mode).toBe("idle");
+  expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1", "change-2"]);
+});
+
+// Break: list edit/delete is not wired through the composition root by stable ID.
+test("edits and removes the requested list item by ID", async () => {
+  const app = selectionApp();
+  await app.visualController.showPage(0);
+
+  expect(await app.reviewController.edit("change-2")).toBe(true);
+  expect(app.state.review.selectedId).toBe("change-2");
+  expect(app.state.boxEditor.mode).toBe("edit");
+
+  expect(app.reviewController.remove("change-2")).toBe(true);
+  expect(app.state.review.itemsByPage.get(0).some(item => item.id === "change-2")).toBe(false);
   expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1"]);
-  expect(app.state.review.itemsByPage.get(0).map(item => item.id)).toEqual(["change-1"]);
-  expect(app.state.boxEditor.editMode).toBe(true);
+  expect(app.state.boxEditor.mode).toBe("idle");
 });
 
-// Break: list selection either enters edit mode or fails to map the selected ID to current boxes.
-test("list selection synchronizes the box ID without entering edit mode", async () => {
+// Break: item editing falls back to the retired blank-drag creation path.
+test("item editing ignores blank drawing drags", async () => {
   const app = selectionApp();
   await app.visualController.showPage(0);
-  await app.reviewController.select("change-2");
-  expect(app.state.boxEditor.selectedIndex).toBe(1);
-  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex].id).toBe("change-2");
-  expect(app.state.boxEditor.editMode).toBe(false);
-});
+  await app.reviewController.edit("change-2");
 
-// Break: entering edit mode clears the list-selected ID, so the newly enabled Delete control has no target.
-test("entering edit mode keeps the box selected from the list", async () => {
-  const app = selectionApp();
-  await app.visualController.showPage(0);
-  await app.reviewController.select("change-2");
-  app.boxEditorController.setEditMode(true);
-  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex]?.id).toBe("change-2");
-});
+  expect(app.boxEditorController.pointerDown({ x: 2, y: 2, pointerId: 1, button: 0 })).toBe(false);
+  app.boxEditorController.pointerMove({ x: 30, y: 30, pointerId: 1 });
+  app.boxEditorController.pointerUp({ x: 30, y: 30, pointerId: 1 });
 
-// Break: a diagram selection never reaches the review ID and leaves the wrong list row highlighted.
-test("diagram selection updates the review row without moving the viewport", async () => {
-  const app = selectionApp();
-  await app.visualController.showPage(0);
-  await app.reviewController.select("change-2");
-  const transform = app.viewerController.getView();
-  app.boxEditorController.setEditMode(true);
-  clickBox(app, 20, 20);
-  expect(app.state.review.selectedId).toBe("change-1");
-  expect(app.viewerController.getView()).toEqual(transform);
+  expect(app.state.review.selectedId).toBe("change-2");
+  expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1", "change-2"]);
+  expect(app.state.boxEditor.editsByPage.size).toBe(0);
 });
 
 // Break: a pending page change keeps the old Delete target, or its late completion restores an obsolete selection.
@@ -310,109 +304,13 @@ test("the last list selection wins a pending cross-page render and edit selectio
     ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(selectionPage()));
   await app.visualController.showPage(0);
   app.reviewController.commitPage({ pageIndex: 1, width: 100, height: 200, boxes: [selectionBoxes[0]] });
-  app.boxEditorController.setEditMode(true);
-  clickBox(app, 20, 20);
   const stale = app.reviewController.select("change-3");
-  const pendingSelection = app.state.boxEditor.selectedIndex;
   await app.reviewController.select("change-2");
   finish(selectionPage());
   expect(await stale).toBe(false);
-  expect(pendingSelection).toBe(-1);
   expect(app.state.documents.currentPage).toBe(0);
   expect(app.state.review.selectedId).toBe("change-2");
-  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex]?.id).toBe("change-2");
-});
-
-// Break: a delayed list navigation overwrites a more recent selection made in the visible drawing.
-test("diagram selection supersedes a pending list navigation", async () => {
-  let finish;
-  const app = selectionApp(snapshot => snapshot.pageIndex === 1
-    ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(selectionPage()));
-  await app.visualController.showPage(0);
-  app.reviewController.commitPage({ pageIndex: 1, width: 100, height: 200, boxes: [selectionBoxes[0]] });
-  app.boxEditorController.setEditMode(true);
-  const stale = app.reviewController.select("change-3");
-  clickBox(app, 20, 20);
-  finish(selectionPage());
-  expect(await stale).toBe(false);
-  expect(app.state.documents.currentPage).toBe(0);
-  expect(app.state.review.selectedId).toBe("change-1");
-  expect(app.state.boxEditor.currentBoxes[app.state.boxEditor.selectedIndex]?.id).toBe("change-1");
-});
-
-test("editing a hidden toggle page preserves saved automatic reviews during immediate manual creation", async () => {
-  const autoBoxes = [{ x: 50, y: 100, w: 20, h: 40, kind: "added" }];
-  const detected = { ...hiddenTogglePage(), boxes: autoBoxes, autoBoxes };
-  let resolveDetection;
-  const renderTogglePage = vi.fn().mockResolvedValueOnce(detected)
-    .mockResolvedValueOnce(hiddenTogglePage())
-    .mockImplementationOnce(() => new Promise(resolve => { resolveDetection = resolve; }));
-  const app = editableVisualApp(renderTogglePage);
-  app.state.boxEditor.showBoxes = true;
-  await app.visualController.showPage(0);
-  app.state.review.entriesById.set("change-1", { status: "confirmed", comment: "既存の確認記録" });
-  app.boxEditorController.toggleBoxes();
-  await app.visualController.showPage(0);
-  expect(app.state.boxEditor.currentBoxes).toEqual([]);
-  expect(app.state.review.itemsByPage.get(0)).toMatchObject([{ id: "change-1", source: "auto" }]);
-  const savedAuto = app.state.boxEditor.autoByPage.get(0);
-  const showing = vi.spyOn(app.visualController, "showPage");
-
-  app.boxEditorController.setEditMode(true);
-  app.boxEditorController.pointerDown({ x: 10, y: 20, pointerId: 1 });
-  app.boxEditorController.pointerMove({ x: 30, y: 60, pointerId: 1 });
-  app.boxEditorController.pointerUp({ pointerId: 1 });
-  const immediateItems = app.state.review.itemsByPage.get(0);
-  if (resolveDetection) {
-    resolveDetection(detected);
-    await showing.mock.results[0].value;
-  }
-
-  const expectedItems = [
-    { id: "change-2", source: "manual", kind: "changed",
-      normalizedRect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
-    { id: "change-1", source: "auto", kind: "added",
-      normalizedRect: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } },
-  ];
-  expect(immediateItems).toMatchObject(expectedItems);
-  expect(app.state.review.itemsByPage.get(0)).toMatchObject(expectedItems);
-  expect(app.state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "既存の確認記録" });
-  expect(app.state.boxEditor.currentBoxes).toMatchObject([
-    { id: "change-1", kind: "added", source: "auto" },
-    { id: "change-2", kind: "changed", source: "manual" },
-  ]);
-  expect(savedAuto).toEqual([{ x: 50, y: 100, w: 20, h: 40, id: "change-1", kind: "added", source: "auto" }]);
-  expect(app.state.boxEditor.currentBoxes).not.toBe(savedAuto);
-  expect(app.state.boxEditor.currentBoxes[0]).not.toBe(savedAuto[0]);
-  expect(app.state.boxEditor.autoByPage.get(0)).toBe(savedAuto);
-  expect(showing).not.toHaveBeenCalled();
-});
-
-test("manual creation after an undetected toggle page commits while automatic detection is pending", async () => {
-  let resolveDetection;
-  const renderTogglePage = vi.fn().mockResolvedValueOnce(hiddenTogglePage())
-    .mockImplementationOnce(() => new Promise(resolve => { resolveDetection = resolve; }));
-  const app = editableVisualApp(renderTogglePage);
-  expect(await app.visualController.showPage(0)).toEqual({ committed: true });
-  expect(app.state.review.itemsByPage.has(0)).toBe(false);
-  const showing = vi.spyOn(app.visualController, "showPage");
-  app.boxEditorController.setEditMode(true);
-  const detection = showing.mock.results[0].value;
-  app.boxEditorController.pointerDown({ x: 10, y: 20, pointerId: 1 });
-  app.boxEditorController.pointerMove({ x: 30, y: 60, pointerId: 1 });
-  let creationError;
-  try { app.boxEditorController.pointerUp({ pointerId: 1 }); }
-  catch (error) { creationError = error; }
-  const autoBoxes = [{ x: 0, y: 0, w: 10, h: 10, kind: "added" }];
-  resolveDetection({ ...hiddenTogglePage(), boxes: autoBoxes, autoBoxes });
-  expect(await detection).toEqual({ committed: true });
-  expect(creationError).toBeUndefined();
-  expect(app.state.review.itemsByPage.get(0)).toMatchObject([{
-    id: "change-1", source: "manual", kind: "changed",
-    normalizedRect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
-  }]);
-  expect(app.state.boxEditor.currentBoxes).toEqual(app.state.boxEditor.editsByPage.get(0));
-  expect(app.state.boxEditor.autoByPage.has(0)).toBe(false);
+  expect(app.state.boxEditor.mode).toBe("idle");
 });
 
 test("stale undetected renders cannot register dimensions for a page that never committed", async () => {
@@ -452,28 +350,6 @@ test("createApp is the sole composition root and binds once after safe construct
   expect(app.exportController.name).toBe("export");
   expect(bindControls).toHaveBeenCalledTimes(1);
   expect(calls).toEqual(["bind"]);
-});
-
-test("createApp connects manual-box allocation and edits to the real review controller", () => {
-  const dependencies = fakeDependencies({
-    bindControls: vi.fn(),
-  });
-  const window = {
-    confirm: vi.fn(() => true),
-    console: { error: vi.fn() },
-    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
-  };
-
-  const document = fakeDocument();
-  Object.assign(document.getElementById("out"), { width: 100, height: 200 });
-  const app = createApp({ document, window, dependencies });
-  app.reviewController.commitPage({ pageIndex: 0, boxes: [], width: 100, height: 200 });
-  const { makeManualBox, onBoxesChanged } = dependencies.createBoxEditorController.mock.calls[0][0];
-  const box = makeManualBox({ pageIndex: 0, box: { x: 10, y: 10, w: 20, h: 20 } });
-  onBoxesChanged({ pageIndex: 0, boxes: [box], reason: "create" });
-  expect(app.state.review.itemsByPage.get(0)[0]).toMatchObject({
-    id: "change-1", kind: "changed", source: "manual", normalizedRect: { x: 0.1, y: 0.05 },
-  });
 });
 
 test("discarding edits across different-sized pages preserves each page's normalized rectangles", () => {

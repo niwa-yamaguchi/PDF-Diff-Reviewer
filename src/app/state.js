@@ -13,6 +13,7 @@ export function createReviewState() {
     pendingMigration: null,
     migrationSummary: null,
     thumbnailsByPage: new Map(),
+    actionNotice: "",
   };
 }
 
@@ -58,8 +59,7 @@ export function createAppState() {
       editsByPage: new Map(),
       undoByPage: new Map(),
       revisionByPage: new Map(),
-      editMode: false,
-      selectedIndex: -1,
+      mode: "idle",
       drag: null,
     },
     textReview: {

@@ -187,9 +187,12 @@ function controllerToggleCache(state, sideCanvases) {
 
 function attachBoxEditor(state, dom) {
   state.visual.rendered = true;
-  state.boxEditor.editMode = true;
-  state.boxEditor.currentBoxes = [];
-  state.boxEditor.autoByPage.set(0, []);
+  state.boxEditor.mode = "edit";
+  state.review.selectedId = "change-1";
+  const boxes = [{ id: "change-1", x: 10, y: 10, w: 20, h: 20 }];
+  state.boxEditor.currentBoxes = boxes.map(box => ({ ...box }));
+  state.boxEditor.autoByPage.set(0, boxes.map(box => ({ ...box })));
+  state.review.itemsByPage.set(0, boxes.map(box => ({ ...box, pageIndex: 0 })));
   const view = {
     toImagePoint: point => ({ x: point.x, y: point.y }),
     getScale: () => 1,
@@ -220,7 +223,7 @@ test("cancels a drag started during rendering immediately before committing the 
   const boxController = attachBoxEditor(state, dom);
 
   const rendering = visualController.showPage(0);
-  boxController.pointerDown({ x: 10, y: 10, pointerId: 7, button: 0, preventDefault() {} });
+  boxController.pointerDown({ x: 15, y: 15, pointerId: 7, button: 0, preventDefault() {} });
   boxController.pointerMove({ x: 40, y: 40, pointerId: 7 });
   expect(state.boxEditor.drag).not.toBeNull();
   pending.resolve(result(0));
@@ -246,11 +249,11 @@ test("commits a normal threshold render shell while preserving a newer manual bo
   expect(renderDiffPage).toHaveBeenCalledWith(expect.objectContaining({
     comparison: expect.objectContaining({ threshold: 42 }),
   }), expect.objectContaining({ onProgress: expect.any(Function) }));
-  boxController.pointerDown({ x: 10, y: 10, pointerId: 8, button: 0, preventDefault() {} });
+  boxController.pointerDown({ x: 15, y: 15, pointerId: 8, button: 0, preventDefault() {} });
   boxController.pointerMove({ x: 40, y: 40, pointerId: 8 });
   boxController.pointerUp({ x: 40, y: 40, pointerId: 8 });
   const editedBoxes = state.boxEditor.editsByPage.get(0);
-  expect(editedBoxes).toEqual([{ x: 10, y: 10, w: 30, h: 30 }]);
+  expect(editedBoxes).toEqual([{ id: "change-1", x: 35, y: 35, w: 20, h: 20 }]);
   expect(state.boxEditor.revisionByPage.get(0)).toBe(1);
   expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
   const rendered = result(0);
@@ -260,7 +263,7 @@ test("commits a normal threshold render shell while preserving a newer manual bo
   expect(context.drawImage).toHaveBeenCalledWith(expect.objectContaining({ id: "diff-0" }), 0, 0);
   expect(state.boxEditor.editsByPage.get(0)).toBe(editedBoxes);
   expect(state.boxEditor.currentBoxes).toBe(editedBoxes);
-  expect(state.boxEditor.selectedIndex).toBe(0);
+  expect(state.review.selectedId).toBe("change-1");
   expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
   expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
   expect(state.visual.currentPlan).toBe(rendered.currentPlan);
@@ -286,7 +289,7 @@ test("settles a pending toggle render after a manual edit without reverting its 
   dom.boxToggle.disabled = true;
 
   const rendering = visualController.showPage(0);
-  boxController.pointerDown({ x: 10, y: 10, pointerId: 9, button: 0, preventDefault() {} });
+  boxController.pointerDown({ x: 15, y: 15, pointerId: 9, button: 0, preventDefault() {} });
   boxController.pointerMove({ x: 40, y: 40, pointerId: 9 });
   boxController.pointerUp({ x: 40, y: 40, pointerId: 9 });
   const editedBoxes = state.boxEditor.editsByPage.get(0);
@@ -299,7 +302,7 @@ test("settles a pending toggle render after a manual edit without reverting its 
   expect(dom.status.innerHTML).not.toContain("busy");
   expect(state.boxEditor.editsByPage.get(0)).toBe(editedBoxes);
   expect(state.boxEditor.currentBoxes).toBe(editedBoxes);
-  expect(state.boxEditor.selectedIndex).toBe(0);
+  expect(state.review.selectedId).toBe("change-1");
   expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
   expect(state.boxEditor.autoByPage.get(0)).toBe(originalAuto);
   expect(dom.statBox.textContent).toBe("変更箇所 1（手編集）");
@@ -571,13 +574,13 @@ test("reports a current renderer failure without replacing the prior committed p
   const renderDiffPage = vi.fn(async () => { throw error; });
   const { state, dom, context, drawBoxes, controller } = harness({ renderDiffPage });
   state.documents.currentPage = 1;
-  state.boxEditor.selectedIndex = 3;
+  state.review.selectedId = "change-3";
 
   const outcome = await controller.showPage(0);
 
   expect(outcome).toEqual({ committed: false, error });
   expect(state.documents.currentPage).toBe(1);
-  expect(state.boxEditor.selectedIndex).toBe(3);
+  expect(state.review.selectedId).toBe("change-3");
   expect(dom.out).toMatchObject({ width: 10, height: 10 });
   expect(context.drawImage).not.toHaveBeenCalled();
   expect(drawBoxes).not.toHaveBeenCalled();
@@ -605,13 +608,13 @@ test("updates the full-resolution output for export without changing the reviewe
   const renderDiffPage = vi.fn(async snapshot => result(snapshot.pageIndex));
   const { state, dom, controller } = harness({ renderDiffPage });
   state.documents.currentPage = 0;
-  state.boxEditor.selectedIndex = 4;
+  state.review.selectedId = "change-4";
 
   expect(await controller.showPage(1, { mode: "diff", updateCurrentPage: false }))
     .toEqual({ committed: true });
 
   expect(state.documents.currentPage).toBe(0);
-  expect(state.boxEditor.selectedIndex).toBe(4);
+  expect(state.review.selectedId).toBe("change-4");
   expect(dom.out).toMatchObject({ width: 101, height: 201 });
 });
 

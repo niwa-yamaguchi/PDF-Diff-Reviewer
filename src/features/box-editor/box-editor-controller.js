@@ -34,9 +34,8 @@ export function createBoxEditorController({
   dom,
   view,
   confirmDiscard,
-  makeManualBox,
   onBoxesChanged,
-  onSelectionChanged,
+  onEditingChanged,
 }) {
   const refresh = () => {
     if (view.refresh) view.refresh();
@@ -72,16 +71,8 @@ export function createBoxEditorController({
     onBoxesChanged?.({ pageIndex, boxes: cloneBoxes(boxes), reason });
   }
 
-  function notifySelection() {
-    onSelectionChanged?.({ pageIndex: state.documents.currentPage,
-      id: state.boxEditor.currentBoxes?.[state.boxEditor.selectedIndex]?.id ?? null });
-  }
-
-  function selectById(id) {
-    cancelDrag();
-    state.boxEditor.selectedIndex = id == null ? -1
-      : (state.boxEditor.currentBoxes || []).findIndex(box => box.id === id);
-    refresh();
+  function selectedBoxIndex(boxes = state.boxEditor.currentBoxes || []) {
+    return boxes.findIndex(box => box.id === state.review.selectedId);
   }
 
   function materializeEdits(pageIndex = state.documents.currentPage) {
@@ -109,15 +100,15 @@ export function createBoxEditorController({
   }
 
   function hitHandle(point) {
-    const index = state.boxEditor.selectedIndex;
     const boxes = state.boxEditor.currentBoxes || [];
+    const index = selectedBoxIndex(boxes);
     if (index < 0 || index >= boxes.length) return -1;
     const radius = HANDLE_SCREEN_PX / scale();
     const points = handlePoints(boxes[index]);
     for (let handle = 0; handle < points.length; handle += 1) {
       if (
-        Math.abs(point.x - points[handle][0]) <= radius
-        && Math.abs(point.y - points[handle][1]) <= radius
+        Math.abs(point.x - points[handle][0]) < radius
+        && Math.abs(point.y - points[handle][1]) < radius
       ) return handle;
     }
     return -1;
@@ -142,43 +133,39 @@ export function createBoxEditorController({
   }
 
   function pointerDown(event) {
-    if (!state.boxEditor.editMode || event.button === 2) return false;
-    event.preventDefault?.();
+    if (state.boxEditor.mode !== "edit" || event.button === 2) return false;
     const point = pointFrom(event);
     const pointerId = event.pointerId;
     const page = state.documents.currentPage;
-    view.capturePointer?.(pointerId);
 
     const handle = hitHandle(point);
     if (handle >= 0) {
-      const index = state.boxEditor.selectedIndex;
+      const index = selectedBoxIndex();
+      event.preventDefault?.();
+      view.capturePointer?.(pointerId);
       state.boxEditor.drag = {
         kind: "resize", handle, i: index, page, pointerId,
         orig: { ...state.boxEditor.currentBoxes[index] }, preview: null,
       };
-      notifySelection();
       refresh();
       return true;
     }
 
-    const hit = hitBox(point);
-    if (hit >= 0) {
-      state.boxEditor.selectedIndex = hit;
+    const hit = selectedBoxIndex();
+    const selected = state.boxEditor.currentBoxes?.[hit];
+    if (selected && point.x >= selected.x && point.x <= selected.x + selected.w
+      && point.y >= selected.y && point.y <= selected.y + selected.h) {
+      event.preventDefault?.();
+      view.capturePointer?.(pointerId);
       state.boxEditor.drag = {
         kind: "move", i: hit, page, pointerId,
         ox: point.x, oy: point.y,
-        orig: { ...state.boxEditor.currentBoxes[hit] }, preview: null,
+        orig: { ...selected }, preview: null,
       };
-    } else {
-      state.boxEditor.selectedIndex = -1;
-      state.boxEditor.drag = {
-        kind: "create", page, pointerId,
-        x0: point.x, y0: point.y, x1: point.x, y1: point.y,
-      };
+      refresh();
+      return true;
     }
-    notifySelection();
-    refresh();
-    return true;
+    return false;
   }
 
   function pointerMove(event) {
@@ -186,10 +173,7 @@ export function createBoxEditorController({
     if (!drag || event.pointerId !== drag.pointerId || drag.page !== state.documents.currentPage) return false;
     const point = pointFrom(event);
     const { width, height } = frameSize();
-    if (drag.kind === "create") {
-      drag.x1 = point.x;
-      drag.y1 = point.y;
-    } else if (drag.kind === "move") {
+    if (drag.kind === "move") {
       const maxX = Math.max(0, width - drag.orig.w);
       const maxY = Math.max(0, height - drag.orig.h);
       drag.preview = {
@@ -223,30 +207,17 @@ export function createBoxEditorController({
     const page = drag.page;
     const { width, height } = frameSize();
 
-    if (drag.kind === "create") {
-      const draggedBox = normalizeRect(drag.x0, drag.y0, drag.x1, drag.y1);
-      if (!isTooSmall(draggedBox)) {
-        pushUndo(page, state.boxEditor.currentBoxes || []);
-        const edits = materializeEdits(page);
-        const box = clampBox(draggedBox, width, height);
-        edits.push(makeManualBox?.({ pageIndex: page, box }) ?? box);
-        commitChange(page, "create");
-        state.boxEditor.selectedIndex = edits.length - 1;
-        notifySelection();
-      }
-    } else {
-      const boxes = state.boxEditor.currentBoxes;
-      if (drag.i >= 0 && boxes && drag.i < boxes.length) {
-        const next = drag.preview;
-        const changed = next && (
-          next.x !== drag.orig.x || next.y !== drag.orig.y
-          || next.w !== drag.orig.w || next.h !== drag.orig.h
-        );
-        if (changed && !(drag.kind === "resize" && isTooSmall(next))) {
-          pushUndo(page, boxes);
-          materializeEdits(page)[drag.i] = { ...drag.orig, ...next };
-          commitChange(page, drag.kind);
-        }
+    const boxes = state.boxEditor.currentBoxes;
+    if (drag.i >= 0 && boxes && drag.i < boxes.length) {
+      const next = drag.preview;
+      const changed = next && (
+        next.x !== drag.orig.x || next.y !== drag.orig.y
+        || next.w !== drag.orig.w || next.h !== drag.orig.h
+      );
+      if (changed && !(drag.kind === "resize" && isTooSmall(next))) {
+        pushUndo(page, boxes);
+        materializeEdits(page)[drag.i] = { ...drag.orig, ...next };
+        commitChange(page, drag.kind);
       }
     }
     refresh();
@@ -267,28 +238,33 @@ export function createBoxEditorController({
     }
   }
 
-  function setEditMode(on) {
-    if (on && !state.visual.rendered) return false;
-    if (!on) cancelDrag();
-    state.boxEditor.editMode = !!on;
-    state.boxEditor.selectedIndex = -1;
-    if (on && !state.boxEditor.showBoxes) {
+  function startEdit(id) {
+    cancelDrag();
+    if (!state.visual.rendered
+      || !(state.boxEditor.currentBoxes || []).some(box => box.id === id)) return false;
+    state.review.selectedId = id;
+    state.boxEditor.mode = "edit";
+    if (!state.boxEditor.showBoxes) {
       state.boxEditor.showBoxes = true;
       restoreShownBoxes();
     }
-    if (on && state.review?.selectedId) {
-      state.boxEditor.selectedIndex = (state.boxEditor.currentBoxes || [])
-        .findIndex(box => box.id === state.review.selectedId);
-    }
-    if (!on) view.setCursor?.("");
     refresh();
+    return true;
+  }
+
+  function stopEditing() {
+    cancelDrag();
+    state.boxEditor.mode = "idle";
+    view.setCursor?.("");
+    refresh();
+    onEditingChanged?.();
     return true;
   }
 
   function toggleBoxes() {
     if (!state.visual.rendered) return false;
     state.boxEditor.showBoxes = !state.boxEditor.showBoxes;
-    if (!state.boxEditor.showBoxes && state.boxEditor.editMode) setEditMode(false);
+    if (!state.boxEditor.showBoxes && state.boxEditor.mode !== "idle") stopEditing();
     if (state.boxEditor.showBoxes) restoreShownBoxes();
     refresh();
     return true;
@@ -302,22 +278,27 @@ export function createBoxEditorController({
     state.boxEditor.editsByPage.set(page, cloneBoxes(snapshot));
     state.boxEditor.currentBoxes = state.boxEditor.editsByPage.get(page);
     commitChange(page, "undo");
-    state.boxEditor.selectedIndex = -1;
     refresh();
     return true;
   }
 
-  function deleteSelected() {
+  function deleteById(id) {
     cancelDrag();
-    const index = state.boxEditor.selectedIndex;
-    const boxes = state.boxEditor.currentBoxes || [];
-    if (index < 0 || index >= boxes.length) return false;
-    const page = state.documents.currentPage;
-    pushUndo(page, boxes);
-    materializeEdits(page).splice(index, 1);
-    commitChange(page, "delete");
-    state.boxEditor.selectedIndex = -1;
-    refresh();
+    const item = [...state.review.itemsByPage.values()].flat().find(value => value.id === id);
+    if (!item) return false;
+    const page = item.pageIndex;
+    const source = state.boxEditor.editsByPage.get(page)
+      || state.boxEditor.autoByPage.get(page) || [];
+    const index = source.findIndex(box => box.id === id);
+    if (index < 0) return false;
+    const deletedSelection = state.review.selectedId === id;
+    pushUndo(page, source);
+    const edits = materializeEdits(page);
+    edits.splice(edits.findIndex(box => box.id === id), 1);
+    commitChange(page, "delete", edits);
+    if (deletedSelection) state.review.selectedId = null;
+    if (deletedSelection && state.boxEditor.mode === "edit") stopEditing();
+    else refresh();
     return true;
   }
 
@@ -327,7 +308,7 @@ export function createBoxEditorController({
     if (!state.boxEditor.editsByPage.has(page)) return false;
     state.boxEditor.editsByPage.delete(page);
     state.boxEditor.undoByPage.delete(page);
-    state.boxEditor.selectedIndex = -1;
+    state.boxEditor.mode = "idle";
     if (state.boxEditor.autoByPage.has(page)) {
       state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(page);
       commitChange(page, "reset");
@@ -345,7 +326,7 @@ export function createBoxEditorController({
     const editedPages = [...state.boxEditor.editsByPage.keys()];
     state.boxEditor.editsByPage.clear();
     state.boxEditor.undoByPage.clear();
-    state.boxEditor.selectedIndex = -1;
+    state.boxEditor.mode = "idle";
     state.boxEditor.currentBoxes = state.boxEditor.autoByPage.get(state.documents.currentPage) ?? null;
     for (const page of editedPages) {
       commitChange(page, "discard", state.boxEditor.autoByPage.get(page) || []);
@@ -359,33 +340,31 @@ export function createBoxEditorController({
 
   function syncInvalidated() {
     cancelDrag();
-    state.boxEditor.selectedIndex = -1;
-    refresh();
-  }
-
-  function clearSelection() {
-    cancelDrag();
-    state.boxEditor.selectedIndex = -1;
-    notifySelection();
+    state.boxEditor.mode = "idle";
     refresh();
   }
 
   function updateCursor(event) {
-    if (!state.boxEditor.editMode || state.boxEditor.drag) return;
+    if (state.boxEditor.mode !== "edit" || state.boxEditor.drag) return;
     const point = pointFrom(event);
     const handle = hitHandle(point);
-    view.setCursor?.(handle >= 0 ? HANDLE_CURSORS[handle] : hitBox(point) >= 0 ? "move" : "");
+    const index = selectedBoxIndex();
+    const selected = state.boxEditor.currentBoxes?.[index];
+    const inside = selected && point.x >= selected.x && point.x <= selected.x + selected.w
+      && point.y >= selected.y && point.y <= selected.y + selected.h;
+    view.setCursor?.(handle >= 0 ? HANDLE_CURSORS[handle] : inside ? "move" : "");
   }
 
   return {
     cancelDrag,
     hitBox,
     hitHandle,
-    setEditMode,
+    startEdit,
+    stopEditing,
     toggleBoxes,
     materializeEdits,
     undo,
-    deleteSelected,
+    deleteById,
     pointerDown,
     pointerMove,
     pointerUp,
@@ -394,8 +373,6 @@ export function createBoxEditorController({
     clearEdits,
     confirmDiscard: confirmDiscardEdits,
     syncInvalidated,
-    clearSelection,
-    selectById,
     updateCursor,
   };
 }

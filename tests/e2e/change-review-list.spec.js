@@ -51,7 +51,8 @@ test("reviews all visual changes from the change list", async ({ page }) => {
   await page.locator("#reviewNext").click();
   await expect(cards.nth(1)).toHaveAttribute("aria-current", "true");
   await expect(page.locator("#boxLayer")).toBeVisible();
-  await expect(page.locator("#boxEdit")).not.toHaveClass(/active/);
+  await expect(cards.nth(1)).not.toHaveClass(/editing/);
+  await expect(cards.nth(1).locator("[data-review-edit]")).toHaveText("編集");
   await expect(cards.nth(1).locator("[data-review-confirmed]")).not.toBeChecked();
   await page.locator("#reviewPrev").click();
   await expect(cards.first()).toHaveAttribute("aria-current", "true");

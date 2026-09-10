@@ -97,7 +97,6 @@ function captureSnapshot(state) {
     autoByPage: cloneMap(state.boxEditor.autoByPage),
     editsByPage: cloneMap(state.boxEditor.editsByPage),
     revisionByPage: cloneMap(state.boxEditor.revisionByPage),
-    selectedIndex: state.boxEditor.selectedIndex,
     drag: cloneValue(state.boxEditor.drag),
   });
   const highlights = cloneHighlights(state.textReview.highlights);

@@ -74,7 +74,7 @@ function makeHarness({ extract = vi.fn(), renderPage = vi.fn() } = {}) {
     canvasWrap: { style: {} },
     textPanel: { style: {} },
     out: { style: { display: "block" } },
-    cancelBoxEdit: vi.fn(),
+    stopBoxEditing: vi.fn(),
     restoreVisual: vi.fn(),
   };
   const renderer = {
@@ -524,11 +524,11 @@ describe("text top mode and invalidation", () => {
     const renderPage = vi.fn(() => pending.promise);
     const { state, dom, renderer, controller } = makeHarness({ renderPage });
     state.ui.topMode = "visual";
-    state.boxEditor.editMode = true;
+    state.boxEditor.mode = "edit";
     state.textReview.highlights = { old: new Map(), new: new Map() };
 
     const entering = controller.setTopMode("text");
-    expect(dom.cancelBoxEdit).toHaveBeenCalled();
+    expect(dom.stopBoxEditing).toHaveBeenCalled();
     expect(state.ui.topMode).toBe("text");
     const leaving = controller.setTopMode("visual");
     pending.resolve(canvas(40, 50));

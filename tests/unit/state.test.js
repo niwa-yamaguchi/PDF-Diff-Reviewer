@@ -5,7 +5,8 @@ test("creates isolated state slices with current defaults", () => {
   const state = createAppState();
   expect(state.comparison).toMatchObject({ dpi: 300, threshold: 128, tolerancePx: 0, dx: 0, dy: 0 });
   expect(state.documents).toMatchObject({ oldDoc: null, newDoc: null, pages: 0, currentPage: 0 });
-  expect(state.boxEditor).toMatchObject({ showBoxes: true, editMode: false, selectedIndex: -1 });
+  expect(state.boxEditor).toMatchObject({ showBoxes: true, mode: "idle", drag: null });
+  expect(state.review).toMatchObject({ selectedId: null, actionNotice: "" });
   expect(state.textReview.view).toEqual({ scale: 1, tx: 0, ty: 0 });
   expect(state.comparison.quadrantManual).toBeInstanceOf(Map);
   expect(state.visual.pageCache).toBeInstanceOf(Map);

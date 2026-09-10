@@ -342,7 +342,7 @@ export function createTextController({
     if (mode !== "visual" && mode !== "text") return false;
     if (state.ui.topMode === mode) return true;
     cancelRender();
-    if (mode === "text" && state.boxEditor.editMode) dom.cancelBoxEdit?.();
+    if (mode === "text" && state.boxEditor.mode !== "idle") dom.stopBoxEditing?.();
     state.ui.topMode = mode;
     const visual = mode === "visual";
     dom.topVisual.classList.toggle("active", visual);

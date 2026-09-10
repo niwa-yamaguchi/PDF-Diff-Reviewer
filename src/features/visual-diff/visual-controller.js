@@ -158,7 +158,6 @@ export function createVisualController({
     }
     if (result.cacheEntry) state.visual.pageCache.set(snapshot.pageIndex, result.cacheEntry);
     if (updateCurrentPage) state.documents.currentPage = snapshot.pageIndex;
-    if (commitBoxes && updateCurrentPage) state.boxEditor.selectedIndex = -1;
     state.visual.rendered = true;
     if (commitBoxes) drawBoxes();
     dom.pageLabel.textContent = result.pageLabel;

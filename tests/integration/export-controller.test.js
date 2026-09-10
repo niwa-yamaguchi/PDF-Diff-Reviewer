@@ -76,7 +76,6 @@ function harness(overrides = {}) {
   state.boxEditor.autoByPage.set(0, [{ x: 5, y: 6, w: 7, h: 8 }]);
   state.boxEditor.editsByPage.set(1, [{ x: 11, y: 12, w: 13, h: 14 }]);
   state.boxEditor.revisionByPage.set(1, 3);
-  state.boxEditor.selectedIndex = 0;
   state.boxEditor.drag = { kind: "move" };
   state.textReview.scale = 2;
   state.textReview.page = 0;
@@ -151,7 +150,6 @@ function protectedReferences(state, dom) {
     newSequence: state.documents.newSequence,
     newSequenceValue: [...state.documents.newSequence],
     quadrantManual: state.comparison.quadrantManual,
-    selectedIndex: state.boxEditor.selectedIndex,
     drag: state.boxEditor.drag,
     visualGeneration: state.visual.renderGeneration,
     textRenderGeneration: state.textReview.renderGeneration,

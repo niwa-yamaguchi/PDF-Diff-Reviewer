@@ -28,7 +28,8 @@ function reconcileRedrawnItems({ previousItems, nextItems, entries, allocateId }
 
 export function createChangeReviewController({
   state, renderIndexPage, cancelIndex: cancelLane, onChanged = () => {}, reportError = () => {},
-  showPage, focusRect, selectBox, cancelNavigation, renderThumbnailPage, createCanvas, createSnapshot,
+  showPage, focusRect, beginBoxEdit, stopBoxEditing, deleteBox, cancelNavigation,
+  renderThumbnailPage, createCanvas, createSnapshot,
 }) {
   const dimensionsByPage = new Map();
   let migration = null;
@@ -96,14 +97,14 @@ export function createChangeReviewController({
 
   const orderedItems = () => sortReviewItems([...state.review.itemsByPage.values()].flat());
 
-  async function select(id) {
+  async function select(id, { preserveEdit = false } = {}) {
     const ticket = ++selectionTicket;
     const review = state.review;
     const generation = review.indexGeneration;
     const item = orderedItems().find(item => item.id === id);
     if (!item || state.ui.topMode !== "visual") return false;
+    if (!preserveEdit) stopBoxEditing?.();
     review.selectedId = id;
-    selectBox?.(null);
     onChanged();
     if (state.documents.currentPage !== item.pageIndex || !state.visual.rendered || navigationTicket !== null) {
       navigationTicket = ticket;
@@ -118,22 +119,31 @@ export function createChangeReviewController({
       || state.ui.topMode !== "visual" || review.selectedId !== id) return false;
     const current = orderedItems().find(item => item.id === id);
     if (!current || current.pageIndex !== state.documents.currentPage) return false;
-    selectBox?.(id);
     focusRect(current.rect, { padding: 0.25, maxScale: 4 });
     onChanged();
     return true;
   }
 
-  function selectFromBox({ pageIndex, id }) {
-    if (state.ui.topMode !== "visual" || pageIndex !== state.documents.currentPage) return;
-    if (id != null && !state.review.itemsByPage.get(pageIndex)?.some(item => item.id === id)) return;
-    selectionTicket += 1;
-    if (navigationTicket !== null) {
-      cancelNavigation?.();
-      navigationTicket = null;
+  async function edit(id) {
+    if (state.boxEditor.mode === "edit" && state.review.selectedId === id) {
+      stopBoxEditing?.();
+      onChanged();
+      return true;
     }
-    state.review.selectedId = id;
-    onChanged();
+    stopBoxEditing?.();
+    if (!await select(id, { preserveEdit: true })) return false;
+    const started = beginBoxEdit?.(id) ?? false;
+    if (started) onChanged();
+    return started;
+  }
+
+  function remove(id) {
+    const deleted = deleteBox?.(id) ?? false;
+    if (deleted) {
+      state.review.actionNotice = "変更箇所を削除しました。Ctrl+Zで元に戻せます";
+      onChanged();
+    }
+    return deleted;
   }
 
   function selectRelative(direction) {
@@ -380,6 +390,6 @@ export function createChangeReviewController({
   }
 
   return { commitPage, startIndex, resumeIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions,
-    select, selectFromBox, selectPrevious: () => selectRelative(-1), selectNext: () => selectRelative(1),
+    select, edit, remove, selectPrevious: () => selectRelative(-1), selectNext: () => selectRelative(1),
     setConfirmed, setComment, togglePanel, retryPage, requestPageThumbnails };
 }

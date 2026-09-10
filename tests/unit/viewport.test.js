@@ -30,7 +30,7 @@ function classList() {
   };
 }
 
-function viewerHarness() {
+function viewerHarness({ onBoxPointerDown } = {}) {
   const wrap = eventTarget({
     clientWidth: 500,
     clientHeight: 500,
@@ -45,11 +45,11 @@ function viewerHarness() {
   const onTransform = vi.fn();
   const state = {
     ui: { topMode: "visual" },
-    boxEditor: { editMode: false },
+    boxEditor: { mode: "idle" },
   };
   const controller = createViewerController({
     state,
-    dom: { wrap, out, zoomLabel },
+    dom: { wrap, out, zoomLabel, onBoxPointerDown },
     window: windowTarget,
     onTransform,
   });
@@ -101,7 +101,7 @@ describe("viewer controller", () => {
     controller.focusRect({ x: 40, y: 30, w: 20, h: 10 }, { padding: 0.25, maxScale: 4 });
     expect(out.style.transform).toBe("translate(50px,110px) scale(4)");
     expect(zoomLabel.textContent).toBe("400%");
-    expect(state.boxEditor.editMode).toBe(false);
+    expect(state.boxEditor.mode).toBe("idle");
   });
   test("returns defensive view copies and applies the fitted transform", () => {
     const { controller, out, zoomLabel, onTransform } = viewerHarness();
@@ -132,6 +132,22 @@ describe("viewer controller", () => {
 
     controller.handlePointerMove({ pointerId: 7, clientX: 160, clientY: 120 });
     expect(controller.getView()).toEqual({ scale: 1, tx: 30, ty: 20 });
+  });
+
+  test("starts panning in edit mode only when the editor declines the pointer", () => {
+    const handled = vi.fn(() => true);
+    const accepted = viewerHarness({ onBoxPointerDown: handled });
+    accepted.state.boxEditor.mode = "edit";
+    accepted.controller.handlePointerDown({ pointerId: 1, button: 0, clientX: 30, clientY: 40 });
+    expect(handled).toHaveBeenCalledOnce();
+    expect(accepted.wrap.classList.contains("panning")).toBe(false);
+
+    const declined = vi.fn(() => false);
+    const panning = viewerHarness({ onBoxPointerDown: declined });
+    panning.state.boxEditor.mode = "edit";
+    panning.controller.handlePointerDown({ pointerId: 2, button: 0, clientX: 30, clientY: 40 });
+    expect(declined).toHaveBeenCalledOnce();
+    expect(panning.wrap.classList.contains("panning")).toBe(true);
   });
 
   test("keeps the current view when resize requests an overlay refresh", () => {

@@ -14,11 +14,11 @@ function handlePoints(x, y, width, height) {
 export function drawBoxLayer({
   canvas,
   boxes = [],
-  selectedIndex = -1,
+  activeIndex = -1,
   focusedIndex = -1,
   view = { scale: 1, tx: 0, ty: 0 },
   showBoxes,
-  editMode,
+  editing,
   drag,
   currentPage,
   rendered = true,
@@ -65,8 +65,8 @@ export function drawBoxLayer({
     context.strokeRect(x - 2, y - 2, boxWidth + 4, boxHeight + 4);
   }
 
-  if (editMode && selectedIndex >= 0 && selectedIndex < boxes.length) {
-    const selected = preview && activeDrag.i === selectedIndex ? preview : boxes[selectedIndex];
+  if (editing && activeIndex >= 0 && activeIndex < boxes.length) {
+    const selected = preview && activeDrag.i === activeIndex ? preview : boxes[activeIndex];
     const x = view.tx + selected.x * scale;
     const y = view.ty + selected.y * scale;
     const boxWidth = selected.w * scale;
@@ -107,11 +107,11 @@ export function createBoxEditorView({ state, dom, getView }) {
     drawBoxLayer({
       canvas: dom.canvas,
       boxes,
-      selectedIndex: state.boxEditor.selectedIndex,
+      activeIndex: focusedIndex,
       focusedIndex,
       view: getView(),
       showBoxes: state.boxEditor.showBoxes,
-      editMode: state.boxEditor.editMode,
+      editing: state.boxEditor.mode === "edit",
       drag: state.boxEditor.drag,
       currentPage: state.documents.currentPage,
       rendered: state.visual.rendered,
@@ -131,13 +131,9 @@ export function createBoxEditorView({ state, dom, getView }) {
   }
 
   function updateControls() {
-    const on = state.boxEditor.editMode;
-    dom.boxEdit.disabled = !state.visual.rendered;
-    dom.boxEdit.classList.toggle("active", on);
+    const on = state.boxEditor.mode === "edit";
     dom.wrap.classList.toggle("boxedit", on);
-    dom.boxDelete.style.display = on ? "" : "none";
     dom.boxReset.style.display = on ? "" : "none";
-    dom.boxDelete.disabled = state.boxEditor.selectedIndex < 0;
     dom.boxReset.disabled = !state.boxEditor.editsByPage.has(state.documents.currentPage);
     dom.boxToggle.classList.toggle("active", state.boxEditor.showBoxes);
   }

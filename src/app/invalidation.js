@@ -7,6 +7,8 @@ function clearBoxes(state) {
   state.boxEditor.undoByPage.clear();
   state.boxEditor.revisionByPage.clear();
   state.boxEditor.currentBoxes = null;
+  state.boxEditor.mode = "idle";
+  state.boxEditor.drag = null;
 }
 
 function clearReviewIndex(state) {

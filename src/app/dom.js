@@ -1,6 +1,6 @@
 const REQUIRED_IDS = Object.freeze([
   "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
-  "boxDel", "boxEdit", "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
+  "boxLayer", "boxReset", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",

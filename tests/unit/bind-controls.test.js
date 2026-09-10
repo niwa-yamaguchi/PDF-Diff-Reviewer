@@ -48,6 +48,35 @@ test("captures page toggles once and requests only visible opened review groups"
   expect(reviewController.requestPageThumbnails).toHaveBeenCalledTimes(1);
 });
 
+test("delegates item edit and delete before row selection", () => {
+  const dom = new Proxy({}, { get: (value, key) => {
+    if (!(key in value)) value[key] = key.endsWith("Buttons") ? [] : target();
+    return value[key];
+  } });
+  const reviewController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
+  bindControls({ document: target(), window: target(), dom, reviewController });
+  const article = { dataset: { changeId: "change-2" } };
+  const edit = { dataset: { reviewEdit: "change-2" } };
+  const remove = { dataset: { reviewDelete: "change-2" } };
+  const emitAction = action => dom.reviewList.emit("click", {
+    target: {
+      closest(selector) {
+        if (selector === "[data-review-edit]" && action === edit) return edit;
+        if (selector === "[data-review-delete]" && action === remove) return remove;
+        if (selector === "[data-change-id]") return article;
+        return null;
+      },
+    },
+  });
+
+  emitAction(edit);
+  emitAction(remove);
+
+  expect(reviewController.edit).toHaveBeenCalledExactlyOnceWith("change-2");
+  expect(reviewController.remove).toHaveBeenCalledExactlyOnceWith("change-2");
+  expect(reviewController.select).not.toHaveBeenCalled();
+});
+
 test("binds controls once and delegates events to their owning public handlers", () => {
   const names = [
     "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle",

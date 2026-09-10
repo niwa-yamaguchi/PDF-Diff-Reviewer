@@ -141,7 +141,7 @@ test("waits for an in-flight thumbnail before retrying an index page", async () 
   expect(events).toEqual(["thumbnail-start", "thumbnail-end", "index"]);
 });
 
-function navigationHarness(show) {
+function navigationHarness(show, overrides = {}) {
   const state = createAppState();
   state.documents.pages = 2;
   state.visual.rendered = true;
@@ -159,11 +159,47 @@ function navigationHarness(show) {
       return { committed: true };
     },
     focusRect: viewer.focusRect,
+    ...overrides,
   });
   controller.commitPage(page(0, [box(10), box(60)]));
   controller.commitPage(page(1, [box(40)]));
   return { state, controller, out, visits };
 }
+
+test("edit selects and focuses the requested ID before entering edit mode", async () => {
+  const events = [];
+  const { state, controller } = navigationHarness(
+    index => { events.push(`show-${index}`); },
+    {
+      stopBoxEditing: () => { events.push("stop"); state.boxEditor.mode = "idle"; },
+      beginBoxEdit: id => { events.push(`begin-${id}`); state.boxEditor.mode = "edit"; return true; },
+    },
+  );
+
+  expect(await controller.edit("change-3")).toBe(true);
+  expect(state.review.selectedId).toBe("change-3");
+  expect(state.boxEditor.mode).toBe("edit");
+  expect(events).toEqual(["stop", "show-1", "begin-change-3"]);
+
+  expect(await controller.edit("change-3")).toBe(true);
+  expect(state.boxEditor.mode).toBe("idle");
+  expect(events).toEqual(["stop", "show-1", "begin-change-3", "stop"]);
+});
+
+test("remove delegates by ID and publishes the undo notice only after deletion", () => {
+  const onChanged = vi.fn();
+  const deleteBox = vi.fn(id => id === "change-1");
+  const { state, controller } = navigationHarness(undefined, { deleteBox, onChanged });
+  onChanged.mockClear();
+
+  expect(controller.remove("missing")).toBe(false);
+  expect(state.review.actionNotice).toBe("");
+  expect(onChanged).not.toHaveBeenCalled();
+  expect(controller.remove("change-1")).toBe(true);
+  expect(deleteBox).toHaveBeenLastCalledWith("change-1");
+  expect(state.review.actionNotice).toBe("変更箇所を削除しました。Ctrl+Zで元に戻せます");
+  expect(onChanged).toHaveBeenCalledOnce();
+});
 
 // Break: skipping page navigation/focus or overwriting the other entry field loses review work.
 test("selects across pages and persists confirmation and comments", async () => {
@@ -173,7 +209,7 @@ test("selects across pages and persists confirmation and comments", async () => 
   expect(state.documents.currentPage).toBe(1);
   expect(state.review.selectedId).toBe("change-3");
   expect(out.style.transform).toBe("translate(-100px,20px) scale(4)");
-  expect(state.boxEditor.editMode).toBe(false);
+  expect(state.boxEditor.mode).toBe("idle");
   controller.setConfirmed("change-3", true);
   controller.setComment("change-3", "抵抗値を確認");
   expect(state.review.entriesById.get("change-3")).toEqual({ status: "confirmed", comment: "抵抗値を確認" });
@@ -361,10 +397,9 @@ test("inherits matching entries and finalizes migration only after every page is
 });
 
 function editorForReview(state, controller) {
-  state.boxEditor.editMode = true;
+  state.boxEditor.mode = "edit";
   return createBoxEditorController({ state, dom: {}, confirmDiscard: () => true,
     view: { refresh() {}, getFrameSize: () => ({ width: 100, height: 100 }) },
-    makeManualBox: ({ box }) => ({ ...box, id: controller.allocateId(), kind: "changed", source: "manual" }),
     onBoxesChanged: ({ pageIndex, boxes }) => controller.syncEditedPage({ pageIndex, boxes }),
   });
 }
@@ -381,8 +416,8 @@ test("prunes deleted reviews only after comparison migration finishes and preser
   controller.setConfirmed("change-3", true);
   controller.setComment("change-3", "unprocessed page");
   const editor = editorForReview(state, controller);
-  state.boxEditor.selectedIndex = 0;
-  editor.deleteSelected();
+  state.review.selectedId = "change-1";
+  editor.deleteById("change-1");
   expect(state.boxEditor.undoByPage.get(0).size).toBe(1);
   expect(state.review.entriesById.get("change-1").comment).toBe("deleted review");
 
@@ -411,8 +446,8 @@ test("migration cleanup keeps IDs reachable from Undo without consuming its hist
   invalidateThreshold(state);
   state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
   const editor = editorForReview(state, controller);
-  state.boxEditor.selectedIndex = 0;
-  editor.deleteSelected();
+  state.review.selectedId = "change-1";
+  editor.deleteById("change-1");
   expect(state.review.itemsByPage.get(0)).toEqual([]);
   controller.commitPage(page(1));
 
@@ -435,11 +470,9 @@ test("migration cleanup preserves reviews reachable through reset to automatic b
   state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
   const editor = editorForReview(state, controller);
   state.boxEditor.undoByPage.set(0, createBoxHistory(1));
-  state.boxEditor.selectedIndex = 0;
-  editor.deleteSelected();
-  editor.pointerDown({ x: 60, y: 60, pointerId: 1, button: 0 });
-  editor.pointerMove({ x: 80, y: 80, pointerId: 1 });
-  editor.pointerUp({ pointerId: 1 });
+  state.review.selectedId = "change-1";
+  editor.deleteById("change-1");
+  state.boxEditor.undoByPage.get(0).push([]);
   controller.commitPage(page(1));
   expect(state.review.pendingMigration).toBeNull();
 
@@ -459,8 +492,8 @@ test("repeated deletion and redetection retains only current entries without reu
     deleted.add(id);
     controller.setConfirmed(id, true);
     controller.setComment(id, "do not transfer");
-    state.boxEditor.selectedIndex = 0;
-    editor.deleteSelected();
+    state.review.selectedId = id;
+    editor.deleteById(id);
     invalidateThreshold(state);
     state.boxEditor.currentBoxes = controller.commitPage(page(0)).currentBoxes;
     const nextId = state.boxEditor.currentBoxes[0].id;

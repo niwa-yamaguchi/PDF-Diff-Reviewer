@@ -150,8 +150,6 @@ export function createApp({ document, window, dependencies = {} }) {
       wrap: dom.canvasWrap,
       statBox: dom.statBox,
       boxToggle: dom.boxToggle,
-      boxEdit: dom.boxEdit,
-      boxDelete: dom.boxDel,
       boxReset: dom.boxReset,
     },
     getView: () => viewerController.getView(),
@@ -171,13 +169,10 @@ export function createApp({ document, window, dependencies = {} }) {
       },
     },
     view: boxEditorView,
-    makeManualBox: ({ box }) => ({
-      ...box, id: reviewController.allocateId(), kind: "changed", source: "manual",
-    }),
     onBoxesChanged: ({ pageIndex, boxes }) => reviewController.syncEditedPage({
       pageIndex, boxes,
     }),
-    onSelectionChanged: selection => reviewController.selectFromBox(selection),
+    onEditingChanged: () => reviewView?.render({ preserveCommentFocus: true }),
     confirmDiscard: () => window.confirm(
       "手編集した変更枠があります。この操作で破棄されます。よろしいですか？",
     ),
@@ -314,8 +309,9 @@ export function createApp({ document, window, dependencies = {} }) {
     state,
     showPage: pageIndex => visualController.showPage(pageIndex),
     focusRect: (rect, options) => viewerController.focusRect(rect, options),
-    selectBox: id => boxEditorController.selectById(id),
-    cancelNavigation: () => visualController.cancelPendingPage(),
+    beginBoxEdit: id => boxEditorController.startEdit(id),
+    stopBoxEditing: () => boxEditorController.stopEditing(),
+    deleteBox: id => boxEditorController.deleteById(id),
     onChanged() {
       reviewView.render({ preserveCommentFocus: true });
       boxEditorView?.redraw?.();
@@ -389,7 +385,7 @@ export function createApp({ document, window, dependencies = {} }) {
       out,
       textPrev: dom.textPrev,
       textNext: dom.textNext,
-      cancelBoxEdit: () => boxEditorController?.setEditMode?.(false),
+      stopBoxEditing: () => boxEditorController?.stopEditing?.(),
       restoreVisual: () => {
         if (state.visual.rendered) out.style.display = "block";
         boxEditorView?.redraw?.();
@@ -528,6 +524,7 @@ export function createApp({ document, window, dependencies = {} }) {
     },
     async setDiffMode() {
       if (state.visual.mode === "diff" || !hasImage()) return;
+      boxEditorController.stopEditing();
       state.visual.mode = "diff";
       setModeUi();
       dom.status.innerHTML = '<span class="busy">差分を再計算中…</span>';
@@ -535,16 +532,16 @@ export function createApp({ document, window, dependencies = {} }) {
     },
     async setToggleMode() {
       if (state.visual.mode === "toggle" || !hasImage()) return;
+      boxEditorController.stopEditing();
       state.visual.mode = "toggle";
       setModeUi();
       if (state.documents.pages) await visualController.showPage(state.documents.currentPage);
     },
     flipSide: () => visualController.flipToggleSide(),
-    toggleBoxEdit: () => boxEditorController.setEditMode(!state.boxEditor.editMode),
     handleKeyDown(event) {
       if (state.ui.topMode !== "visual" || isTypingTarget(event)) return;
       if (event.code === "Space" && !event.repeat && event.target?.tagName !== "BUTTON") {
-        if (state.boxEditor.editMode) {
+        if (state.boxEditor.mode === "edit") {
           spaceHeld = true;
           event.preventDefault();
           return;
@@ -555,23 +552,19 @@ export function createApp({ document, window, dependencies = {} }) {
         }
         return;
       }
-      if (event.key === "e" || event.key === "E") {
-        if (event.ctrlKey || event.metaKey || event.altKey || !state.visual.rendered) return;
-        event.preventDefault();
-        boxEditorController.setEditMode(!state.boxEditor.editMode);
-        return;
-      }
-      if (!state.boxEditor.editMode) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (state.boxEditor.selectedIndex >= 0) boxEditorController.clearSelection();
-        else boxEditorController.setEditMode(false);
-      } else if (event.key === "Delete" || event.key === "Backspace") {
-        event.preventDefault();
-        boxEditorController.deleteSelected();
-      } else if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")) {
+      if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")) {
         event.preventDefault();
         boxEditorController.undo();
+        return;
+      }
+      if (state.boxEditor.mode !== "edit") return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        boxEditorController.stopEditing();
+      } else if (event.key === "Delete" || event.key === "Backspace") {
+        if (!state.review.selectedId) return;
+        event.preventDefault();
+        boxEditorController.deleteById(state.review.selectedId);
       }
     },
     handleKeyUp(event) {
@@ -751,8 +744,14 @@ export function createApp({ document, window, dependencies = {} }) {
         syncInvalidatedBoxEditor,
       });
     },
-    previousVisualPage: () => visualController.showPage(state.documents.currentPage - 1),
-    nextVisualPage: () => visualController.showPage(state.documents.currentPage + 1),
+    previousVisualPage() {
+      boxEditorController.stopEditing();
+      return visualController.showPage(state.documents.currentPage - 1);
+    },
+    nextVisualPage() {
+      boxEditorController.stopEditing();
+      return visualController.showPage(state.documents.currentPage + 1);
+    },
   });
 
   for (const range of [dom.dpi, dom.th, dom.tolerance]) {

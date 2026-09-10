@@ -65,6 +65,23 @@ test("renders progress, page groups, kinds, confirmation checks and comments", (
   expect(dom.reviewList.textContent).not.toContain("対象外");
 });
 
+test("renders per-item edit and delete actions and marks only the active editor", () => {
+  const { state, dom, view } = harness();
+  state.review.selectedId = "change-2";
+  state.boxEditor.mode = "edit";
+
+  view.render();
+
+  const editing = dom.reviewList.querySelector('[data-change-id="change-2"]');
+  const idle = dom.reviewList.querySelector('[data-change-id="change-1"]');
+  expect(editing.classList.contains("editing")).toBe(true);
+  expect(editing.textContent).toContain("編集中");
+  expect(editing.querySelector('[data-review-edit="change-2"]').textContent).toBe("編集を終了");
+  expect(editing.querySelector('[data-review-delete="change-2"]').textContent).toBe("削除");
+  expect(idle.classList.contains("editing")).toBe(false);
+  expect(idle.querySelector('[data-review-edit="change-1"]').textContent).toBe("編集");
+});
+
 // Break: per-page numbering duplicates change numbers and leaves cached image labels stale when earlier pages grow.
 test("numbers all pages in display order and updates cached image labels without changing IDs", () => {
   const { state, dom, controller, view } = harness();

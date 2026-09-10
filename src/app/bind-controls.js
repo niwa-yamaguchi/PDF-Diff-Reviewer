@@ -81,8 +81,6 @@ export function bindControls({
   listen(dom.modeToggle, "click", () => appController.setToggleMode());
   listen(dom.toggleFlip, "click", () => appController.flipSide());
   listen(dom.boxToggle, "click", () => boxEditorController.toggleBoxes());
-  listen(dom.boxEdit, "click", () => appController.toggleBoxEdit());
-  listen(dom.boxDel, "click", () => boxEditorController.deleteSelected());
   listen(dom.boxReset, "click", () => boxEditorController.resetToAuto());
 
   listen(dom.reviewToggle, "click", () => reviewController.togglePanel());
@@ -100,6 +98,10 @@ export function bindControls({
   listen(dom.reviewList, "click", event => {
     const retry = event.target.closest("[data-review-retry]");
     if (retry) { void reviewController.retryPage(Number(retry.dataset.reviewRetry)); return; }
+    const edit = event.target.closest("[data-review-edit]");
+    if (edit) { void reviewController.edit(edit.dataset.reviewEdit); return; }
+    const remove = event.target.closest("[data-review-delete]");
+    if (remove) { reviewController.remove(remove.dataset.reviewDelete); return; }
     if (event.target.closest("textarea,input,label,select,option")) return;
     const article = event.target.closest("[data-change-id]");
     if (article) void reviewController.select(article.dataset.changeId);

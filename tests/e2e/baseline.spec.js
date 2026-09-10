@@ -43,12 +43,13 @@ test("keeps the committed threshold and edited boxes when discard is cancelled",
   await page.locator("#run").click();
   await expect(page.locator("#status")).toHaveText("差分を表示中");
 
-  await page.locator("#boxEdit").click();
+  await expect(page.locator("#reviewIndexStatus")).toContainText("分析完了");
+  await page.locator('[data-review-page="0"] [data-review-edit]').first().click();
   const layer = await page.locator("#boxLayer").boundingBox();
   expect(layer).not.toBeNull();
-  await page.mouse.move(layer.x + layer.width * 0.72, layer.y + layer.height * 0.72);
+  await page.mouse.move(layer.x + layer.width / 2, layer.y + layer.height / 2);
   await page.mouse.down();
-  await page.mouse.move(layer.x + layer.width * 0.84, layer.y + layer.height * 0.82);
+  await page.mouse.move(layer.x + layer.width / 2 + 24, layer.y + layer.height / 2 + 20);
   await page.mouse.up();
   await expect(page.locator("#statBox")).toContainText("（手編集）");
 
@@ -73,12 +74,13 @@ test("cancels PDF replacement before changing document state or edited boxes", a
   await page.locator("#run").click();
   await expect(page.locator("#status")).toHaveText("差分を表示中");
 
-  await page.locator("#boxEdit").click();
+  await expect(page.locator("#reviewIndexStatus")).toContainText("分析完了");
+  await page.locator('[data-review-page="0"] [data-review-edit]').first().click();
   const layer = await page.locator("#boxLayer").boundingBox();
   expect(layer).not.toBeNull();
-  await page.mouse.move(layer.x + layer.width * 0.72, layer.y + layer.height * 0.72);
+  await page.mouse.move(layer.x + layer.width / 2, layer.y + layer.height / 2);
   await page.mouse.down();
-  await page.mouse.move(layer.x + layer.width * 0.84, layer.y + layer.height * 0.82);
+  await page.mouse.move(layer.x + layer.width / 2 + 24, layer.y + layer.height / 2 + 20);
   await page.mouse.up();
   await expect(page.locator("#statBox")).toContainText("（手編集）");
 

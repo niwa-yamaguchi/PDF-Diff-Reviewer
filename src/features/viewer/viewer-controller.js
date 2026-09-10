@@ -59,9 +59,8 @@ export function createViewerController({ state, dom, window, onTransform = () =>
   function handlePointerDown(event) {
     if (!visualIsActive() || !hasImage()) return;
     const spaceHeld = typeof dom.isSpaceHeld === "function" && dom.isSpaceHeld();
-    if (state.boxEditor.editMode && !spaceHeld && event.button !== 1) {
-      dom.onBoxPointerDown?.(event);
-      return;
+    if (state.boxEditor.mode !== "idle" && !spaceHeld && event.button !== 1) {
+      if (dom.onBoxPointerDown?.(event)) return;
     }
     pan = {
       pointerId: event.pointerId,

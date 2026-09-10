@@ -141,6 +141,7 @@
   .review-page-title{cursor:pointer;padding:11px 14px;font:11px var(--mono);color:var(--muted);background:var(--panel-2)}
   .review-item{padding:10px 14px 12px;border-top:1px solid var(--line);border-left:3px solid transparent}
   .review-item.selected{border-left-color:var(--signal);background:var(--ink)}
+  .review-item.editing{border-left-color:var(--signal)}
   .review-panel .review-select{display:flex;width:100%;align-items:center;gap:9px;background:transparent;border:0;border-radius:0;text-align:left;padding:4px 0 8px;min-height:32px}
   .review-number{font:11px var(--mono);color:var(--muted);min-width:30px}
   .review-kind{font-size:12px;font-weight:600}
@@ -151,8 +152,12 @@
   .review-thumbnail{display:grid;place-items:center;margin:0 0 8px;outline:1px solid var(--line);outline-offset:-1px;background:var(--panel-2);color:var(--muted);font:11px var(--sans);overflow:hidden}
   .review-thumbnail img{display:block;width:120px;height:80px;object-fit:contain;background:#fff}
   .review-thumbnail.loading::after{content:"";width:28px;height:4px;background:var(--line-bright)}
-  .review-status,.review-comment{width:100%;color:var(--fg);background:var(--ink);border:1px solid var(--line-bright);border-radius:2px;font:11px var(--sans)}
-  .review-status{min-height:30px;padding:4px 8px;color-scheme:dark}
+  .review-actions{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+  .review-actions button{min-height:28px;padding:4px 9px}
+  .review-editing{margin-right:auto;color:var(--signal);font:10px var(--mono)}
+  .review-confirmed-label{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--fg)}
+  .review-confirmed{width:15px;height:15px;accent-color:var(--signal)}
+  .review-comment{width:100%;color:var(--fg);background:var(--ink);border:1px solid var(--line-bright);border-radius:2px;font:11px var(--sans)}
   .review-comment{display:block;min-height:48px;resize:vertical;margin-top:7px;padding:7px 8px;line-height:1.5}
   .review-comment::placeholder{color:var(--muted)}
   .review-empty,.review-error{padding:14px;font-size:12px;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
