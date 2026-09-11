@@ -28,6 +28,7 @@ import {
 import { createDiffWorker } from "../platform/diff-worker.js";
 import { createWorkerLane } from "../features/visual-diff/worker-lane.js";
 import { createViewerController } from "../features/viewer/viewer-controller.js";
+import { createMinimapController } from "../features/viewer/minimap-controller.js";
 import { createVisualController, createVisualSnapshot } from "../features/visual-diff/visual-controller.js";
 import { effectiveQuadrant, renderDiffPage, renderChangeIndexPage } from "../features/visual-diff/visual-renderer.js";
 import { createChangeReviewController } from "../features/change-review/review-controller.js";
@@ -62,6 +63,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   renderPageCanvas,
   rotateCanvas90,
   createViewerController,
+  createMinimapController,
   createVisualController,
   createChangeReviewController,
   createChangeReviewView,
@@ -103,16 +105,22 @@ export function createApp({ document, window, dependencies = {} }) {
   let documentController;
   let reviewController;
   let reviewView;
+  let minimapController;
   let spaceHeld = false;
 
-  const textColors = (() => {
-    const styles = window.getComputedStyle(document.documentElement);
-    return Object.freeze({
-      removed: styles.getPropertyValue("--removed").trim(),
-      added: styles.getPropertyValue("--added-text").trim(),
-      changed: styles.getPropertyValue("--changed").trim(),
-    });
-  })();
+  const rootStyles = window.getComputedStyle(document.documentElement);
+  const cssVar = name => rootStyles.getPropertyValue(name).trim();
+  const textColors = Object.freeze({
+    removed: cssVar("--removed"),
+    added: cssVar("--added-text"),
+    changed: cssVar("--changed"),
+  });
+  const minimapColors = Object.freeze({
+    amber: cssVar("--signal"),
+    added: cssVar("--added"),
+    removed: cssVar("--removed"),
+    changed: cssVar("--changed"),
+  });
 
   const textRenderer = deps.createTextRenderer({
     state,
@@ -139,7 +147,24 @@ export function createApp({ document, window, dependencies = {} }) {
       onBoxPointerDown: event => boxEditorController?.pointerDown?.(event),
     },
     window,
-    onTransform: () => boxEditorView?.redraw?.(),
+    onTransform: () => {
+      boxEditorView?.redraw?.();
+      minimapController?.render?.();
+    },
+  });
+
+  minimapController = deps.createMinimapController({
+    state,
+    dom: {
+      root: dom.minimap,
+      canvas: dom.minimapCanvas,
+      source: out,
+      wrap: dom.canvasWrap,
+    },
+    colors: minimapColors,
+    createCanvas: deps.createCanvas,
+    getView: () => viewerController.getView(),
+    applyView: view => viewerController.apply(view),
   });
 
   boxEditorView = deps.createBoxEditorView({
@@ -315,7 +340,10 @@ export function createApp({ document, window, dependencies = {} }) {
     const visible = reviewLayoutVisible();
     if (visible === lastReviewLayout) return;
     lastReviewLayout = visible;
-    const run = () => viewerController.handleResize?.();
+    const run = () => {
+      viewerController.handleResize?.();
+      minimapController?.render?.();
+    };
     if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(run);
     else run();
   }
@@ -338,6 +366,7 @@ export function createApp({ document, window, dependencies = {} }) {
       reviewView.render({ preserveCommentFocus: true });
       boxEditorView?.redraw?.();
       scheduleViewportSyncIfLayoutChanged();
+      minimapController?.render?.();
     },
     renderIndexPage: pageIndex => deps.renderChangeIndexPage(
       createVisualSnapshot(state, pageIndex, "diff"), indexRenderDependencies(),
@@ -373,6 +402,7 @@ export function createApp({ document, window, dependencies = {} }) {
         updateManualAlignReadout();
         boxEditorView?.updateControls?.();
         reviewView?.render({ preserveCommentFocus: true });
+        minimapController?.refreshSource?.();
       },
       reportError: error => errorReporter.report(error, "レンダリングに失敗しました"),
     },
@@ -382,7 +412,10 @@ export function createApp({ document, window, dependencies = {} }) {
     renderTogglePage: (snapshot, options) => (
       deps.renderTogglePage(snapshot, visualRenderDependencies(), options)
     ),
-    drawBoxes: () => boxEditorView?.redraw?.(),
+    drawBoxes: () => {
+      boxEditorView?.redraw?.();
+      minimapController?.refreshSource?.();
+    },
     commitReviewPage: value => reviewController.commitPage(value),
     rememberPageDimensions: (pageIndex, width, height) => (
       reviewController.rememberPageDimensions(pageIndex, width, height)
@@ -809,6 +842,7 @@ export function createApp({ document, window, dependencies = {} }) {
     textRenderer,
     exportController,
     reviewController,
+    minimapController,
   });
 
   reviewView.render();

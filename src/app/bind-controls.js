@@ -11,6 +11,7 @@ export function bindControls({
   textRenderer,
   exportController,
   reviewController,
+  minimapController,
 }) {
   activeBindings.get(document)?.();
 
@@ -51,6 +52,11 @@ export function bindControls({
     boxEditorController.pointerCancel(event);
   });
   listen(dom.canvasWrap, "dblclick", event => viewerController.handleDoubleClick(event));
+
+  listen(dom.minimapCanvas, "pointerdown", event => minimapController?.pointerDown?.(event));
+  listen(dom.minimapCanvas, "pointermove", event => minimapController?.pointerMove?.(event));
+  listen(dom.minimapCanvas, "pointerup", event => minimapController?.pointerUp?.(event));
+  listen(dom.minimapCanvas, "pointercancel", event => minimapController?.pointerCancel?.(event));
 
   listen(dom.zoomIn, "click", () => viewerController.zoomIn());
   listen(dom.zoomOut, "click", () => viewerController.zoomOut());

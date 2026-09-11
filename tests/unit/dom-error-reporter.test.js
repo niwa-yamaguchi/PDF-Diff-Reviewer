@@ -17,6 +17,7 @@ const ids = [
   "reviewPanel", "reviewRail", "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext",
   "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
   "reviewAdd", "reviewReset",
+  "minimap", "minimapCanvas",
 ];
 
 function fakeDocument({ missing, missingSelector } = {}) {
@@ -50,6 +51,8 @@ describe("collectDom", () => {
     expect(Object.isFrozen(dom)).toBe(true);
     expect(Object.isFrozen(dom.nudgeButtons)).toBe(true);
     expect(dom.status.id).toBe("status");
+    expect(dom.minimap.id).toBe("minimap");
+    expect(dom.minimapCanvas.id).toBe("minimapCanvas");
     expect(dom.canvasWrap.id).toBe("canvasWrap");
     expect(dom.oldTextWrap.id).toBe("oldTextWrap");
     expect(dom.nudgeButtons).toHaveLength(1);

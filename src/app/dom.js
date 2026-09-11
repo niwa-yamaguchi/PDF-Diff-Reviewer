@@ -13,6 +13,7 @@ const REQUIRED_IDS = Object.freeze([
   "reviewPanel", "reviewRail", "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext",
   "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
   "reviewAdd", "reviewReset",
+  "minimap", "minimapCanvas",
 ]);
 
 function required(value, name) {

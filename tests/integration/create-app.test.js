@@ -19,7 +19,7 @@ const ids = [
   "textPrev", "textStatus", "textZoom1", "textZoomFit", "textZoomIn", "textZoomOut",
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
-  "zoomLabel", "zoomOut",
+  "zoomLabel", "zoomOut", "minimap", "minimapCanvas",
 ];
 
 function element(id) {
@@ -211,6 +211,8 @@ function fakeDependencies(overrides = {}) {
     invalidateDocuments: vi.fn(), invalidateDpi: vi.fn(), invalidateManualAlignment: vi.fn(),
     invalidatePageAlignment: vi.fn(), invalidateThreshold: vi.fn(), invalidateTolerance: vi.fn(),
     applyInvalidatingChange: vi.fn(() => true),
+    createMinimapController: vi.fn(() => ({ refreshSource() {}, render() {},
+      pointerDown() {}, pointerMove() {}, pointerUp() {}, pointerCancel() {} })),
     ...overrides,
   };
 }
@@ -710,6 +712,78 @@ test("open panel then text then visual keeps the zoomed page center", async () =
   while (frames.length) frames.shift()();
 
   expect(app.viewerController.getView()).toEqual({ scale: 2, tx: -300, ty: -100 });
+});
+
+test("wires minimap colors, canvas refresh, overlay render, and pointer bindings", () => {
+  const minimap = {
+    refreshSource: vi.fn(), render: vi.fn(),
+    pointerDown() {}, pointerMove() {}, pointerUp() {}, pointerCancel() {},
+  };
+  const boxView = { redraw: vi.fn(), refresh() {}, updateControls() {} };
+  const frames = [];
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createMinimapController: vi.fn(() => minimap),
+    createBoxEditorView: vi.fn(() => boxView),
+    createViewerController: vi.fn(({ onTransform }) => {
+      expect(() => onTransform()).not.toThrow();
+      return {
+        fit() {},
+        handleResize: vi.fn(() => ({ scale: 1, tx: 0, ty: 0 })),
+        getView: () => ({ scale: 1, tx: 0, ty: 0 }),
+        apply() {},
+      };
+    }),
+  });
+  const document = fakeDocument();
+  const window = {
+    confirm: () => true,
+    console: { error() {} },
+    getComputedStyle: () => ({
+      getPropertyValue: name => ({
+        "--signal": "#f4b942",
+        "--added": "#4d8dff",
+        "--removed": "#ff5b57",
+        "--changed": "#e8b500",
+      }[name] || "#000"),
+    }),
+    requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
+  };
+  const app = createApp({ document, window, dependencies });
+  const options = dependencies.createMinimapController.mock.calls[0][0];
+  expect(options.colors).toEqual({
+    amber: "#f4b942", added: "#4d8dff", removed: "#ff5b57", changed: "#e8b500",
+  });
+  expect(options.dom.source).toBe(document.getElementById("out"));
+  expect(options.dom.root).toBe(document.getElementById("minimap"));
+  expect(options.dom.canvas).toBe(document.getElementById("minimapCanvas"));
+  expect(dependencies.bindControls.mock.calls[0][0].minimapController).toBe(minimap);
+
+  minimap.refreshSource.mockClear();
+  minimap.render.mockClear();
+  boxView.redraw.mockClear();
+  const { onTransform } = dependencies.createViewerController.mock.calls[0][0];
+  onTransform();
+  expect(boxView.redraw).toHaveBeenCalled();
+  expect(minimap.render).toHaveBeenCalled();
+  expect(minimap.refreshSource).not.toHaveBeenCalled();
+
+  minimap.render.mockClear();
+  dependencies.createVisualController.mock.calls[0][0].dom.afterCommit();
+  expect(minimap.refreshSource).toHaveBeenCalled();
+
+  minimap.refreshSource.mockClear();
+  minimap.render.mockClear();
+  app.reviewController.commitPage({ pageIndex: 0, width: 100, height: 100,
+    boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "added" }] });
+  expect(minimap.render).toHaveBeenCalled();
+  expect(minimap.refreshSource).not.toHaveBeenCalled();
+
+  minimap.render.mockClear();
+  app.reviewController.togglePanel(true);
+  expect(minimap.refreshSource).not.toHaveBeenCalled();
+  while (frames.length) frames.shift()();
+  expect(minimap.render).toHaveBeenCalled();
 });
 
 test("toggling the review panel resizes the viewer after the next animation frame", () => {

@@ -102,7 +102,7 @@ test("binds controls once and delegates events to their owning public handlers",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
     "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
-    "reviewAdd", "reviewReset",
+    "reviewAdd", "reviewReset", "minimapCanvas",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
@@ -122,6 +122,7 @@ test("binds controls once and delegates events to their owning public handlers",
   const textController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
   const textRenderer = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
   const exportController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
+  const minimapController = new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() });
 
   bindControls({
     document: documentTarget,
@@ -133,6 +134,7 @@ test("binds controls once and delegates events to their owning public handlers",
     textController,
     textRenderer,
     exportController,
+    minimapController,
   });
 
   for (const element of [documentTarget, windowTarget, ...Object.values(dom).flat()]) {
@@ -157,6 +159,15 @@ test("binds controls once and delegates events to their owning public handlers",
   windowTarget.emit("resize");
   expect(viewerController.handleResize).toHaveBeenCalledTimes(1);
   expect(textRenderer.handleResize).toHaveBeenCalledTimes(1);
+  const mini = { pointerId: 9 };
+  dom.minimapCanvas.emit("pointerdown", mini);
+  expect(minimapController.pointerDown).toHaveBeenCalledWith(mini);
+  dom.minimapCanvas.emit("pointermove", mini);
+  expect(minimapController.pointerMove).toHaveBeenCalledWith(mini);
+  dom.minimapCanvas.emit("pointerup", mini);
+  expect(minimapController.pointerUp).toHaveBeenCalledWith(mini);
+  dom.minimapCanvas.emit("pointercancel", mini);
+  expect(minimapController.pointerCancel).toHaveBeenCalledWith(mini);
 });
 
 test("replaces every active event binding when the same document is bound again", () => {
@@ -169,7 +180,7 @@ test("replaces every active event binding when the same document is bound again"
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
     "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext", "reviewList",
-    "reviewAdd", "reviewReset",
+    "reviewAdd", "reviewReset", "minimapCanvas",
   ];
   const dom = Object.fromEntries(names.map(name => [name, target()]));
   Object.assign(dom, {
@@ -190,6 +201,7 @@ test("replaces every active event binding when the same document is bound again"
     textController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
     textRenderer: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
     exportController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
+    minimapController: new Proxy({}, { get: (value, key) => value[key] ||= vi.fn() }),
   });
   const previous = createOwners();
   const latest = createOwners();

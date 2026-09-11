@@ -49,6 +49,12 @@ test("workers import core only and stay free of browser document globals", async
   }
 });
 
+test("minimap geometry stays free of app and DOM imports", async () => {
+  const source = await readFile("src/features/viewer/minimap-geometry.js", "utf8");
+  expect(source).not.toMatch(/from\s+["'][^"']*\/app\//);
+  expect(source).not.toMatch(/\b(?:document|window|documentElement)\b/);
+});
+
 test("migration bridge has been removed", async () => {
   await expect(access("src/legacy-app.js", constants.F_OK)).rejects.toThrow();
 });
