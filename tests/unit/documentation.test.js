@@ -44,10 +44,13 @@ test("index is module-only and carries the change review release date", async ()
 
 test("README explains the available review workflow and its persistence boundary", async () => {
   const readme = await readFile("README.md", "utf8");
-  for (const term of ["変更箇所一覧", "未確認", "確認済み", "対象外", "コメント", "前後移動",
-    "サムネイル", "高確度", "メモリ上", "ファイル保存は今後の改善"]) {
-    expect(readme).toContain(term);
-  }
+  const html = await readFile("index.html", "utf8");
+  for (const term of [
+    "変更箇所", "確認済み", "コメント", "編集", "削除",
+    "新規変更箇所", "Ctrl+Z", "ミニマップ", "メモリ上",
+  ]) expect(readme).toContain(term);
+  expect(readme).not.toContain("対象外");
+  expect(html).toContain("UPDATED 2026-09-10");
 });
 
 test("package scripts install all final browsers and validate built artifacts", async () => {
