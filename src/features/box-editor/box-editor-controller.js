@@ -103,9 +103,12 @@ export function createBoxEditorController({
 
   function materializeEdits(pageIndex = state.documents.currentPage) {
     if (!state.boxEditor.editsByPage.has(pageIndex)) {
-      const source = pageIndex === state.documents.currentPage
+      if (pageIndex === state.documents.currentPage) restoreShownBoxes();
+      const auto = state.boxEditor.autoByPage.get(pageIndex);
+      const current = pageIndex === state.documents.currentPage
         ? state.boxEditor.currentBoxes
-        : state.boxEditor.autoByPage.get(pageIndex);
+        : auto;
+      const source = (!current || current.length === 0) && auto?.length ? auto : current;
       state.boxEditor.editsByPage.set(pageIndex, cloneBoxes(source));
     }
     const edits = state.boxEditor.editsByPage.get(pageIndex);
@@ -312,6 +315,7 @@ export function createBoxEditorController({
   function startCreate() {
     cancelDrag();
     if (!state.visual.rendered) return false;
+    restoreShownBoxes();
     state.boxEditor.mode = "create";
     state.boxEditor.showBoxes = true;
     state.review.selectedId = null;
@@ -322,14 +326,12 @@ export function createBoxEditorController({
 
   function startEdit(id) {
     cancelDrag();
-    if (!state.visual.rendered
-      || !(state.boxEditor.currentBoxes || []).some(box => box.id === id)) return false;
+    if (!state.visual.rendered) return false;
+    restoreShownBoxes();
+    if (!(state.boxEditor.currentBoxes || []).some(box => box.id === id)) return false;
     state.review.selectedId = id;
     state.boxEditor.mode = "edit";
-    if (!state.boxEditor.showBoxes) {
-      state.boxEditor.showBoxes = true;
-      restoreShownBoxes();
-    }
+    state.boxEditor.showBoxes = true;
     refresh();
     return true;
   }

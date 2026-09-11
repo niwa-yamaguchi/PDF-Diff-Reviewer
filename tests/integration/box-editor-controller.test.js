@@ -353,6 +353,51 @@ test("startCreate adds a manual box that undo can remove", () => {
   expect(state.boxEditor.currentBoxes.some(box => box.id === "manual-1")).toBe(false);
 });
 
+test("startCreate keeps auto boxes when toggle overlays hid currentBoxes", () => {
+  const autoBox = { id: "auto-1", x: 10, y: 10, w: 20, h: 20, kind: "changed", source: "auto" };
+  const { state, controller } = harness({ boxes: [autoBox] });
+  state.visual.mode = "toggle";
+  state.boxEditor.showBoxes = false;
+  state.boxEditor.currentBoxes = [];
+
+  expect(controller.startCreate()).toBe(true);
+  drag(controller, { x: 70, y: 70 }, { x: 90, y: 90 });
+
+  expect(state.boxEditor.currentBoxes.some(box => box.id === "auto-1")).toBe(true);
+  expect(state.boxEditor.editsByPage.get(0).some(box => box.id === "auto-1")).toBe(true);
+  expect(controller.undo()).toBe(true);
+  expect(state.boxEditor.currentBoxes).toEqual([expect.objectContaining({ id: "auto-1" })]);
+});
+
+test("deleteById keeps remaining auto boxes when toggle overlays hid currentBoxes", () => {
+  const boxes = [
+    { id: "auto-1", x: 10, y: 10, w: 20, h: 20, kind: "changed", source: "auto" },
+    { id: "auto-2", x: 50, y: 50, w: 20, h: 20, kind: "changed", source: "auto" },
+  ];
+  const { state, controller } = harness({ boxes });
+  state.visual.mode = "toggle";
+  state.boxEditor.showBoxes = false;
+  state.boxEditor.currentBoxes = [];
+
+  expect(controller.deleteById("auto-1")).toBe(true);
+
+  expect(state.boxEditor.currentBoxes).toEqual([expect.objectContaining({ id: "auto-2" })]);
+  expect(state.boxEditor.editsByPage.get(0)).toEqual([expect.objectContaining({ id: "auto-2" })]);
+});
+
+test("startEdit restores hidden auto boxes before looking up the id", () => {
+  const autoBox = { id: "auto-1", x: 10, y: 10, w: 20, h: 20, kind: "changed", source: "auto" };
+  const { state, controller } = harness({ boxes: [autoBox] });
+  state.visual.mode = "toggle";
+  state.boxEditor.showBoxes = false;
+  state.boxEditor.currentBoxes = [];
+
+  expect(controller.startEdit("auto-1")).toBe(true);
+  expect(state.boxEditor.currentBoxes).toEqual([expect.objectContaining({ id: "auto-1" })]);
+  expect(state.boxEditor.mode).toBe("edit");
+  expect(state.review.selectedId).toBe("auto-1");
+});
+
 test("resetToAuto keeps undo history and restores the previous hand edits", () => {
   const { state, controller, confirmResetToAuto } = harness({
     boxes: [{ x: 10, y: 10, w: 20, h: 20 }],
