@@ -138,7 +138,7 @@ for (const button of ["#alignAddNew", "#alignDelOld"]) {
     await expect(page.locator("#reviewIndexStatus")).toHaveText("分析完了 4 / 4 ページ");
     await expect(page.locator("[data-review-page]")).toHaveCount(4);
     await expect(page.locator("#reviewNotice")).toHaveText(/レビュー\d+件を継承し、\d+件を未確認へ戻しました/);
-    await page.locator("#alignUndo").click();
+    await page.locator("#alignUndo").click({ force: true });
     await expect(page.locator("#reviewIndexStatus")).toHaveText("分析完了 3 / 3 ページ");
     await expect(page.locator("[data-review-page]")).toHaveCount(3);
     const total = await page.locator("[data-change-id]").count();

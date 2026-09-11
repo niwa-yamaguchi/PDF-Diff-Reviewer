@@ -67,6 +67,18 @@ test("moves the list-selected box and resizes it from all eight handles", async 
   expect(afterMove.midX).toBeGreaterThan(beforeMove.midX + 12);
   expect(afterMove.midY).toBeGreaterThan(beforeMove.midY + 10);
 
+  await page.locator("#zoomFit").click();
+  await expect.poll(async () => {
+    const frame = await page.locator("#boxLayer").evaluate(canvas => {
+      const { data } = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] === 255 && data[i + 1] === 255 && data[i + 2] === 255 && data[i + 3] >= 250) return true;
+      }
+      return false;
+    });
+    return frame;
+  }).toBe(true);
+
   const handles = [
     ["north-west", frame => ({ x: frame.left, y: frame.top }), -12, -12],
     ["north", frame => ({ x: frame.midX, y: frame.top }), 0, -12],

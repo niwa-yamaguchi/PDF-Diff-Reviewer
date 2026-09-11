@@ -104,13 +104,13 @@ test("keeps PDF export, review input and indexing alive together", async ({ page
     window.releaseIndex();
   });
   const selected = page.locator('[data-change-id][aria-current="true"]');
-  await selected.locator("select").selectOption("confirmed");
+  await selected.locator("[data-review-confirmed]").check();
   await selected.locator("textarea").fill("PDF出力中に確認");
   const download = await pending;
   expect(download.suggestedFilename()).toBe("diff.pdf");
   expect(await download.failure()).toBeNull();
   await expect(page.locator("#reviewIndexStatus")).toHaveText("分析完了 2 / 2 ページ");
-  await expect(selected.locator("select")).toHaveValue("confirmed");
+  await expect(selected.locator("[data-review-confirmed]")).toBeChecked();
   await expect(selected.locator("textarea")).toHaveValue("PDF出力中に確認");
-  await expect(page.locator("#reviewProgress")).toContainText("完了 1 /");
+  await expect(page.locator("#reviewProgress")).toContainText("確認済み 1 /");
 });
