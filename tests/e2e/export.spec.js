@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { expectDownload, pngSize } from "../helpers/export-download.js";
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
 
@@ -35,24 +35,6 @@ async function textView(page) {
       next: [newCanvas.width, newCanvas.height, newCanvas.style.transform],
     };
   });
-}
-
-async function expectDownload(page, button, filename, capture) {
-  const before = await capture(page);
-  const pending = page.waitForEvent("download");
-  await page.locator(button).click();
-  const download = await pending;
-  expect(download.suggestedFilename()).toBe(filename);
-  await expect.poll(() => capture(page)).toEqual(before);
-  return download;
-}
-
-async function pngSize(download) {
-  const buffer = await readFile(await download.path());
-  return {
-    width: buffer.readUInt32BE(16),
-    height: buffer.readUInt32BE(20),
-  };
 }
 
 test("downloads visual and text PNG/PDF without changing either committed view", async ({ page }) => {
