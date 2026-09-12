@@ -225,6 +225,10 @@
   <aside id="reviewPanel" class="review-panel" aria-label="変更箇所" hidden>
     <div class="review-head">
       <div><strong id="reviewTotal">変更箇所 0件</strong><span id="reviewIndexStatus" role="status"></span></div>
+      <label class="review-highlight-toggle" title="変更箇所を枠で囲って強調">
+        <input id="boxToggle" type="checkbox" checked disabled>
+        <span>変更箇所を強調</span>
+      </label>
     </div>
     <div id="reviewProgress">完了 0 / 0　未確認 0件</div>
     <div class="review-nav">
@@ -232,8 +236,8 @@
       <button id="reviewNext" disabled>次の変更 →</button>
     </div>
     <div class="review-tools">
-      <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
-      <button id="reviewAdd" disabled title="新規変更箇所を作成（Ctrl+N）">＋ 新規変更箇所</button>
+      <button id="reviewAdd" disabled>＋ 新規変更箇所</button>
+      <div class="review-tool-divider" aria-hidden="true"></div>
       <button id="reviewReset" disabled>このページを自動検出に戻す</button>
     </div>
     <div id="reviewNotice" role="status"></div>

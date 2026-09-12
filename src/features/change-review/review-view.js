@@ -48,7 +48,6 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     const editingLabel = element("span", "review-editing", "編集中");
     const edit = element("button", "review-edit", "編集");
     edit.dataset.reviewEdit = item.id;
-    edit.title = "選択した変更枠を編集（Ctrl+E）";
     const remove = element("button", "review-delete", "削除");
     remove.dataset.reviewDelete = item.id;
     remove.title = "選択した変更箇所を削除（Delete）";

@@ -616,16 +616,6 @@ export function createApp({ document, window, dependencies = {} }) {
         boxEditorController.undo();
         return;
       }
-      if (commandKey && event.key?.toLowerCase() === "e") {
-        if (!state.visual.rendered || !state.review.selectedId) return;
-        event.preventDefault();
-        return reviewController.edit(state.review.selectedId);
-      }
-      if (commandKey && event.key?.toLowerCase() === "n") {
-        if (!state.visual.rendered) return;
-        if (reviewController.startCreate()) event.preventDefault();
-        return;
-      }
       if (event.key === "Escape") {
         if (state.boxEditor.mode === "create") {
           event.preventDefault();

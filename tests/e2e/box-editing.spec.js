@@ -51,11 +51,10 @@ test("moves the list-selected box and resizes it from all eight handles", async 
   const cards = page.locator('[data-review-page="0"] [data-change-id]');
   const total = await cards.count();
   const edited = cards.first();
-  await edited.locator(".review-select").click();
-  await page.keyboard.press("Control+e");
+  await edited.locator("[data-review-edit]").click();
   await expect(edited).toHaveClass(/editing/);
   await expect(edited.locator("[data-review-edit]")).toHaveText("編集を終了");
-  await page.keyboard.press("Control+e");
+  await page.keyboard.press("Escape");
   await expect(edited).not.toHaveClass(/editing/);
   await expect(edited.locator("[data-review-edit]")).toHaveText("編集");
   await edited.locator("[data-review-edit]").click();
@@ -144,7 +143,7 @@ async function dragInside(locator, x0, y0, x1, y1) {
 
 test("adds a pending change from the list, deletes it, and restores it with Undo", async ({ page }) => {
   await loadReview(page);
-  await page.keyboard.press("Control+n");
+  await page.locator("#reviewAdd").click();
   await dragInside(page.locator("#boxLayer"), .70, .70, .84, .82);
   const manual = page.locator('[data-change-id]').filter({ hasText: "変更" }).last();
   await expect(manual.locator('[data-review-confirmed]')).not.toBeChecked();

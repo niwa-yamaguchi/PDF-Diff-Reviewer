@@ -133,7 +133,7 @@ export function createBoxEditorView({ state, dom, getView }) {
   function updateControls() {
     const on = state.boxEditor.mode === "edit" || state.boxEditor.mode === "create";
     dom.wrap.classList.toggle("boxedit", on);
-    dom.boxToggle.classList.toggle("active", state.boxEditor.showBoxes);
+    dom.boxToggle.checked = state.boxEditor.showBoxes;
   }
 
   function refresh() {

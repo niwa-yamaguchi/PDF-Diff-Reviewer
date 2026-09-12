@@ -131,6 +131,10 @@
   .review-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 14px 10px}
   .review-head strong{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
   #reviewIndexStatus{display:block;font:10px var(--mono);color:var(--muted);margin-top:6px;line-height:1.6}
+  .review-highlight-toggle{display:flex;align-items:center;gap:7px;min-height:28px;padding:1px 0;color:var(--fg);font:11px var(--sans);white-space:nowrap;cursor:pointer}
+  .review-highlight-toggle input{width:15px;height:15px;margin:0;accent-color:var(--signal);cursor:pointer}
+  .review-highlight-toggle input:disabled,.review-highlight-toggle input:disabled+span{opacity:.4;cursor:not-allowed}
+  .review-highlight-toggle:focus-within{outline:2px solid var(--signal);outline-offset:2px}
   #reviewRailToggle{
     flex:1;width:100%;min-height:44px;border:0;border-radius:0;background:transparent;color:var(--fg);
     font:16px var(--mono);cursor:pointer;padding:0;
@@ -142,6 +146,7 @@
   .review-nav button{flex:1;min-height:32px;white-space:nowrap}
   .review-tools{display:flex;flex-direction:column;gap:8px;padding:0 14px 12px;border-bottom:1px solid var(--line)}
   .review-tools button{min-height:32px;white-space:nowrap}
+  .review-tool-divider{height:1px;background:var(--line-bright);margin:2px 0}
   #reviewNotice:not(:empty){padding:10px 14px;border-bottom:1px solid var(--line);font-size:11px;line-height:1.6;color:var(--muted)}
   #reviewList{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
   .review-page{border-bottom:1px solid var(--line)}

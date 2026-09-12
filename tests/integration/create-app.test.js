@@ -650,8 +650,8 @@ test("Delete removes the selected change outside edit mode", async () => {
   expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1"]);
 });
 
-// Break: missing Ctrl+E routing leaves keyboard users unable to edit the selected change.
-test("Ctrl+E toggles editing for the selected change", async () => {
+// Break: intercepting Ctrl+E prevents the browser from handling its reserved shortcut.
+test("Ctrl+E remains available to the browser", async () => {
   const bindControls = vi.fn();
   const app = selectionApp(undefined, { bindControls });
   await app.visualController.showPage(0);
@@ -660,17 +660,13 @@ test("Ctrl+E toggles editing for the selected change", async () => {
   const preventDefault = vi.fn();
   const shortcut = { key: "e", ctrlKey: true, preventDefault, target: { tagName: "BUTTON" } };
 
-  await appController.handleKeyDown(shortcut);
-  expect(preventDefault).toHaveBeenCalledTimes(1);
-  expect(app.state.boxEditor.mode).toBe("edit");
-
-  await appController.handleKeyDown(shortcut);
-  expect(preventDefault).toHaveBeenCalledTimes(2);
+  appController.handleKeyDown(shortcut);
+  expect(preventDefault).not.toHaveBeenCalled();
   expect(app.state.boxEditor.mode).toBe("idle");
 });
 
-// Break: missing Ctrl+N routing leaves new change creation available only by mouse.
-test("Ctrl+N starts creating a change without firing from a comment field", async () => {
+// Break: intercepting Ctrl+N prevents the browser from handling its reserved shortcut.
+test("Ctrl+N remains available to the browser", async () => {
   const bindControls = vi.fn();
   const app = selectionApp(undefined, { bindControls });
   await app.visualController.showPage(0);
@@ -678,16 +674,10 @@ test("Ctrl+N starts creating a change without firing from a comment field", asyn
   const preventDefault = vi.fn();
 
   appController.handleKeyDown({
-    key: "n", ctrlKey: true, preventDefault, target: { tagName: "TEXTAREA" },
+    key: "n", ctrlKey: true, preventDefault, target: { tagName: "BUTTON" },
   });
   expect(preventDefault).not.toHaveBeenCalled();
   expect(app.state.boxEditor.mode).toBe("idle");
-
-  appController.handleKeyDown({
-    key: "n", ctrlKey: true, preventDefault, target: { tagName: "BUTTON" },
-  });
-  expect(preventDefault).toHaveBeenCalledOnce();
-  expect(app.state.boxEditor.mode).toBe("create");
 });
 
 test("undo after reset-to-auto restores a removed manual box comment", async () => {

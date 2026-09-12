@@ -64,15 +64,26 @@ test("reviews all visual changes from the change list", async ({ page }) => {
   await expect(cards.first().locator("textarea")).toHaveValue("R105の抵抗値を確認");
 });
 
-// Break: leaving the highlight control in the viewer toolbar separates it from the change-list workflow.
-test("keeps the change highlight control inside the review panel", async ({ page }) => {
+// Break: rendering highlight as another action button hides its persistent on/off meaning.
+test("shows change highlighting as a checkbox in the review header", async ({ page }) => {
   await loadReview(page);
-  const highlight = page.locator("#reviewPanel #boxToggle");
+  const highlight = page.locator('#reviewPanel .review-head input#boxToggle[type="checkbox"]');
 
   await expect(highlight).toBeVisible();
-  await expect(highlight).toHaveClass(/active/);
+  await expect(highlight).toBeChecked();
   await highlight.click();
-  await expect(highlight).not.toHaveClass(/active/);
+  await expect(highlight).not.toBeChecked();
+});
+
+// Break: grouping reset directly beside creation makes a destructive recovery action look like creation.
+test("separates new-change creation from reset-to-auto", async ({ page }) => {
+  await loadReview(page);
+  const divider = page.locator("#reviewPanel .review-tool-divider");
+
+  await expect(divider).toBeVisible();
+  const bounds = await divider.boundingBox();
+  expect(bounds.width).toBeGreaterThan(200);
+  expect(bounds.height).toBe(1);
 });
 
 // Break: page-local numbering gives a different identifier to the visible row and its accessible controls.

@@ -217,3 +217,29 @@ test("the browser view converts native client coordinates even when PointerEvent
 
   expect(view.toImagePoint({ clientX: 150, clientY: 110, x: 150, y: 110 })).toEqual({ x: 20, y: 20 });
 });
+
+// Break: styling a button as active does not expose the actual on/off state of the checkbox.
+test("reflects change-box visibility in the highlight checkbox", () => {
+  const { canvas } = canvasHarness();
+  const state = {
+    documents: { currentPage: 0 }, visual: { mode: "diff", rendered: true },
+    boxEditor: { currentBoxes: [], showBoxes: false, mode: "idle", drag: null, editsByPage: new Map() },
+    review: { selectedId: null },
+  };
+  const boxToggle = { checked: true, disabled: false, classList: { toggle() {} } };
+  const view = createBoxEditorView({
+    state,
+    dom: {
+      canvas, out: { style: { display: "block" } },
+      wrap: { clientWidth: 640, clientHeight: 480, style: {}, classList: { toggle() {} } },
+      statBox: { textContent: "" }, boxToggle, boxReset: { style: {} },
+    },
+    getView: () => ({ scale: 1, tx: 0, ty: 0 }),
+  });
+
+  view.refresh();
+  expect(boxToggle.checked).toBe(false);
+  state.boxEditor.showBoxes = true;
+  view.refresh();
+  expect(boxToggle.checked).toBe(true);
+});
