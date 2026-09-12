@@ -64,6 +64,17 @@ test("reviews all visual changes from the change list", async ({ page }) => {
   await expect(cards.first().locator("textarea")).toHaveValue("R105の抵抗値を確認");
 });
 
+// Break: leaving the highlight control in the viewer toolbar separates it from the change-list workflow.
+test("keeps the change highlight control inside the review panel", async ({ page }) => {
+  await loadReview(page);
+  const highlight = page.locator("#reviewPanel #boxToggle");
+
+  await expect(highlight).toBeVisible();
+  await expect(highlight).toHaveClass(/active/);
+  await highlight.click();
+  await expect(highlight).not.toHaveClass(/active/);
+});
+
 // Break: page-local numbering gives a different identifier to the visible row and its accessible controls.
 test("numbers changes continuously across all pages", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 1000 });
@@ -129,6 +140,12 @@ test("renders thumbnails only for opened pages and selects across pages", async 
   await expect(secondPage.locator("article").first()).toHaveAttribute("aria-current", "true");
   await page.locator("#reviewPrev").click();
   await expect(page.locator("#pageLabel")).toContainText("1 / 3");
+  const selected = page.locator('[data-change-id][aria-current="true"]');
+  await expect.poll(async () => selected.evaluate((row, list) => {
+    const rowBounds = row.getBoundingClientRect();
+    const listBounds = list.getBoundingClientRect();
+    return rowBounds.top >= listBounds.top && rowBounds.bottom <= listBounds.bottom;
+  }, await page.locator("#reviewList").elementHandle())).toBe(true);
 });
 
 for (const button of ["#alignAddNew", "#alignDelOld"]) {

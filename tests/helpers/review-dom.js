@@ -54,6 +54,8 @@ export function reviewDocument() {
       },
       querySelector(selector) { return node.querySelectorAll(selector)[0] || null; },
       focus() { document.activeElement = node; },
+      scrollIntoViewCalls: [],
+      scrollIntoView(options) { node.scrollIntoViewCalls.push(options); },
       setSelectionRange(start, end, direction) {
         node.selectionStart = start; node.selectionEnd = end; node.selectionDirection = direction;
       },

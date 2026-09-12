@@ -48,8 +48,10 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     const editingLabel = element("span", "review-editing", "編集中");
     const edit = element("button", "review-edit", "編集");
     edit.dataset.reviewEdit = item.id;
+    edit.title = "選択した変更枠を編集（Ctrl+E）";
     const remove = element("button", "review-delete", "削除");
     remove.dataset.reviewDelete = item.id;
+    remove.title = "選択した変更箇所を削除（Delete）";
     actions.append(editingLabel, edit, remove);
     article.append(select, thumbnail, actions, confirmedLabel, comment);
     return { article, select, number, kind, stateLabel, confirmed, comment, thumbnail,
@@ -60,6 +62,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     const { review } = state;
     const visual = state.ui.topMode === "visual";
     const visible = review.panelOpen && visual;
+    const selectionChanged = review.selectedId !== previousSelectedId;
     dom.reviewPanel.hidden = !visible;
     dom.reviewBackdrop.hidden = !visible;
     if (dom.reviewRail) dom.reviewRail.hidden = !visual;
@@ -173,6 +176,9 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
     for (const pageIndex of pageViews.keys()) if (!pages.includes(pageIndex)) pageViews.delete(pageIndex);
     const ids = new Set(items.map(item => item.id));
     for (const id of itemViews.keys()) if (!ids.has(id)) itemViews.delete(id);
+    if (visible && selectionChanged && review.selectedId) {
+      itemViews.get(review.selectedId)?.article.scrollIntoView({ block: "nearest" });
+    }
     previousSelectedId = review.selectedId;
     if (focusedField && visible && document.activeElement !== focusedField) {
       focusedField.focus({ preventScroll: true });

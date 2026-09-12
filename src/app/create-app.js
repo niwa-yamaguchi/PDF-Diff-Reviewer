@@ -597,6 +597,7 @@ export function createApp({ document, window, dependencies = {} }) {
     flipSide: () => visualController.flipToggleSide(),
     handleKeyDown(event) {
       if (state.ui.topMode !== "visual" || isTypingTarget(event)) return;
+      const commandKey = event.ctrlKey || event.metaKey;
       if (event.code === "Space" && !event.repeat && event.target?.tagName !== "BUTTON") {
         if (state.boxEditor.mode === "edit") {
           spaceHeld = true;
@@ -609,10 +610,20 @@ export function createApp({ document, window, dependencies = {} }) {
         }
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")) {
+      if (commandKey && event.key?.toLowerCase() === "z") {
         if (!state.visual.rendered) return;
         event.preventDefault();
         boxEditorController.undo();
+        return;
+      }
+      if (commandKey && event.key?.toLowerCase() === "e") {
+        if (!state.visual.rendered || !state.review.selectedId) return;
+        event.preventDefault();
+        return reviewController.edit(state.review.selectedId);
+      }
+      if (commandKey && event.key?.toLowerCase() === "n") {
+        if (!state.visual.rendered) return;
+        if (reviewController.startCreate()) event.preventDefault();
         return;
       }
       if (event.key === "Escape") {
@@ -632,11 +643,9 @@ export function createApp({ document, window, dependencies = {} }) {
         }
         return;
       }
-      if (state.boxEditor.mode !== "edit") return;
       if (event.key === "Delete" || event.key === "Backspace") {
         if (!state.review.selectedId) return;
-        event.preventDefault();
-        boxEditorController.deleteById(state.review.selectedId);
+        if (reviewController.remove(state.review.selectedId)) event.preventDefault();
       }
     },
     handleKeyUp(event) {

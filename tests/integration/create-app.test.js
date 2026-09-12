@@ -634,6 +634,62 @@ test("Ctrl+Z is ignored until a visual comparison has been rendered", async () =
   expect(undo).not.toHaveBeenCalled();
 });
 
+// Break: requiring edit mode makes Delete ignore a change selected from the review list.
+test("Delete removes the selected change outside edit mode", async () => {
+  const bindControls = vi.fn();
+  const app = selectionApp(undefined, { bindControls });
+  await app.visualController.showPage(0);
+  const { appController } = bindControls.mock.calls[0][0];
+  await app.reviewController.select("change-2");
+  expect(app.state.boxEditor.mode).toBe("idle");
+  const preventDefault = vi.fn();
+
+  appController.handleKeyDown({ key: "Delete", preventDefault, target: { tagName: "BUTTON" } });
+
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(app.state.boxEditor.currentBoxes.map(box => box.id)).toEqual(["change-1"]);
+});
+
+// Break: missing Ctrl+E routing leaves keyboard users unable to edit the selected change.
+test("Ctrl+E toggles editing for the selected change", async () => {
+  const bindControls = vi.fn();
+  const app = selectionApp(undefined, { bindControls });
+  await app.visualController.showPage(0);
+  const { appController } = bindControls.mock.calls[0][0];
+  await app.reviewController.select("change-1");
+  const preventDefault = vi.fn();
+  const shortcut = { key: "e", ctrlKey: true, preventDefault, target: { tagName: "BUTTON" } };
+
+  await appController.handleKeyDown(shortcut);
+  expect(preventDefault).toHaveBeenCalledTimes(1);
+  expect(app.state.boxEditor.mode).toBe("edit");
+
+  await appController.handleKeyDown(shortcut);
+  expect(preventDefault).toHaveBeenCalledTimes(2);
+  expect(app.state.boxEditor.mode).toBe("idle");
+});
+
+// Break: missing Ctrl+N routing leaves new change creation available only by mouse.
+test("Ctrl+N starts creating a change without firing from a comment field", async () => {
+  const bindControls = vi.fn();
+  const app = selectionApp(undefined, { bindControls });
+  await app.visualController.showPage(0);
+  const { appController } = bindControls.mock.calls[0][0];
+  const preventDefault = vi.fn();
+
+  appController.handleKeyDown({
+    key: "n", ctrlKey: true, preventDefault, target: { tagName: "TEXTAREA" },
+  });
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(app.state.boxEditor.mode).toBe("idle");
+
+  appController.handleKeyDown({
+    key: "n", ctrlKey: true, preventDefault, target: { tagName: "BUTTON" },
+  });
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(app.state.boxEditor.mode).toBe("create");
+});
+
 test("undo after reset-to-auto restores a removed manual box comment", async () => {
   const app = selectionApp();
   await app.visualController.showPage(0);

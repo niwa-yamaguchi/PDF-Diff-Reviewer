@@ -15,7 +15,7 @@
     <img class="brandlogo" src="/favicon.png" alt="" width="34" height="34">
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-09-10</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-09-12</span>
     </div>
   </div>
   <div class="legend">
@@ -157,7 +157,6 @@
       <div class="modectl">
         <button id="modeDiff" class="active" disabled title="差分表示">差分</button>
         <button id="modeToggle" disabled title="新旧切替表示">新旧切替</button>
-        <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
       </div>
       <div class="toggleind" id="toggleInd" style="display:none">
         <span class="side old active" id="sideOld">OLD</span>
@@ -233,7 +232,8 @@
       <button id="reviewNext" disabled>次の変更 →</button>
     </div>
     <div class="review-tools">
-      <button id="reviewAdd" disabled>＋ 新規変更箇所</button>
+      <button id="boxToggle" class="active" disabled title="変更箇所を枠で囲って強調（ON/OFF）">変更点を強調</button>
+      <button id="reviewAdd" disabled title="新規変更箇所を作成（Ctrl+N）">＋ 新規変更箇所</button>
       <button id="reviewReset" disabled>このページを自動検出に戻す</button>
     </div>
     <div id="reviewNotice" role="status"></div>

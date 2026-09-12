@@ -235,6 +235,20 @@ test("opens a newly selected page while keeping the other page disclosure choice
   expect(dom.reviewList.querySelectorAll("details").map(group => group.open)).toEqual([false, false]);
 });
 
+// Break: previous/next navigation can select an off-screen row without moving the list viewport to it.
+test("scrolls a newly selected change into the visible part of the review list", () => {
+  const { state, dom, view } = harness();
+  view.render();
+  const selected = dom.reviewList.querySelector('[data-change-id="change-2"]');
+
+  state.review.selectedId = "change-2";
+  view.render();
+
+  expect(selected.scrollIntoViewCalls).toEqual([{ block: "nearest" }]);
+  view.render();
+  expect(selected.scrollIntoViewCalls).toHaveLength(1);
+});
+
 // Break: omitted progress, migration notice or failed-page controls makes partial indexing look complete.
 test("shows indexing progress, migration results and retryable failed pages", () => {
   const { state, dom, view } = harness();

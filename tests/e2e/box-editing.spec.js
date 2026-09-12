@@ -51,10 +51,11 @@ test("moves the list-selected box and resizes it from all eight handles", async 
   const cards = page.locator('[data-review-page="0"] [data-change-id]');
   const total = await cards.count();
   const edited = cards.first();
-  await edited.locator("[data-review-edit]").click();
+  await edited.locator(".review-select").click();
+  await page.keyboard.press("Control+e");
   await expect(edited).toHaveClass(/editing/);
   await expect(edited.locator("[data-review-edit]")).toHaveText("編集を終了");
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+e");
   await expect(edited).not.toHaveClass(/editing/);
   await expect(edited.locator("[data-review-edit]")).toHaveText("編集");
   await edited.locator("[data-review-edit]").click();
@@ -120,7 +121,8 @@ test("deletes from the list and with Delete, then restores reviewed metadata wit
   const reviewed = page.locator(`[data-change-id="${firstId}"]`);
   await reviewed.locator("[data-review-confirmed]").check();
   await reviewed.locator("textarea").fill("削除後も戻すコメント");
-  await reviewed.locator("[data-review-edit]").click();
+  await reviewed.locator(".review-select").click();
+  await expect(reviewed).not.toHaveClass(/editing/);
   await page.keyboard.press("Delete");
   await expect(reviewed).toHaveCount(0);
   await expect(cards).toHaveCount(total - 2);
@@ -142,7 +144,7 @@ async function dragInside(locator, x0, y0, x1, y1) {
 
 test("adds a pending change from the list, deletes it, and restores it with Undo", async ({ page }) => {
   await loadReview(page);
-  await page.locator("#reviewAdd").click();
+  await page.keyboard.press("Control+n");
   await dragInside(page.locator("#boxLayer"), .70, .70, .84, .82);
   const manual = page.locator('[data-change-id]').filter({ hasText: "変更" }).last();
   await expect(manual.locator('[data-review-confirmed]')).not.toBeChecked();
