@@ -1,4 +1,5 @@
 import { createWhiteCanvas } from "../../platform/canvas.js";
+import { renderCancelledError } from "../../core/rendering/cancellation.js";
 
 export async function pageSizePt(doc, pageIndex) {
   if (!doc || pageIndex == null || pageIndex >= doc.numPages) return null;
@@ -7,13 +8,26 @@ export async function pageSizePt(doc, pageIndex) {
   return { w: viewport.width, h: viewport.height };
 }
 
-export async function renderPageCanvas(doc, pageIndex, scale) {
+export async function renderPageCanvas(doc, pageIndex, scale, { cancellation } = {}) {
   if (!doc || pageIndex == null || pageIndex >= doc.numPages) return null;
+  if (cancellation?.cancelled) throw renderCancelledError();
   const page = await doc.getPage(pageIndex + 1);
+  if (cancellation?.cancelled) throw renderCancelledError();
   const viewport = page.getViewport({ scale });
   const canvas = createWhiteCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
   const context = canvas.getContext("2d");
-  await page.render({ canvasContext: context, viewport }).promise;
+  const renderTask = page.render({ canvasContext: context, viewport });
+  const unregister = cancellation?.onCancel?.(() => renderTask.cancel()) || (() => {});
+  try {
+    await renderTask.promise;
+  } catch (error) {
+    if (cancellation?.cancelled || error?.name === "RenderingCancelledException") {
+      throw renderCancelledError();
+    }
+    throw error;
+  } finally {
+    unregister();
+  }
   return canvas;
 }
 

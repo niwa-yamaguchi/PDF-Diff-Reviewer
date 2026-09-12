@@ -1,5 +1,5 @@
 import { toggleCompletedCacheMatchesSnapshot } from "./visual-renderer.js";
-import { isRenderCancelled } from "./worker-lane.js";
+import { createRenderCancellation, isRenderCancelled } from "../../core/rendering/cancellation.js";
 import { pageKeyFor } from "../../core/change-review/model.js";
 
 function frozenBoxes(boxes) {
@@ -71,13 +71,17 @@ export function createVisualController({
   rememberPageDimensions,
 }) {
   let activeInteractiveTicket = null;
+  let activeCancellation = null;
+  const openInteractions = new Set();
   let pendingFlip = null;
   let committedStatus = dom.status.textContent || "";
 
   function cancelPendingPage() {
-    if (activeInteractiveTicket === null) return;
+    if (activeInteractiveTicket === null && activeCancellation === null) return;
     state.visual.renderGeneration += 1;
     activeInteractiveTicket = null;
+    activeCancellation?.cancel();
+    activeCancellation = null;
     pendingFlip = null;
     dom.cancelRender?.();
     dom.status.textContent = committedStatus;
@@ -104,7 +108,9 @@ export function createVisualController({
 
   function finishInteractive(ticket) {
     if (activeInteractiveTicket === ticket.id) activeInteractiveTicket = null;
+    if (activeCancellation === ticket.cancellation) activeCancellation = null;
     if (pendingFlip?.ticketId === ticket.id) pendingFlip = null;
+    if (openInteractions.delete(ticket.id)) dom.endInteraction?.();
   }
 
   function commitCanvas(canvas) {
@@ -184,12 +190,18 @@ export function createVisualController({
     } = {},
   ) {
     if (pageIndex < 0 || pageIndex >= state.documents.pages) return { committed: false };
+    activeCancellation?.cancel();
     dom.cancelRender?.();
+    const cancellation = createRenderCancellation();
     const ticket = Object.freeze({
       id: ++state.visual.renderGeneration,
       documentGeneration: state.documents.generation,
       pageIndex,
+      cancellation,
     });
+    activeCancellation = cancellation;
+    openInteractions.add(ticket.id);
+    dom.beginInteraction?.();
     const snapshot = createVisualSnapshot(state, pageIndex, mode, toggleSide);
     if (updateCurrentPage) {
       activeInteractiveTicket = ticket.id;
@@ -211,7 +223,7 @@ export function createVisualController({
     const renderer = mode === "toggle" ? renderTogglePage : renderDiffPage;
     let result;
     try {
-      result = await renderer(snapshot, { onProgress });
+      result = await renderer(snapshot, { onProgress, cancellation });
     } catch (error) {
       if (!isCurrent(ticket, snapshot, updateCurrentPage, commitToggleSide)) {
         finishInteractive(ticket);

@@ -3,6 +3,7 @@ import {
   ALIGN_PROBE_LONG,
   alignProbeScale,
   downscaleCanvas,
+  renderPageCanvas,
 } from "../../src/features/documents/page-renderer.js";
 
 function fakeCanvas(width, height) {
@@ -105,5 +106,78 @@ describe("downscaleCanvas", () => {
 
     expect(result.width).toBe(1);
     expect(result.height).toBe(1);
+  });
+});
+
+describe("renderPageCanvas cancellation", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", { createElement: () => fakeCanvas(0, 0) });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("registers the PDF.js RenderTask so stale rasterization can be cancelled", async () => {
+    let cancelRegistered;
+    const cancellation = {
+      cancelled: false,
+      onCancel: vi.fn(callback => {
+        cancelRegistered = callback;
+        return () => {};
+      }),
+    };
+    const renderTask = { promise: new Promise(() => {}), cancel: vi.fn() };
+    const page = {
+      getViewport: vi.fn(() => ({ width: 20, height: 10 })),
+      render: vi.fn(() => renderTask),
+    };
+    const doc = { numPages: 1, getPage: vi.fn(async () => page) };
+
+    void renderPageCanvas(doc, 0, 2, { cancellation });
+    await vi.waitFor(() => expect(page.render).toHaveBeenCalledTimes(1));
+
+    expect(cancellation.onCancel).toHaveBeenCalledTimes(1);
+    cancelRegistered();
+    expect(renderTask.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("normalizes PDF.js cancellation so the visual controller treats it as intentional", async () => {
+    let cancelRegistered;
+    let rejectRender;
+    const renderTask = {
+      promise: new Promise((_, reject) => { rejectRender = reject; }),
+      cancel: vi.fn(() => rejectRender(Object.assign(new Error("cancelled"), {
+        name: "RenderingCancelledException",
+      }))),
+    };
+    const cancellation = {
+      cancelled: false,
+      onCancel(callback) {
+        cancelRegistered = callback;
+        return () => {};
+      },
+    };
+    const page = {
+      getViewport: () => ({ width: 20, height: 10 }),
+      render: () => renderTask,
+    };
+    const doc = { numPages: 1, getPage: async () => page };
+
+    const rendering = renderPageCanvas(doc, 0, 2, { cancellation });
+    await vi.waitFor(() => expect(cancelRegistered).toBeTypeOf("function"));
+    cancellation.cancelled = true;
+    cancelRegistered();
+
+    await expect(rendering).rejects.toMatchObject({ name: "RenderCancelled" });
+  });
+
+  test("does not allocate a canvas for work cancelled before PDF page lookup", async () => {
+    const doc = { numPages: 1, getPage: vi.fn() };
+    const cancellation = { cancelled: true, onCancel: vi.fn() };
+
+    await expect(renderPageCanvas(doc, 0, 2, { cancellation }))
+      .rejects.toMatchObject({ name: "RenderCancelled" });
+    expect(doc.getPage).not.toHaveBeenCalled();
   });
 });

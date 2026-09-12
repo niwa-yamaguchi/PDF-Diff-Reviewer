@@ -23,10 +23,10 @@ export function drawToggleSide(snapshot, cache, dependencies) {
   return canvas;
 }
 
-export async function renderTogglePage(snapshot, dependencies, { onProgress = null } = {}) {
+export async function renderTogglePage(snapshot, dependencies, { onProgress = null, cancellation = null } = {}) {
   const previous = snapshot.visual.toggleCache;
   const cachedPages = previous?.idx === snapshot.pageIndex ? previous : null;
-  const prepared = await prepareVisualPage(snapshot, dependencies, cachedPages, onProgress);
+  const prepared = await prepareVisualPage(snapshot, dependencies, cachedPages, onProgress, cancellation);
   const pageCache = {
     idx: snapshot.pageIndex,
     quad: prepared.quadrant,

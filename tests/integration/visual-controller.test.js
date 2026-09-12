@@ -539,6 +539,42 @@ test("cancels a render that only reaches the worker lane after a newer render st
   expect(dom.reportError).not.toHaveBeenCalled();
 });
 
+test("cancels stale PDF rasterization before starting the next page", async () => {
+  const pending = [deferred(), deferred()];
+  const options = [];
+  const renderDiffPage = vi.fn((snapshot, renderOptions) => {
+    options[snapshot.pageIndex] = renderOptions;
+    return pending[snapshot.pageIndex].promise;
+  });
+  const { controller } = harness({ renderDiffPage });
+
+  const stale = controller.showPage(0);
+  await vi.waitFor(() => expect(options[0]).toBeDefined());
+  const fresh = controller.showPage(1);
+
+  expect(options[0].cancellation.cancelled).toBe(true);
+  expect(options[1].cancellation.cancelled).toBe(false);
+  pending[0].resolve(result(0));
+  pending[1].resolve(result(1));
+  await expect(stale).resolves.toMatchObject({ committed: false });
+  await expect(fresh).resolves.toMatchObject({ committed: true });
+});
+
+test("holds background work until an interactive page render finishes", async () => {
+  const pending = deferred();
+  const { controller, dom } = harness({ renderDiffPage: () => pending.promise });
+  dom.beginInteraction = vi.fn();
+  dom.endInteraction = vi.fn();
+
+  const rendering = controller.showPage(0);
+  expect(dom.beginInteraction).toHaveBeenCalledTimes(1);
+  expect(dom.endInteraction).not.toHaveBeenCalled();
+  pending.resolve(result(0));
+  await rendering;
+
+  expect(dom.endInteraction).toHaveBeenCalledTimes(1);
+});
+
 test("discards a pending result when the document generation changes", async () => {
   const pending = deferred();
   const renderDiffPage = vi.fn(() => pending.promise);
@@ -966,6 +1002,19 @@ test("renders the exact legacy common removed and added pixels offscreen", async
   ]);
   expect(rendered.cacheEntry).toEqual({ rm: 1, ad: 1, bx: rendered.boxes.length });
   expect(rendered.status).toBe("差分を表示中");
+});
+
+test("passes interactive cancellation through to both PDF page renders", async () => {
+  const oldCanvas = new MemoryCanvas(3, 1, rgba([0, 0, 255]));
+  const newCanvas = new MemoryCanvas(3, 1, rgba([0, 255, 0]));
+  const dependencies = rendererDependencies(oldCanvas, newCanvas);
+  const cancellation = { cancelled: false, onCancel() { return () => {}; } };
+
+  await renderDiffPage(rendererSnapshot(), dependencies, { cancellation });
+
+  expect(dependencies.renderPageCanvas).toHaveBeenCalledTimes(2);
+  expect(dependencies.renderPageCanvas.mock.calls.map(call => call[3]))
+    .toEqual([{ cancellation }, { cancellation }]);
 });
 
 test("puts the computed buffer straight onto the canvas without a second full-size copy", async () => {

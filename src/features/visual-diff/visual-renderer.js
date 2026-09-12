@@ -13,7 +13,7 @@ function toleranceRadiusPx(comparison) {
   return Math.round(comparison.tolerancePx * comparison.dpi / BOX_BASE_DPI);
 }
 
-async function ensureQuadrant(snapshot, indexes, sizes, cache, dependencies) {
+async function ensureQuadrant(snapshot, indexes, sizes, cache, dependencies, cancellation) {
   const { comparison, documents, pageIndex } = snapshot;
   if (!comparison.autoAlign || cache.has(pageIndex)) return;
   if (!sizes.old || !sizes.new) {
@@ -22,8 +22,8 @@ async function ensureQuadrant(snapshot, indexes, sizes, cache, dependencies) {
   }
   const probeScale = page => QUAD_PROBE_LONG / Math.max(page.w, page.h);
   const [oldCanvas, newCanvas] = await Promise.all([
-    dependencies.renderPageCanvas(documents.oldDoc, indexes.old, probeScale(sizes.old)),
-    dependencies.renderPageCanvas(documents.newDoc, indexes.new, probeScale(sizes.new)),
+    dependencies.renderPageCanvas(documents.oldDoc, indexes.old, probeScale(sizes.old), { cancellation }),
+    dependencies.renderPageCanvas(documents.newDoc, indexes.new, probeScale(sizes.new), { cancellation }),
   ]);
   const oldRgba = dependencies.canvasToRgba(oldCanvas);
   const newRgba = dependencies.canvasToRgba(newCanvas);
@@ -225,7 +225,13 @@ function workFrame(oldCanvas, newCanvas, matrix, comparison) {
   };
 }
 
-export async function prepareVisualPage(snapshot, dependencies, cachedPages = null, onProgress = null) {
+export async function prepareVisualPage(
+  snapshot,
+  dependencies,
+  cachedPages = null,
+  onProgress = null,
+  cancellation = null,
+) {
   onProgress?.({ phase: "render" });
   const quadrantCache = new Map(snapshot.visual.quadrantCache);
   const alignmentCache = new Map(snapshot.visual.alignmentCache);
@@ -238,7 +244,7 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
     dependencies.pageSizePt(snapshot.documents.newDoc, indexes.new),
   ]);
   const sizes = { old: oldSize, new: newSize };
-  await ensureQuadrant(snapshot, indexes, sizes, quadrantCache, dependencies);
+  await ensureQuadrant(snapshot, indexes, sizes, quadrantCache, dependencies, cancellation);
   const quadrant = effectiveQuadrant(snapshot, quadrantCache);
   const rotatedNewSize = sizes.new && quadrant % 2
     ? { w: sizes.new.h, h: sizes.new.w }
@@ -260,11 +266,13 @@ export async function prepareVisualPage(snapshot, dependencies, cachedPages = nu
         snapshot.documents.oldDoc,
         indexes.old,
         currentPlan.oldScale,
+        { cancellation },
       ),
       dependencies.renderPageCanvas(
         snapshot.documents.newDoc,
         indexes.new,
         currentPlan.newScale,
+        { cancellation },
       ),
     ]);
     oldCanvas = renderedOld;
@@ -376,13 +384,15 @@ function boxStat(snapshot, boxes) {
 }
 
 export async function renderChangeIndexPage(snapshot, dependencies, options = {}) {
-  const prepared = await prepareVisualPage(snapshot, dependencies, null, options.onProgress);
+  const prepared = await prepareVisualPage(
+    snapshot, dependencies, null, options.onProgress, options.cancellation,
+  );
   const boxes = await computeChangeBoxesAligned(snapshot, prepared, dependencies, options);
   return { boxes, width: prepared.width, height: prepared.height };
 }
 
-export async function renderDiffPage(snapshot, dependencies, { onProgress = null } = {}) {
-  const prepared = await prepareVisualPage(snapshot, dependencies, null, onProgress);
+export async function renderDiffPage(snapshot, dependencies, { onProgress = null, cancellation = null } = {}) {
+  const prepared = await prepareVisualPage(snapshot, dependencies, null, onProgress, cancellation);
   const canvas = dependencies.createCanvas(prepared.width, prepared.height);
   const context = canvas.getContext("2d");
   const needsBoxes = snapshot.boxEditor.manualBoxes == null;

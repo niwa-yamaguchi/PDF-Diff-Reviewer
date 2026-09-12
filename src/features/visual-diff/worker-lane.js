@@ -1,14 +1,6 @@
-const CANCELLED = "RenderCancelled";
+import { isRenderCancelled, renderCancelledError } from "../../core/rendering/cancellation.js";
 
-function cancelledError() {
-  const error = new Error("描画を打ち切りました");
-  error.name = CANCELLED;
-  return error;
-}
-
-export function isRenderCancelled(error) {
-  return error?.name === CANCELLED;
-}
+export { isRenderCancelled };
 
 export function createWorkerLane({ createWorker }) {
   let worker = null;
@@ -54,7 +46,7 @@ export function createWorkerLane({ createWorker }) {
   }
 
   function run(type, payload, { transfer = [], onProgress = null, epoch: at = epoch } = {}) {
-    if (at !== epoch || pending) return Promise.reject(cancelledError());
+    if (at !== epoch || pending) return Promise.reject(renderCancelledError());
     const id = nextId;
     nextId += 1;
     const target = ensureWorker();
@@ -72,7 +64,7 @@ export function createWorkerLane({ createWorker }) {
   function cancel() {
     epoch += 1;
     if (!pending) return;
-    settleWithError(cancelledError());
+    settleWithError(renderCancelledError());
   }
 
   return { run, session, cancel };

@@ -1,4 +1,5 @@
 import { createReviewItems, pageKeyFor, reconcileReviewItems, sortReviewItems } from "../../core/change-review/model.js";
+import { createRenderCancellation } from "../../core/rendering/cancellation.js";
 import { cropChangeThumbnail } from "./thumbnail-renderer.js";
 
 function reconcileRedrawnItems({ previousItems, nextItems, entries, allocateId }) {
@@ -40,9 +41,15 @@ export function createChangeReviewController({
   const thumbnailQueue = new Set();
   const thumbnailRequests = new Map();
   let thumbnailDrain = null;
+  let indexCancellation = null;
+  let thumbnailCancellation = null;
+  let backgroundPaused = false;
+  let resumeIndexRequested = false;
+  let pendingIndexOptions = null;
+  const pausedThumbnailPages = new Set();
 
   function drainThumbnails() {
-    if (thumbnailDrain || state.review.indexRunning || !thumbnailQueue.size) return;
+    if (backgroundPaused || thumbnailDrain || state.review.indexRunning || !thumbnailQueue.size) return;
     thumbnailDrain = (async () => {
       while (thumbnailQueue.size && !state.review.indexRunning) {
         const pageIndex = Math.min(...thumbnailQueue);
@@ -58,7 +65,9 @@ export function createChangeReviewController({
             comparison: Object.freeze({ ...snapshot.comparison, dpi: 72,
               dx: snapshot.comparison.dx * ratio, dy: snapshot.comparison.dy * ratio }),
           });
-          const { canvas: source } = await renderThumbnailPage(thumbnailSnapshot);
+          const cancellation = createRenderCancellation();
+          thumbnailCancellation = cancellation;
+          const { canvas: source } = await renderThumbnailPage(thumbnailSnapshot, { cancellation });
           if (!isCurrent()) continue;
           const thumbnails = new Map();
           for (const item of review.itemsByPage.get(pageIndex) || []) {
@@ -71,6 +80,7 @@ export function createChangeReviewController({
             review.thumbnailsByPage.set(pageIndex, { error: true });
           }
         } finally {
+          thumbnailCancellation = null;
           if (thumbnailRequests.get(pageIndex) === request) thumbnailRequests.delete(pageIndex);
           request.resolve();
           if (isCurrent()) onChanged();
@@ -193,12 +203,15 @@ export function createChangeReviewController({
     const review = state.review;
     if (review.indexRunning || !review.indexErrors.has(pageIndex)) return;
     const generation = review.indexGeneration;
+    let cancellation = null;
     review.indexRunning = true;
     onChanged();
     try {
       if (thumbnailDrain) await thumbnailDrain;
       if (review !== state.review || generation !== review.indexGeneration) return;
-      const result = await renderIndexPage(pageIndex);
+      cancellation = createRenderCancellation();
+      indexCancellation = cancellation;
+      const result = await renderIndexPage(pageIndex, { cancellation });
       if (review !== state.review || generation !== review.indexGeneration) return;
       if (state.boxEditor.editsByPage.has(pageIndex)) {
         syncEditedPage({ pageIndex, width: result.width, height: result.height });
@@ -221,6 +234,7 @@ export function createChangeReviewController({
         }
       }
     } finally {
+      if (indexCancellation === cancellation) indexCancellation = null;
       if (review === state.review && generation === review.indexGeneration) {
         review.indexRunning = false;
         onChanged();
@@ -341,18 +355,63 @@ export function createChangeReviewController({
     return commitPage({ pageIndex, boxes, width, height, source: "manual" });
   }
 
-  function cancelIndex({ notify = true } = {}) {
+  function cancelIndex({ notify = true, preserveDeferred = false } = {}) {
     state.review.indexGeneration += 1;
     state.review.indexRunning = false;
     cancelLane?.();
+    indexCancellation?.cancel();
+    indexCancellation = null;
+    thumbnailCancellation?.cancel();
+    thumbnailCancellation = null;
+    pausedThumbnailPages.clear();
+    if (!preserveDeferred) {
+      pendingIndexOptions = null;
+      resumeIndexRequested = false;
+    }
     thumbnailQueue.clear();
     for (const request of thumbnailRequests.values()) request.resolve();
     thumbnailRequests.clear();
     if (notify) onChanged();
   }
 
+  function pauseBackground() {
+    if (backgroundPaused) return;
+    const incomplete = state.review.indexTotal > 0
+      && (state.review.indexedPages < state.review.indexTotal || state.review.indexErrors.size > 0);
+    const shouldResume = state.review.indexRunning || incomplete;
+    const thumbnails = new Set([...thumbnailQueue, ...thumbnailRequests.keys()]);
+    backgroundPaused = true;
+    cancelIndex({ notify: false, preserveDeferred: true });
+    for (const pageIndex of thumbnails) pausedThumbnailPages.add(pageIndex);
+    resumeIndexRequested = shouldResume;
+  }
+
+  function resumeBackground() {
+    if (!backgroundPaused) return undefined;
+    backgroundPaused = false;
+    const thumbnailPages = [...pausedThumbnailPages];
+    pausedThumbnailPages.clear();
+    const pending = pendingIndexOptions;
+    pendingIndexOptions = null;
+    let indexing;
+    if (pending) indexing = startIndex(pending);
+    if (resumeIndexRequested) {
+      resumeIndexRequested = false;
+      if (!indexing) indexing = resumeIndex();
+    }
+    for (const pageIndex of thumbnailPages) void requestPageThumbnails(pageIndex);
+    drainThumbnails();
+    return indexing;
+  }
+
   async function startIndex({ skipPages = new Set() } = {}) {
+    if (backgroundPaused) {
+      pendingIndexOptions = { skipPages: new Set(skipPages) };
+      return;
+    }
     cancelIndex({ notify: false });
+    const cancellation = createRenderCancellation();
+    indexCancellation = cancellation;
     const review = state.review;
     const generation = review.indexGeneration;
     const documentGeneration = state.documents.generation;
@@ -370,7 +429,7 @@ export function createChangeReviewController({
         if (state.boxEditor.editsByPage.has(pageIndex)) {
           syncEditedPage({ pageIndex });
         } else if (!skipPages.has(pageIndex)) {
-          const result = await renderIndexPage(pageIndex);
+          const result = await renderIndexPage(pageIndex, { cancellation });
           if (!isCurrent()) break;
           // 編集は索引Workerの待機中にも発生する。最新の手編集を優先する。
           if (state.boxEditor.editsByPage.has(pageIndex)) {
@@ -401,6 +460,7 @@ export function createChangeReviewController({
     }
     if (isCurrent()) {
       review.indexRunning = false;
+      if (indexCancellation === cancellation) indexCancellation = null;
       onChanged();
       drainThumbnails();
     }
@@ -415,5 +475,6 @@ export function createChangeReviewController({
 
   return { commitPage, startIndex, resumeIndex, cancelIndex, syncEditedPage, allocateId, rememberPageDimensions,
     select, edit, remove, startCreate, resetCurrentPage, selectPrevious: () => selectRelative(-1),
-    selectNext: () => selectRelative(1), setConfirmed, setComment, togglePanel, retryPage, requestPageThumbnails };
+    selectNext: () => selectRelative(1), setConfirmed, setComment, togglePanel, retryPage, requestPageThumbnails,
+    pauseBackground, resumeBackground };
 }

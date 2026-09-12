@@ -41,6 +41,24 @@ import { createTextRenderer } from "../features/text-review/text-renderer.js";
 import { createExportController } from "../features/export/export-controller.js";
 import { createPdfExporter } from "../features/export/pdf-exporter.js";
 
+const CHANGE_INDEX_DPI = 120;
+const INTERACTION_IDLE_MS = 180;
+
+function withMaximumDpi(snapshot, maximumDpi) {
+  const dpi = Math.min(snapshot.comparison.dpi, maximumDpi);
+  if (dpi === snapshot.comparison.dpi) return snapshot;
+  const ratio = dpi / snapshot.comparison.dpi;
+  return Object.freeze({
+    ...snapshot,
+    comparison: Object.freeze({
+      ...snapshot.comparison,
+      dpi,
+      dx: snapshot.comparison.dx * ratio,
+      dy: snapshot.comparison.dy * ratio,
+    }),
+  });
+}
+
 const DEFAULT_DEPENDENCIES = Object.freeze({
   bindControls,
   createAppState,
@@ -107,6 +125,65 @@ export function createApp({ document, window, dependencies = {} }) {
   let reviewView;
   let minimapController;
   let spaceHeld = false;
+  let transformFramePending = false;
+  let activeInteractions = 0;
+  let backgroundPaused = false;
+  let backgroundResumeTimer = null;
+
+  function pauseBackground() {
+    if (backgroundPaused || !reviewController) return;
+    backgroundPaused = true;
+    reviewController.pauseBackground();
+  }
+
+  function cancelBackgroundResume() {
+    if (backgroundResumeTimer == null || typeof window.clearTimeout !== "function") return;
+    window.clearTimeout(backgroundResumeTimer);
+    backgroundResumeTimer = null;
+  }
+
+  function scheduleBackgroundResume() {
+    cancelBackgroundResume();
+    if (activeInteractions > 0 || !backgroundPaused) return;
+    const resume = () => {
+      backgroundResumeTimer = null;
+      backgroundPaused = false;
+      reviewController?.resumeBackground();
+    };
+    if (typeof window.setTimeout === "function") {
+      backgroundResumeTimer = window.setTimeout(resume, INTERACTION_IDLE_MS);
+    } else resume();
+  }
+
+  function beginInteraction() {
+    activeInteractions += 1;
+    cancelBackgroundResume();
+    pauseBackground();
+  }
+
+  function endInteraction() {
+    activeInteractions = Math.max(0, activeInteractions - 1);
+    scheduleBackgroundResume();
+  }
+
+  function noteViewportInteraction() {
+    pauseBackground();
+    scheduleBackgroundResume();
+  }
+
+  function scheduleTransformFrame() {
+    noteViewportInteraction();
+    if (transformFramePending) return;
+    const run = () => {
+      transformFramePending = false;
+      boxEditorView?.redraw?.();
+      minimapController?.render?.();
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      transformFramePending = true;
+      window.requestAnimationFrame(run);
+    } else run();
+  }
 
   const rootStyles = window.getComputedStyle(document.documentElement);
   const cssVar = name => rootStyles.getPropertyValue(name).trim();
@@ -147,10 +224,7 @@ export function createApp({ document, window, dependencies = {} }) {
       onBoxPointerDown: event => boxEditorController?.pointerDown?.(event),
     },
     window,
-    onTransform: () => {
-      boxEditorView?.redraw?.();
-      minimapController?.render?.();
-    },
+    onTransform: scheduleTransformFrame,
   });
 
   minimapController = deps.createMinimapController({
@@ -368,10 +442,14 @@ export function createApp({ document, window, dependencies = {} }) {
       scheduleViewportSyncIfLayoutChanged();
       minimapController?.render?.();
     },
-    renderIndexPage: pageIndex => deps.renderChangeIndexPage(
-      createVisualSnapshot(state, pageIndex, "diff"), indexRenderDependencies(),
+    renderIndexPage: (pageIndex, options) => deps.renderChangeIndexPage(
+      withMaximumDpi(createVisualSnapshot(state, pageIndex, "diff"), CHANGE_INDEX_DPI),
+      indexRenderDependencies(),
+      options,
     ),
-    renderThumbnailPage: snapshot => deps.renderDiffPage(snapshot, indexRenderDependencies()),
+    renderThumbnailPage: (snapshot, options) => (
+      deps.renderDiffPage(snapshot, indexRenderDependencies(), options)
+    ),
     createSnapshot: pageIndex => createVisualSnapshot(state, pageIndex, "diff"),
     createCanvas: deps.createCanvas,
     cancelIndex: () => indexLane.cancel(),
@@ -395,6 +473,8 @@ export function createApp({ document, window, dependencies = {} }) {
       sideNew: dom.sideNew,
       cancelBoxDrag: () => boxEditorController?.cancelDrag?.(),
       cancelRender: () => interactiveLane.cancel(),
+      beginInteraction,
+      endInteraction,
       refreshBoxEditor: () => boxEditorView?.refresh?.(),
       afterCommit() {
         updateAlignButtons();

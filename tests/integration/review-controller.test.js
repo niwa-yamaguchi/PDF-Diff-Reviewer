@@ -83,12 +83,43 @@ test("caches failed thumbnails without blocking review operations", async () => 
 // Break: a replaced document or canceled comparison must never receive an old thumbnail.
 test("rejects a delayed thumbnail after cancellation", async () => {
   let finish;
-  const { state, controller } = thumbnailHarness({ renderThumbnailPage: () => new Promise(resolve => { finish = resolve; }) });
+  let renderOptions;
+  const { state, controller } = thumbnailHarness({
+    renderThumbnailPage: (_snapshot, options) => {
+      renderOptions = options;
+      return new Promise(resolve => { finish = resolve; });
+    },
+  });
   const pending = controller.requestPageThumbnails(0);
+  await vi.waitFor(() => expect(renderOptions).toBeDefined());
   controller.cancelIndex();
+  expect(renderOptions.cancellation.cancelled).toBe(true);
   finish({ canvas: { width: 100, height: 100 } });
   await pending;
   expect(state.review.thumbnailsByPage.size).toBe(0);
+});
+
+test("requeues an interrupted thumbnail after interaction becomes idle", async () => {
+  let first = true;
+  const renderThumbnailPage = vi.fn((_snapshot, { cancellation }) => {
+      if (!first) return Promise.resolve({ canvas: { width: 100, height: 100 } });
+      first = false;
+      return new Promise((_resolve, reject) => {
+        cancellation.onCancel(() => reject(Object.assign(new Error("cancel"), {
+          name: "RenderCancelled",
+        })));
+      });
+    });
+  const { state, controller } = thumbnailHarness({ renderThumbnailPage });
+
+  const interrupted = controller.requestPageThumbnails(0);
+  await vi.waitFor(() => expect(renderThumbnailPage).toHaveBeenCalledTimes(1));
+  controller.pauseBackground();
+  await interrupted;
+  await controller.resumeBackground();
+  await vi.waitFor(() => expect(renderThumbnailPage).toHaveBeenCalledTimes(2));
+
+  expect(state.review.thumbnailsByPage.get(0)).toBeInstanceOf(Map);
 });
 
 // Break: editing a rectangle without invalidating the crop shows the previous location forever.
@@ -311,6 +342,24 @@ test("a synchronized manual edit wins over a delayed retry failure", async () =>
   expect(state.review.itemsByPage.get(0)[0]).toMatchObject({ id: manual[0].id, rect: { x: 70 } });
   expect(state.review.indexRunning).toBe(false);
 });
+
+test("cancels retry rasterization when background work is interrupted", async () => {
+  let renderOptions;
+  let finish;
+  const { state, controller } = harness(1, (_pageIndex, options) => {
+    renderOptions = options;
+    return new Promise(resolve => { finish = resolve; });
+  });
+  state.review.indexErrors.set(0, "retry");
+
+  const retrying = controller.retryPage(0);
+  await vi.waitFor(() => expect(renderOptions).toBeDefined());
+  controller.cancelIndex();
+
+  expect(renderOptions.cancellation.cancelled).toBe(true);
+  finish(page(0));
+  await retrying;
+});
 function harness(pages = 3, render = async () => page(0)) {
   const state = createAppState();
   Object.assign(state.documents, { pages, oldSequence: [0, 1, 2], newSequence: [0, 1, 2] });
@@ -512,6 +561,73 @@ test("indexes sequentially and ignores an obsolete generation", async () => {
   await running;
   expect(renderIndexPage).toHaveBeenCalledTimes(1);
   expect(state.review.itemsByPage.has(1)).toBe(false);
+});
+
+test("cancels an in-flight index PDF rasterization", async () => {
+  let renderOptions;
+  let finish;
+  const { controller } = harness(1, (_pageIndex, options) => {
+    renderOptions = options;
+    return new Promise(resolve => { finish = resolve; });
+  });
+
+  const running = controller.startIndex();
+  await vi.waitFor(() => expect(renderOptions).toBeDefined());
+  controller.cancelIndex();
+
+  expect(renderOptions.cancellation.cancelled).toBe(true);
+  finish(page(0));
+  await running;
+});
+
+test("pauses background indexing for interaction and resumes unfinished pages", async () => {
+  const events = [];
+  let first = true;
+  const { state, controller, renderIndexPage } = harness(2, (pageIndex, { cancellation }) => {
+    events.push(`start-${pageIndex}`);
+    if (!first) return Promise.resolve(page(pageIndex));
+    first = false;
+    return new Promise((_resolve, reject) => {
+      cancellation.onCancel(() => {
+        events.push(`cancel-${pageIndex}`);
+        reject(Object.assign(new Error("cancel"), { name: "RenderCancelled" }));
+      });
+    });
+  });
+
+  const running = controller.startIndex();
+  await vi.waitFor(() => expect(renderIndexPage).toHaveBeenCalledTimes(1));
+  controller.pauseBackground();
+  await running;
+
+  expect(state.review.indexRunning).toBe(false);
+  expect(events).toEqual(["start-0", "cancel-0"]);
+  await controller.resumeBackground();
+  expect(events).toEqual(["start-0", "cancel-0", "start-0", "start-1"]);
+  expect(state.review.itemsByPage.size).toBe(2);
+});
+
+test("defers a newly requested index until interaction becomes idle", async () => {
+  const { state, controller, renderIndexPage } = harness(2, pageIndex => page(pageIndex));
+
+  controller.pauseBackground();
+  await controller.startIndex({ skipPages: new Set([0]) });
+  expect(renderIndexPage).not.toHaveBeenCalled();
+
+  await controller.resumeBackground();
+  expect(renderIndexPage.mock.calls.map(([pageIndex]) => pageIndex)).toEqual([1]);
+  expect(state.review.indexedPages).toBe(2);
+});
+
+test("explicit invalidation discards an index deferred by interaction", async () => {
+  const { controller, renderIndexPage } = harness(2, pageIndex => page(pageIndex));
+
+  controller.pauseBackground();
+  await controller.startIndex();
+  controller.cancelIndex();
+  await controller.resumeBackground();
+
+  expect(renderIndexPage).not.toHaveBeenCalled();
 });
 
 test("a second invalidation keeps unresolved pages and uses the latest reviewed page", () => {

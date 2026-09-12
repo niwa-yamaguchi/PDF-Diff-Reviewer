@@ -424,6 +424,54 @@ test("index jobs use a third lane and accepted invalidation stops that lane", as
   expect(app.state.review.indexRunning).toBe(false);
 });
 
+test("change indexing uses a 120 DPI snapshot with scaled pixel alignment", async () => {
+  let indexedSnapshot;
+  let indexedOptions;
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    renderChangeIndexPage: async (snapshot, _renderDependencies, options) => {
+      indexedSnapshot = snapshot;
+      indexedOptions = options;
+      return { boxes: [], width: 100, height: 100 };
+    },
+  });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  Object.assign(app.state.documents, { pages: 1, oldSequence: [0], newSequence: [0] });
+  Object.assign(app.state.comparison, { dpi: 300, dx: 15, dy: -10 });
+
+  await app.reviewController.startIndex();
+
+  expect(indexedSnapshot.comparison).toMatchObject({ dpi: 120, dx: 6, dy: -4 });
+  expect(indexedOptions.cancellation.cancelled).toBe(false);
+  expect(app.state.comparison).toMatchObject({ dpi: 300, dx: 15, dy: -10 });
+});
+
+test("thumbnail rendering receives its cancellation token through the app boundary", async () => {
+  let thumbnailOptions;
+  const cropCanvas = {
+    width: 0, height: 0,
+    getContext: () => ({ fillRect() {}, drawImage() {} }),
+    toDataURL: () => "data:image/png;base64,crop",
+  };
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createCanvas: () => cropCanvas,
+    renderDiffPage: async (_snapshot, _renderDependencies, options) => {
+      thumbnailOptions = options;
+      return { canvas: { width: 100, height: 100 } };
+    },
+  });
+  const window = { confirm: () => true, console: { error() {} }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  app.reviewController.commitPage({ pageIndex: 0, width: 100, height: 100,
+    boxes: [{ x: 10, y: 10, w: 20, h: 20, kind: "added" }] });
+
+  await app.reviewController.requestPageThumbnails(0);
+
+  expect(thumbnailOptions.cancellation.cancelled).toBe(false);
+});
+
 test("export render session uses the toggle renderer when the snapshot mode is toggle", async () => {
   const dependencies = fakeDependencies({ bindControls: vi.fn() });
   const window = {
@@ -760,7 +808,7 @@ test("open panel then text then visual keeps the zoomed page center", async () =
   expect(app.viewerController.getView()).toEqual({ scale: 2, tx: -300, ty: -100 });
 });
 
-test("wires minimap colors, canvas refresh, overlay render, and pointer bindings", () => {
+test("coalesces repeated viewport transforms into one overlay frame", () => {
   const minimap = {
     refreshSource: vi.fn(), render: vi.fn(),
     pointerDown() {}, pointerMove() {}, pointerUp() {}, pointerCancel() {},
@@ -772,7 +820,6 @@ test("wires minimap colors, canvas refresh, overlay render, and pointer bindings
     createMinimapController: vi.fn(() => minimap),
     createBoxEditorView: vi.fn(() => boxView),
     createViewerController: vi.fn(({ onTransform }) => {
-      expect(() => onTransform()).not.toThrow();
       return {
         fit() {},
         handleResize: vi.fn(() => ({ scale: 1, tx: 0, ty: 0 })),
@@ -810,8 +857,14 @@ test("wires minimap colors, canvas refresh, overlay render, and pointer bindings
   boxView.redraw.mockClear();
   const { onTransform } = dependencies.createViewerController.mock.calls[0][0];
   onTransform();
-  expect(boxView.redraw).toHaveBeenCalled();
-  expect(minimap.render).toHaveBeenCalled();
+  onTransform();
+  onTransform();
+  expect(boxView.redraw).not.toHaveBeenCalled();
+  expect(minimap.render).not.toHaveBeenCalled();
+  expect(frames).toHaveLength(1);
+  frames.shift()();
+  expect(boxView.redraw).toHaveBeenCalledTimes(1);
+  expect(minimap.render).toHaveBeenCalledTimes(1);
   expect(minimap.refreshSource).not.toHaveBeenCalled();
 
   minimap.render.mockClear();
@@ -830,6 +883,46 @@ test("wires minimap colors, canvas refresh, overlay render, and pointer bindings
   expect(minimap.refreshSource).not.toHaveBeenCalled();
   while (frames.length) frames.shift()();
   expect(minimap.render).toHaveBeenCalled();
+});
+
+test("keeps background work paused through a render and transform burst until idle", () => {
+  const timers = new Map();
+  let nextTimer = 1;
+  let onTransform;
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createViewerController: vi.fn(options => {
+      onTransform = options.onTransform;
+      return { fit() {}, getView: () => ({ scale: 1, tx: 0, ty: 0 }), apply() {} };
+    }),
+  });
+  const window = {
+    confirm: () => true,
+    console: { error() {} },
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+    requestAnimationFrame: () => 1,
+    setTimeout(callback) {
+      const id = nextTimer++;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: id => timers.delete(id),
+  };
+  const app = createApp({ document: fakeDocument(), window, dependencies });
+  const pause = vi.spyOn(app.reviewController, "pauseBackground");
+  const resume = vi.spyOn(app.reviewController, "resumeBackground");
+  const visualDom = dependencies.createVisualController.mock.calls[0][0].dom;
+
+  visualDom.beginInteraction();
+  onTransform();
+  onTransform();
+  expect(pause).toHaveBeenCalledTimes(1);
+  expect(timers.size).toBe(0);
+
+  visualDom.endInteraction();
+  expect(timers.size).toBe(1);
+  [...timers.values()][0]();
+  expect(resume).toHaveBeenCalledTimes(1);
 });
 
 test("toggling the review panel resizes the viewer after the next animation frame", () => {
