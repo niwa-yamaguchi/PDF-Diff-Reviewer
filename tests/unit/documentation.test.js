@@ -37,7 +37,7 @@ test("index is module-only and carries the change review release date", async ()
   expect(html).not.toMatch(/<style[\s>]/i);
   expect(html).not.toMatch(/<script(?![^>]*type="module")[^>]*>/i);
   expect(html).toContain('<script type="module" src="/src/main.js"></script>');
-  expect(html).toContain("UPDATED 2026-09-12");
+  expect(html).toContain("UPDATED 2026-09-14");
   expect(html).not.toContain("1ファイル運用");
   expect(html).not.toMatch(/\son\w+\s*=/i);
 });
@@ -50,7 +50,7 @@ test("README explains the available review workflow and its persistence boundary
     "新規変更箇所", "Ctrl+Z", "ミニマップ", "メモリ上",
   ]) expect(readme).toContain(term);
   expect(readme).not.toContain("対象外");
-  expect(html).toContain("UPDATED 2026-09-12");
+  expect(html).toContain("UPDATED 2026-09-14");
 });
 
 test("package scripts install all final browsers and validate built artifacts", async () => {

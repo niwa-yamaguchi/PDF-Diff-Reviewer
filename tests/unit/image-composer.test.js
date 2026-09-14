@@ -146,6 +146,65 @@ describe("text export composition", () => {
     expect(wide.context.calls.some(call => call[0] === "fillText" && call[2] === "削除")).toBe(true);
     expect(narrow.context.calls.some(call => call[0] === "fillText" && call[2] === "削除")).toBe(false);
   });
+
+  test("places portrait pages side by side with OLD left of NEW, like the toggle export", () => {
+    const result = composeTextExport({
+      oldCanvas: new RecordingCanvas(30, 50),
+      newCanvas: new RecordingCanvas(40, 60),
+      pageIndex: 0,
+      total: 1,
+      colors,
+    });
+
+    expect([result.width, result.height]).toEqual([104, 88]);
+    const labels = result.context.calls.filter(call => call[0] === "fillText");
+    expect(labels).toContainEqual(["fillText", colors.added, "NEW", 68, 14]);
+    expect(labels).toContainEqual(["fillText", "#333", "p 1 / 1", 100, 14]);
+    const images = result.context.calls.filter(call => call[0] === "drawImage");
+    expect(images.map(call => [call[2], call[3]])).toEqual([[5, 28], [64, 28]]);
+  });
+});
+
+describe("change labels in exports", () => {
+  const labels = new Map([["c1", { number: 7, comment: "寸法" }]]);
+  const labelTexts = result => result.context.calls
+    .filter(call => call[0] === "fillText" && call[1] === "#ff9500").map(call => call[2]);
+
+  test("visual export labels boxes that carry a review id", () => {
+    const result = composeVisualExport({
+      source: new RecordingCanvas(400, 300),
+      boxes: [{ id: "c1", x: 50, y: 80, w: 20, h: 20 }, { x: 1, y: 1, w: 2, h: 2 }],
+      labels,
+      dpi: 72,
+    });
+    expect(labelTexts(result)).toEqual(["7 寸法"]);
+  });
+
+  test("visual export draws labels over the legend", () => {
+    const result = composeVisualExport({
+      source: new RecordingCanvas(400, 300),
+      boxes: [{ id: "c1", x: 10, y: 30, w: 20, h: 20 }],
+      labels,
+      legend: visualLegend,
+      dpi: 72,
+    });
+    const texts = result.context.calls.filter(call => call[0] === "fillText").map(call => call[2]);
+    expect(texts.indexOf("7 寸法")).toBeGreaterThan(texts.indexOf("変更枠"));
+  });
+
+  test("toggle export labels the box on both OLD and NEW panes", () => {
+    const result = composeToggleExport({
+      oldCanvas: new RecordingCanvas(70, 100),
+      newCanvas: new RecordingCanvas(70, 100),
+      boxes: [{ id: "c1", x: 2, y: 40, w: 6, h: 8 }],
+      labels,
+      dpi: 72,
+      colors: { removed: "#ff5b57", added: "#4d8dff" },
+      pageIndex: 0,
+      total: 1,
+    });
+    expect(labelTexts(result)).toEqual(["7 寸法", "7 寸法"]);
+  });
 });
 
 describe("toggle export composition", () => {

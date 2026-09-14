@@ -4,6 +4,7 @@ import {
   composeVisualExport,
   VISUAL_BOX_STYLE,
 } from "./image-composer.js";
+import { reviewLabels } from "../../core/change-review/label.js";
 
 const VISUAL_COLORS = Object.freeze({
   common: "rgb(60,60,60)",
@@ -100,11 +101,20 @@ function captureSnapshot(state) {
     drag: cloneValue(state.boxEditor.drag),
   });
   const highlights = cloneHighlights(state.textReview.highlights);
+  const reviewItems = state.review?.itemsByPage || new Map();
+  const review = Object.freeze({
+    labels: reviewLabels(reviewItems, state.review?.entriesById),
+    // Indexed pages export their review boxes so labels can be matched by id; others export unlabeled.
+    boxesByPage: new Map([...reviewItems].map(([page, items]) => [
+      page, items.map(item => ({ ...item.rect, id: item.id })),
+    ])),
+  });
   return Object.freeze({
     documents,
     comparison,
     visual,
     boxEditor,
+    review,
     highlights,
     scale: state.textReview.scale,
     textPage: state.textReview.page,
@@ -279,6 +289,7 @@ export function createExportController({
     oldCanvas,
     newCanvas,
     boxes,
+    labels,
     legend,
     dpi,
     pageIndex,
@@ -289,6 +300,7 @@ export function createExportController({
         oldCanvas,
         newCanvas,
         boxes,
+        labels,
         legend,
         dpi,
         colors: VISUAL_COLORS,
@@ -296,7 +308,7 @@ export function createExportController({
         total,
       });
     }
-    return composeVisualExport({ source, boxes, legend, dpi });
+    return composeVisualExport({ source, boxes, labels, legend, dpi });
   }
 
   async function saveVisualPng() {
@@ -312,6 +324,7 @@ export function createExportController({
         oldCanvas: snapshot.visual.toggleCache?.sideCanvases?.old,
         newCanvas: snapshot.visual.toggleCache?.sideCanvases?.new,
         boxes,
+        labels: snapshot.review.labels,
         legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
         dpi: snapshot.comparison.dpi,
         pageIndex: snapshot.documents.currentPage,
@@ -345,12 +358,14 @@ export function createExportController({
             renderSnapshot: visualRenderSnapshot(snapshot, pageIndex),
           });
           const manual = snapshot.boxEditor.editsByPage.get(pageIndex);
-          const boxes = !snapshot.boxEditor.showBoxes ? [] : (manual ?? result.boxes ?? []);
+          const boxes = !snapshot.boxEditor.showBoxes ? []
+            : (manual ?? snapshot.review.boxesByPage.get(pageIndex) ?? result.boxes ?? []);
           return composePage(snapshot.visual.mode, {
             source: result.canvas,
             oldCanvas: result.toggleCache?.sideCanvases?.old,
             newCanvas: result.toggleCache?.sideCanvases?.new,
             boxes,
+            labels: snapshot.review.labels,
             legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
             dpi: snapshot.comparison.dpi,
             pageIndex,

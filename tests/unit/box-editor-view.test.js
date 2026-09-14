@@ -102,6 +102,27 @@ test("draws review focus independently from edit selection and keeps handles on 
   expect(context.fillRect).not.toHaveBeenCalledWith(55, 65, 10, 10);
 });
 
+test("labels boxes that have a review number, at a fixed screen font size", () => {
+  const { canvas, context } = canvasHarness();
+  Object.assign(context, { fillText: vi.fn(), measureText: text => ({ width: text.length * 6 }) });
+
+  drawBoxLayer({
+    canvas,
+    boxes: [{ x: 10, y: 20, w: 30, h: 40, id: "change-1" }, { x: 1, y: 1, w: 2, h: 2 }],
+    labels: new Map([["change-1", { number: 4, comment: "確認" }]]),
+    view: { scale: 2, tx: 5, ty: 7 },
+    showBoxes: true,
+    editing: false,
+    drag: null,
+    rendered: true,
+    outputVisible: true,
+  });
+
+  expect(context.fillText).toHaveBeenCalledOnce();
+  expect(context.fillText.mock.calls[0][0]).toBe("4 確認");
+  expect(context.font).toBe("bold 12px sans-serif");
+});
+
 test.each([
   { rendered: false, outputVisible: true, showBoxes: true },
   { rendered: true, outputVisible: false, showBoxes: true },

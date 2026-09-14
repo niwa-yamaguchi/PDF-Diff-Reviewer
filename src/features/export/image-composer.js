@@ -1,4 +1,5 @@
 import { legendLayout, LG_BORDER_PT } from "../../core/legend/layout.js";
+import { drawChangeLabel } from "../../core/change-review/label.js";
 
 const BOX_COLOR = "#ff9500";
 const BOX_FILL = "rgba(255,149,0,0.18)";
@@ -79,6 +80,17 @@ function drawLegend(context, items, x, y, unit, options, measured) {
   return layout;
 }
 
+function drawBoxLabels(context, boxes, dpi, labels) {
+  const fontPx = Math.max(12, Math.round(9 * dpi / 72));
+  for (const box of boxes) {
+    const label = labels?.get(box.id);
+    if (!label) continue;
+    drawChangeLabel(context, label, {
+      x: box.x, y: box.y, fontPx, maxWidth: Math.max(box.w, fontPx * 20), color: BOX_COLOR,
+    });
+  }
+}
+
 function drawBoxes(context, boxes, dpi) {
   if (!boxes?.length) return;
   const lineWidth = Math.max(2, Math.round(3 * dpi / BOX_BASE_DPI));
@@ -99,7 +111,7 @@ function drawBoxes(context, boxes, dpi) {
   context.restore();
 }
 
-export function composeVisualExport({ source, boxes = [], legend = [], dpi, destination }) {
+export function composeVisualExport({ source, boxes = [], labels, legend = [], dpi, destination }) {
   if (!source) throw new Error("出力元Canvasがありません");
   const canvas = destination || createLike(source, 0, 0);
   canvas.width = source.width;
@@ -112,6 +124,8 @@ export function composeVisualExport({ source, boxes = [], legend = [], dpi, dest
     const margin = LEGEND_MARGIN_PT * unit;
     drawLegend(context, legend, margin, margin, unit);
   }
+  // Labels go over the legend so a memo near the top-left corner stays readable.
+  drawBoxLabels(context, boxes, dpi, labels);
   return canvas;
 }
 
@@ -130,17 +144,20 @@ function toggleLabelMetrics(dpi) {
   };
 }
 
-function drawPane(context, source, x, y, cellW, cellH, boxes, dpi) {
+function drawPane(context, source, x, y, cellW, cellH, boxes, dpi, labels) {
   const ox = x + (cellW - source.width) / 2;
   const oy = y + (cellH - source.height) / 2;
   context.drawImage(source, ox, oy);
   if (!boxes?.length) return;
-  drawBoxes(context, boxes.map(box => ({
+  const shifted = boxes.map(box => ({
+    id: box.id,
     x: box.x + ox,
     y: box.y + oy,
     w: box.w,
     h: box.h,
-  })), dpi);
+  }));
+  drawBoxes(context, shifted, dpi);
+  drawBoxLabels(context, shifted, dpi, labels);
 }
 
 function drawToggleHeader(context, {
@@ -184,6 +201,7 @@ export function composeToggleExport({
   oldCanvas,
   newCanvas,
   boxes = [],
+  labels,
   legend = [],
   dpi,
   colors,
@@ -220,20 +238,20 @@ export function composeToggleExport({
       label: "NEW", color: colors.added, pageText,
       x: cellW + metrics.gap, y: 0, width: cellW, metrics,
     });
-    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi);
-    drawPane(context, newSource, cellW + metrics.gap, metrics.labelHeight, cellW, cellH, boxes, dpi);
+    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
+    drawPane(context, newSource, cellW + metrics.gap, metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
   } else {
     drawToggleHeader(context, {
       label: "OLD", color: colors.removed, pageText, legend,
       x: 0, y: 0, width, metrics,
     });
-    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi);
+    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
     const newY = metrics.labelHeight + cellH + metrics.gap;
     drawToggleHeader(context, {
       label: "NEW", color: colors.added,
       x: 0, y: newY, width, metrics,
     });
-    drawPane(context, newSource, 0, newY + metrics.labelHeight, cellW, cellH, boxes, dpi);
+    drawPane(context, newSource, 0, newY + metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
   }
   return canvas;
 }
@@ -245,8 +263,12 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
   const newSource = newCanvas || whiteCanvas(reference, oldCanvas.width, oldCanvas.height);
   const labelHeight = 28;
   const gap = 24;
-  const width = Math.max(oldSource.width, newSource.width);
-  const height = labelHeight + oldSource.height + gap + labelHeight + newSource.height;
+  const cellW = Math.max(oldSource.width, newSource.width);
+  const horizontal = togglePairLayout(cellW, Math.max(oldSource.height, newSource.height)) === "horizontal";
+  const width = horizontal ? cellW * 2 + gap : cellW;
+  const height = horizontal
+    ? labelHeight + Math.max(oldSource.height, newSource.height)
+    : labelHeight + oldSource.height + gap + labelHeight + newSource.height;
   const canvas = whiteCanvas(reference, width, height);
   const context = canvas.getContext("2d");
 
@@ -268,7 +290,9 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
   const options = { chrome: false };
   const measured = measureLegend(context, legendItems, TEXT_LEGEND_UNIT, options);
   const legendX = 4 + context.measureText("OLD").width + 16;
-  const legendLimit = width - 4 - context.measureText(pageText).width - 16;
+  const legendLimit = horizontal
+    ? cellW - 4
+    : width - 4 - context.measureText(pageText).width - 16;
   if (legendX + measured.w <= legendLimit) {
     drawLegend(
       context,
@@ -281,12 +305,13 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
     );
   }
 
-  context.drawImage(oldSource, (width - oldSource.width) / 2, labelHeight);
-  const newLabelY = labelHeight + oldSource.height + gap;
+  context.drawImage(oldSource, (cellW - oldSource.width) / 2, labelHeight);
+  const newX = horizontal ? cellW + gap : 0;
+  const newLabelY = horizontal ? 0 : labelHeight + oldSource.height + gap;
   context.fillStyle = colors.added;
   context.textAlign = "left";
-  context.fillText("NEW", 4, newLabelY + labelHeight / 2);
-  context.drawImage(newSource, (width - newSource.width) / 2, newLabelY + labelHeight);
+  context.fillText("NEW", newX + 4, newLabelY + labelHeight / 2);
+  context.drawImage(newSource, newX + (cellW - newSource.width) / 2, newLabelY + labelHeight);
   return canvas;
 }
 
