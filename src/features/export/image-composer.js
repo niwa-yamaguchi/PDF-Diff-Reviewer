@@ -91,7 +91,7 @@ function drawBoxLabels(context, boxes, dpi, labels) {
   }
 }
 
-function drawBoxes(context, boxes, dpi, labels) {
+function drawBoxes(context, boxes, dpi) {
   if (!boxes?.length) return;
   const lineWidth = Math.max(2, Math.round(3 * dpi / BOX_BASE_DPI));
   context.save();
@@ -109,7 +109,6 @@ function drawBoxes(context, boxes, dpi, labels) {
     );
   }
   context.restore();
-  drawBoxLabels(context, boxes, dpi, labels);
 }
 
 export function composeVisualExport({ source, boxes = [], labels, legend = [], dpi, destination }) {
@@ -119,12 +118,14 @@ export function composeVisualExport({ source, boxes = [], labels, legend = [], d
   canvas.height = source.height;
   const context = canvas.getContext("2d");
   context.drawImage(source, 0, 0);
-  drawBoxes(context, boxes, dpi, labels);
+  drawBoxes(context, boxes, dpi);
   if (legend.length) {
     const unit = dpi / 72;
     const margin = LEGEND_MARGIN_PT * unit;
     drawLegend(context, legend, margin, margin, unit);
   }
+  // Labels go over the legend so a memo near the top-left corner stays readable.
+  drawBoxLabels(context, boxes, dpi, labels);
   return canvas;
 }
 
@@ -148,13 +149,15 @@ function drawPane(context, source, x, y, cellW, cellH, boxes, dpi, labels) {
   const oy = y + (cellH - source.height) / 2;
   context.drawImage(source, ox, oy);
   if (!boxes?.length) return;
-  drawBoxes(context, boxes.map(box => ({
+  const shifted = boxes.map(box => ({
     id: box.id,
     x: box.x + ox,
     y: box.y + oy,
     w: box.w,
     h: box.h,
-  })), dpi, labels);
+  }));
+  drawBoxes(context, shifted, dpi);
+  drawBoxLabels(context, shifted, dpi, labels);
 }
 
 function drawToggleHeader(context, {

@@ -180,6 +180,18 @@ describe("change labels in exports", () => {
     expect(labelTexts(result)).toEqual(["7 寸法"]);
   });
 
+  test("visual export draws labels over the legend", () => {
+    const result = composeVisualExport({
+      source: new RecordingCanvas(400, 300),
+      boxes: [{ id: "c1", x: 10, y: 30, w: 20, h: 20 }],
+      labels,
+      legend: visualLegend,
+      dpi: 72,
+    });
+    const texts = result.context.calls.filter(call => call[0] === "fillText").map(call => call[2]);
+    expect(texts.indexOf("7 寸法")).toBeGreaterThan(texts.indexOf("変更枠"));
+  });
+
   test("toggle export labels the box on both OLD and NEW panes", () => {
     const result = composeToggleExport({
       oldCanvas: new RecordingCanvas(70, 100),
