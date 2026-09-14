@@ -168,7 +168,7 @@ describe("text export composition", () => {
 describe("change labels in exports", () => {
   const labels = new Map([["c1", { number: 7, comment: "寸法" }]]);
   const labelTexts = result => result.context.calls
-    .filter(call => call[0] === "fillText" && call[1] === "#1a1206").map(call => call[2]);
+    .filter(call => call[0] === "fillText" && call[1] === "#ff9500").map(call => call[2]);
 
   test("visual export labels boxes that carry a review id", () => {
     const result = composeVisualExport({

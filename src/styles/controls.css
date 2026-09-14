@@ -34,13 +34,14 @@
 
   .ctrl{display:flex;flex-direction:column;gap:6px}
   .manualalign > summary{
-    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--muted);
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:#fff;
     cursor:pointer;list-style:none;
   }
   .manualalign > summary::-webkit-details-marker{display:none}
   .manualalign > summary::before{content:"▸ "}
   .manualalign[open] > summary::before{content:"▾ "}
-  .manualalign > summary:hover{color:var(--fg)}
+  .manualalign > summary::after{content:"（クリックで開く）"}
+  .manualalign[open] > summary::after{content:"（クリックで閉じる）"}
   .manualalign-body{display:flex;flex-direction:column;gap:20px;margin-top:12px}
   .ctrl .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px}
   .ctrl .row .val{color:var(--signal)}

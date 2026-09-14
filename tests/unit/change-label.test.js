@@ -27,19 +27,17 @@ test("numbers changes in list order across pages and carries normalized comments
   ]);
 });
 
-test("draws the tag above the box and truncates long comments with an ellipsis", () => {
+test("draws box-colored text above the box without a background and truncates long comments", () => {
   const context = recordingContext();
   drawChangeLabel(context, { number: 3, comment: "とても長いメモ本文" }, {
     x: 5, y: 40, fontPx: 10, maxWidth: 66, color: "#ff9500",
   });
   // pad 3 -> height 16, text limit 60px -> 5 chars + ellipsis
-  expect(context.calls).toContainEqual(["fillRect", "#ff9500", 5, 24, 66, 16]);
-  expect(context.calls).toContainEqual(["fillText", "#1a1206", "3 とても…", 8, 32]);
+  expect(context.calls).toEqual([["fillText", "#ff9500", "3 とても…", 8, 32]]);
 });
 
 test("falls back inside the box when there is no room above", () => {
   const context = recordingContext();
   drawChangeLabel(context, { number: 12, comment: "" }, { x: 0, y: 4, fontPx: 10, maxWidth: 200, color: "#f90" });
-  expect(context.calls).toContainEqual(["fillRect", "#f90", 0, 4, 26, 16]);
-  expect(context.calls).toContainEqual(["fillText", "#1a1206", "12", 3, 12]);
+  expect(context.calls).toEqual([["fillText", "#f90", "12", 3, 12]]);
 });

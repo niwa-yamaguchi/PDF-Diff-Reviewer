@@ -9,7 +9,7 @@ export function reviewLabels(itemsByPage, entriesById) {
   }]));
 }
 
-// Draws "number comment" on a filled tag just above (x, y), or just inside when there is no room above.
+// Draws "number comment" in the box color just above (x, y), or just inside when there is no room above.
 export function drawChangeLabel(context, { number, comment }, { x, y, fontPx, maxWidth, color }) {
   const pad = Math.max(2, Math.round(fontPx * 0.3));
   const height = fontPx + pad * 2;
@@ -24,8 +24,6 @@ export function drawChangeLabel(context, { number, comment }, { x, y, fontPx, ma
   const text = chars.join("");
   const top = y >= height ? y - height : y;
   context.fillStyle = color;
-  context.fillRect(x, top, context.measureText(text).width + pad * 2, height);
-  context.fillStyle = "#1a1206";
   context.textBaseline = "middle";
   context.textAlign = "left";
   context.fillText(text, x + pad, top + height / 2);
