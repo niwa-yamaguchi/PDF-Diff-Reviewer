@@ -15,7 +15,7 @@
     <img class="brandlogo" src="/favicon.png" alt="" width="34" height="34">
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-09-12</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-09-14</span>
     </div>
   </div>
   <div class="legend">
@@ -70,6 +70,17 @@
       </div>
 
       <div class="field">
+        <label class="autoalign">
+          <input type="checkbox" id="autoAlign">
+          <span>自動位置合わせ（向き・回転・拡縮・移動）</span>
+        </label>
+        <div class="alignreadout" id="alignReadout">—</div>
+      </div>
+
+      <details class="manualalign">
+      <summary>位置合わせ（手動）</summary>
+      <div class="manualalign-body">
+      <div class="field">
         <span class="label">位置合わせ（新版を移動）</span>
         <div class="nudge">
           <span></span><button data-dx="0" data-dy="-1">▲</button><span></span>
@@ -106,14 +117,8 @@
           <button data-scale="1">＋0.1%</button>
         </div>
       </div>
-
-      <div class="field">
-        <label class="autoalign">
-          <input type="checkbox" id="autoAlign">
-          <span>自動位置合わせ（向き・回転・拡縮・移動）</span>
-        </label>
-        <div class="alignreadout" id="alignReadout">—</div>
       </div>
+      </details>
 
       <div class="field">
         <span class="label">ページ整列（空白の挿入で再整列）</span>

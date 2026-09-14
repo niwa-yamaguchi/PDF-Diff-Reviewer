@@ -1,4 +1,5 @@
 import { sortReviewItems, summarizeReviews } from "../../core/change-review/model.js";
+import { reviewLabels } from "../../core/change-review/label.js";
 
 const KIND_LABELS = { added: "追加", removed: "削除", changed: "変更" };
 
@@ -78,7 +79,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         direction: active.selectionDirection } : null;
     const activeConfirmedId = dom.reviewList.contains(active) ? active.dataset.reviewConfirmed : null;
     const items = sortReviewItems([...review.itemsByPage.values()].flat());
-    const numbersById = new Map(items.map((item, index) => [item.id, index + 1]));
+    const labels = reviewLabels(review.itemsByPage, review.entriesById);
     const summary = summarizeReviews(items, review.entriesById);
     dom.reviewTotal.textContent = `変更箇所 ${summary.total}件`;
     dom.reviewProgress.textContent = `確認済み ${summary.complete} / ${summary.total}　未確認 ${summary.pending}件`;
@@ -121,7 +122,7 @@ export function createChangeReviewView({ state, dom, document = dom.reviewList.o
         children.push(error);
       }
       for (const item of pageItems) {
-        const changeNumber = numbersById.get(item.id);
+        const changeNumber = labels.get(item.id).number;
         const entry = review.entriesById.get(item.id) || { status: "pending", comment: "" };
         if (!itemViews.has(item.id)) itemViews.set(item.id, createItem(item));
         const { article, select, number, kind, stateLabel, confirmed, comment, thumbnail,

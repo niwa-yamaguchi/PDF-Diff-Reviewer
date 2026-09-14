@@ -1,8 +1,10 @@
 import { normalizeRect } from "../../core/geometry/rectangles.js";
+import { drawChangeLabel, reviewLabels } from "../../core/change-review/label.js";
 
 const BOX_COLOR = "#ff9500";
 const BOX_FILL = "rgba(255,149,0,0.18)";
 const HANDLE_SCREEN_PX = 5;
+const LABEL_SCREEN_PX = 12;
 
 function handlePoints(x, y, width, height) {
   return [
@@ -14,6 +16,7 @@ function handlePoints(x, y, width, height) {
 export function drawBoxLayer({
   canvas,
   boxes = [],
+  labels,
   activeIndex = -1,
   focusedIndex = -1,
   view = { scale: 1, tx: 0, ty: 0 },
@@ -51,6 +54,18 @@ export function drawBoxLayer({
     const boxHeight = drawn.h * scale;
     context.fillRect(x, y, boxWidth, boxHeight);
     context.strokeRect(x + 1, y + 1, Math.max(0, boxWidth - 2), Math.max(0, boxHeight - 2));
+  });
+  boxes.forEach((box, index) => {
+    const label = labels?.get(box.id);
+    if (!label) return;
+    const drawn = preview && activeDrag.i === index ? preview : box;
+    drawChangeLabel(context, label, {
+      x: view.tx + drawn.x * scale,
+      y: view.ty + drawn.y * scale,
+      fontPx: LABEL_SCREEN_PX,
+      maxWidth: Math.max(drawn.w * scale, LABEL_SCREEN_PX * 20),
+      color: BOX_COLOR,
+    });
   });
 
   if (focusedIndex >= 0 && focusedIndex < boxes.length) {
@@ -107,6 +122,7 @@ export function createBoxEditorView({ state, dom, getView }) {
     drawBoxLayer({
       canvas: dom.canvas,
       boxes,
+      labels: state.review?.itemsByPage && reviewLabels(state.review.itemsByPage, state.review.entriesById),
       activeIndex: focusedIndex,
       focusedIndex,
       view: getView(),

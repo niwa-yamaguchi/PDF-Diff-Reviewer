@@ -33,6 +33,15 @@
   .drop.new .tag{color:var(--added)}
 
   .ctrl{display:flex;flex-direction:column;gap:6px}
+  .manualalign > summary{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--muted);
+    cursor:pointer;list-style:none;
+  }
+  .manualalign > summary::-webkit-details-marker{display:none}
+  .manualalign > summary::before{content:"▸ "}
+  .manualalign[open] > summary::before{content:"▾ "}
+  .manualalign > summary:hover{color:var(--fg)}
+  .manualalign-body{display:flex;flex-direction:column;gap:20px;margin-top:12px}
   .ctrl .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px}
   .ctrl .row .val{color:var(--signal)}
   input[type=range]{
