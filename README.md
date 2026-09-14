@@ -143,3 +143,7 @@ npm run preview
 - Production branch: `main`
 
 本番環境は Cloudflare Pages で <https://pdfreview.goodsun-support.net/> に公開しています。
+
+## ライセンス
+
+[MIT License](LICENSE)（© 2026 Satoru Yamaguchi）。依存ライブラリはそれぞれのライセンスに従います（[依存](#依存)を参照）。
