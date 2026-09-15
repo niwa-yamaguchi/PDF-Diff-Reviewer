@@ -77,35 +77,51 @@ function pushHiEntry(map, pageIndex, token, color){
   map.get(pageIndex).push({token, color});
 }
 
+function insideBox(x, y, box){
+  return x>=box.x0-1e-6 && x<=box.x1+1e-6 && y>=box.y0-1e-6 && y<=box.y1+1e-6;
+}
+
 function removeHighlightsInBox(map, pageIndex, box){
   const arr = map.get(pageIndex);
   if(!arr) return;
-  map.set(pageIndex, arr.filter(({token}) => {
-    const x = token.transform[4], y = token.transform[5];
-    const inside = x>=box.x0-1e-6 && x<=box.x1+1e-6 && y>=box.y0-1e-6 && y<=box.y1+1e-6;
-    return !inside;
-  }));
+  map.set(pageIndex, arr.filter(({token}) => !insideBox(token.transform[4], token.transform[5], box)));
+}
+
+// 表の範囲に入る行単位の変更記録を外し、セル記録の差し込み位置（無ければ末尾）を返す。
+function removeChangesInTables(changes, pageIndex, oldBox, newBox){
+  let at = -1;
+  for(let i=changes.length-1;i>=0;i--){
+    const c = changes[i];
+    const inOld = c.oldPage===pageIndex && c.oldAt && insideBox(c.oldAt[0], c.oldAt[1], oldBox);
+    const inNew = c.newPage===pageIndex && c.newAt && insideBox(c.newAt[0], c.newAt[1], newBox);
+    if(inOld || inNew){ changes.splice(i,1); at = i; }
+  }
+  return at < 0 ? changes.length : at;
 }
 
 function applyTableDiff(oldTable, newTable, pageIndex, hi){
   if(oldTable.rowCount !== newTable.rowCount || oldTable.colCount !== newTable.colCount) return;
   removeHighlightsInBox(hi.old, pageIndex, oldTable.box);
   removeHighlightsInBox(hi.new, pageIndex, newTable.box);
+  const changes = hi.changes;
+  const at = removeChangesInTables(changes, pageIndex, oldTable.box, newTable.box);
+  const cellChanges = [];
   for(let r=0;r<oldTable.rowCount;r++){
     for(let c=0;c<oldTable.colCount;c++){
       const oldCell = oldTable.rows[r][c], newCell = newTable.rows[r][c];
       const oldStr = tableCellText(oldCell), newStr = tableCellText(newCell);
       if(oldStr === newStr) continue;
-      if(oldStr && !newStr){
-        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "removed");
-      } else if(!oldStr && newStr){
-        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "added");
-      } else {
-        for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, "changed");
-        for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, "changed");
-      }
+      const kind = !newStr ? "removed" : !oldStr ? "added" : "changed";
+      if(kind!=="added") for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, kind);
+      if(kind!=="removed") for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, kind);
+      cellChanges.push({
+        kind, oldText: oldStr, newText: newStr,
+        parts: kind==="changed" ? [[-1, oldStr], [1, newStr]] : [],
+        oldPage: oldStr ? pageIndex : null, newPage: newStr ? pageIndex : null,
+      });
     }
   }
+  changes.splice(at, 0, ...cellChanges);
 }
 
 export function applyTableHighlights(oldPages, newPages, hi){

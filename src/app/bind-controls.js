@@ -159,10 +159,10 @@ export function bindControls({
   listen(dom.topVisual, "click", () => appController.setTopMode("visual"));
   listen(dom.topText, "click", () => appController.setTopMode("text"));
 
-  listen(dom.dlPng, "click", () => exportController.saveVisualPng());
-  listen(dom.dlPdf, "click", () => exportController.saveVisualPdf());
-  listen(dom.dlTextPng, "click", () => exportController.saveTextPng());
-  listen(dom.dlTextPdf, "click", () => exportController.saveTextPdf());
+  listen(dom.dlPng, "click", () => exportController.saveVisualPng(dom.exportKind.value));
+  listen(dom.dlPdf, "click", () => exportController.saveVisualPdf(dom.exportKind.value));
+  listen(dom.dlTextPng, "click", () => exportController.saveTextPng(dom.textExportKind.value));
+  listen(dom.dlTextPdf, "click", () => exportController.saveTextPdf(dom.textExportKind.value));
 
   activeBindings.set(document, unbind);
   return unbind;

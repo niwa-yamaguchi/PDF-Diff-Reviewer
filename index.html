@@ -15,7 +15,7 @@
     <img class="brandlogo" src="/favicon.png" alt="" width="34" height="34">
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-09-14</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-09-15</span>
     </div>
   </div>
   <div class="legend">
@@ -130,17 +130,37 @@
         <span class="hint" style="font-size:10px;color:var(--muted)">※PDFを読み込み直すと整列はリセットされます</span>
       </div>
 
-      <div class="btns">
-        <button class="btn" id="dlPng" disabled>現在ページをPNG保存</button>
-        <button class="btn" id="dlPdf" disabled>全ページをPDF保存</button>
+      <div class="field">
+        <label class="label" for="exportKind">保存形式</label>
+        <select class="btn" id="exportKind">
+          <option value="diff">差分保存</option>
+          <option value="pair">並べて保存</option>
+          <option value="old">旧版を保存</option>
+          <option value="new">新版を保存</option>
+        </select>
+        <div class="btns">
+          <button class="btn" id="dlPng" disabled>現在ページをPNG保存</button>
+          <button class="btn" id="dlPdf" disabled>全ページをPDF保存</button>
+        </div>
       </div>
     </div>
 
     <div id="textCtrl" style="display:none">
       <div class="btns">
         <button class="btn primary" id="runText" disabled>テキスト差分を表示</button>
-        <button class="btn" id="dlTextPng" disabled>現在ページをPNG保存</button>
-        <button class="btn" id="dlTextPdf" disabled>全ページをPDF保存</button>
+      </div>
+      <div class="field">
+        <label class="label" for="textExportKind">保存形式</label>
+        <select class="btn" id="textExportKind">
+          <option value="diff">差分保存</option>
+          <option value="pair" selected>並べて保存</option>
+          <option value="old">旧版を保存</option>
+          <option value="new">新版を保存</option>
+        </select>
+        <div class="btns">
+          <button class="btn" id="dlTextPng" disabled>現在ページをPNG保存</button>
+          <button class="btn" id="dlTextPdf" disabled>全ページをPDF保存</button>
+        </div>
       </div>
     </div>
   </aside>

@@ -1,7 +1,9 @@
 import {
   composeTextExport,
+  composeTextReportPage,
   composeToggleExport,
   composeVisualExport,
+  layoutTextReportPages,
   VISUAL_BOX_STYLE,
 } from "./image-composer.js";
 import { reviewLabels } from "../../core/change-review/label.js";
@@ -55,6 +57,7 @@ function cloneHighlights(highlights) {
   return Object.freeze({
     old: cloneMap(highlights.old),
     new: cloneMap(highlights.new),
+    changes: cloneValue(highlights.changes),
   });
 }
 
@@ -125,9 +128,9 @@ function captureSnapshot(state) {
   });
 }
 
-function visualLegend(mode, showBoxes) {
+function visualLegend(kind, showBoxes) {
   const items = [];
-  if (mode !== "toggle") {
+  if (kind === "diff") {
     items.push(
       { color: VISUAL_COLORS.common, label: "共通" },
       { color: VISUAL_COLORS.removed, label: "削除（旧版のみ）" },
@@ -144,11 +147,14 @@ function visualLegend(mode, showBoxes) {
   return Object.freeze(items.map(item => Object.freeze(item)));
 }
 
-function visualRenderSnapshot(snapshot, pageIndex) {
+// 差分保存は差分描画、それ以外（並べて／旧版／新版）は新旧切替描画の左右Canvasから作る。
+const renderModeFor = kind => (kind === "diff" ? "diff" : "toggle");
+
+function visualRenderSnapshot(snapshot, pageIndex, mode) {
   const manualBoxes = snapshot.boxEditor.editsByPage.get(pageIndex);
   return Object.freeze({
     pageIndex,
-    mode: snapshot.visual.mode,
+    mode,
     documents: snapshot.documents,
     comparison: snapshot.comparison,
     visual: Object.freeze({
@@ -284,10 +290,9 @@ export function createExportController({
     return invalidated;
   }
 
-  function composePage(mode, {
+  function composePage(kind, {
     source,
-    oldCanvas,
-    newCanvas,
+    sides,
     boxes,
     labels,
     legend,
@@ -295,10 +300,10 @@ export function createExportController({
     pageIndex,
     total,
   }) {
-    if (mode === "toggle") {
+    if (kind === "pair") {
       return composeToggleExport({
-        oldCanvas,
-        newCanvas,
+        oldCanvas: sides?.old,
+        newCanvas: sides?.new,
         boxes,
         labels,
         legend,
@@ -308,26 +313,39 @@ export function createExportController({
         total,
       });
     }
-    return composeVisualExport({ source, boxes, labels, legend, dpi });
+    const single = kind === "diff" ? source : sides?.[kind];
+    return composeVisualExport({ source: single, boxes, labels, legend, dpi });
   }
 
-  async function saveVisualPng() {
+  async function saveVisualPng(kind = "diff") {
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PNG生成中…");
-    const filename = snapshot.visual.mode === "toggle"
-      ? `toggle_p${snapshot.documents.currentPage + 1}.png`
-      : `diff_p${snapshot.documents.currentPage + 1}.png`;
+    const pageIndex = snapshot.documents.currentPage;
+    const filename = `${kind}_p${pageIndex + 1}.png`;
+    const mode = renderModeFor(kind);
     try {
+      let source = dom.out;
+      let sides = snapshot.visual.toggleCache?.sideCanvases;
+      // 表示中のモードと違う描画が要るときだけ、現在ページを画面外で描き直す。
+      if (snapshot.visual.mode !== mode) {
+        session.renderSession = createVisualRenderSession();
+        const result = await session.renderSession.render({
+          snapshot,
+          pageIndex,
+          renderSnapshot: visualRenderSnapshot(snapshot, pageIndex, mode),
+        });
+        source = result.canvas;
+        sides = result.toggleCache?.sideCanvases;
+      }
       const boxes = snapshot.boxEditor.showBoxes ? snapshot.boxEditor.currentBoxes : [];
-      const composed = composePage(snapshot.visual.mode, {
-        source: dom.out,
-        oldCanvas: snapshot.visual.toggleCache?.sideCanvases?.old,
-        newCanvas: snapshot.visual.toggleCache?.sideCanvases?.new,
+      const composed = composePage(kind, {
+        source,
+        sides,
         boxes,
         labels: snapshot.review.labels,
-        legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
+        legend: visualLegend(kind, snapshot.boxEditor.showBoxes),
         dpi: snapshot.comparison.dpi,
-        pageIndex: snapshot.documents.currentPage,
+        pageIndex,
         total: snapshot.documents.pages,
       });
       const blob = await toBlob(composed);
@@ -342,31 +360,31 @@ export function createExportController({
     }
   }
 
-  async function saveVisualPdf() {
+  async function saveVisualPdf(kind = "diff") {
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PDF生成中…");
     session.renderSession = createVisualRenderSession();
+    const mode = renderModeFor(kind);
     try {
       await pdfExporter.saveVisual({
         pageCount: snapshot.documents.pages,
         dpi: snapshot.comparison.dpi,
-        filename: snapshot.visual.mode === "toggle" ? "toggle.pdf" : "diff.pdf",
+        filename: `${kind}.pdf`,
         renderPage: async pageIndex => {
           const result = await session.renderSession.render({
             snapshot,
             pageIndex,
-            renderSnapshot: visualRenderSnapshot(snapshot, pageIndex),
+            renderSnapshot: visualRenderSnapshot(snapshot, pageIndex, mode),
           });
           const manual = snapshot.boxEditor.editsByPage.get(pageIndex);
           const boxes = !snapshot.boxEditor.showBoxes ? []
             : (manual ?? snapshot.review.boxesByPage.get(pageIndex) ?? result.boxes ?? []);
-          return composePage(snapshot.visual.mode, {
+          return composePage(kind, {
             source: result.canvas,
-            oldCanvas: result.toggleCache?.sideCanvases?.old,
-            newCanvas: result.toggleCache?.sideCanvases?.new,
+            sides: result.toggleCache?.sideCanvases,
             boxes,
             labels: snapshot.review.labels,
-            legend: visualLegend(snapshot.visual.mode, snapshot.boxEditor.showBoxes),
+            legend: visualLegend(kind, snapshot.boxEditor.showBoxes),
             dpi: snapshot.comparison.dpi,
             pageIndex,
             total: snapshot.documents.pages,
@@ -397,13 +415,53 @@ export function createExportController({
     });
   }
 
-  async function saveTextPng() {
+  // 並べて（pair）か片側（old/new）のページ画像。差分（diff）は変更一覧レポートとして別に作る。
+  async function renderTextKind(snapshot, pageIndex, kind) {
+    if (kind === "pair") return renderTextPage(snapshot, pageIndex);
+    const canvas = await renderTextOffscreen({ side: kind, pageIndex, snapshot });
+    if (!canvas) throw new Error("この版にこのページはありません");
+    return canvas;
+  }
+
+  // pageIndex を渡すとそのページに関わる変更だけの1枚、null なら全件をA4でページ分けする。
+  // 番号は全件での通し番号のままにして、PNGとPDFで同じ変更を指せるようにする。
+  function textReport(snapshot, pageIndex) {
+    const all = snapshot.highlights.changes.map((change, index) => ({ ...change, number: index + 1 }));
+    const changes = pageIndex == null ? all
+      : all.filter(change => change.oldPage === pageIndex || change.newPage === pageIndex);
+    const count = kind => changes.filter(change => change.kind === kind).length;
+    const scope = pageIndex == null ? "" : `（p${pageIndex + 1}）`;
+    return {
+      title: `テキスト差分レポート${scope}　変更 ${count("changed")}・削除 ${count("removed")}・追加 ${count("added")}`,
+      layout: layoutTextReportPages({
+        reference: dom.oldTextCanvas,
+        changes,
+        dpi: snapshot.comparison.dpi,
+        paged: pageIndex == null,
+      }),
+    };
+  }
+
+  const textReportPage = (report, pageIndex) => composeTextReportPage({
+    reference: dom.oldTextCanvas,
+    ...report,
+    pageIndex,
+    colors: textColors,
+  });
+
+  const textFilename = kind => (
+    kind === "pair" ? "textdiff" : kind === "diff" ? "textreport" : `text_${kind}`
+  );
+
+  async function saveTextPng(kind = "pair") {
     const snapshot = captureSnapshot(state);
     if (snapshot.topMode !== "text" || !snapshot.highlights) return false;
     const session = start("text", snapshot, "PNG生成中…");
-    const filename = `textdiff_p${snapshot.textPage + 1}.png`;
+    const filename = `${textFilename(kind)}_p${snapshot.textPage + 1}.png`;
     try {
-      const canvas = await renderTextPage(snapshot, snapshot.textPage);
+      const canvas = kind === "diff"
+        ? textReportPage(textReport(snapshot, snapshot.textPage), 0)
+        : await renderTextKind(snapshot, snapshot.textPage, kind);
       const blob = await toBlob(canvas);
       await download(blob, filename);
       setOwnedStatus(session, "テキスト差分を表示中");
@@ -416,19 +474,24 @@ export function createExportController({
     }
   }
 
-  async function saveTextPdf() {
+  async function saveTextPdf(kind = "pair") {
     const snapshot = captureSnapshot(state);
     if (snapshot.topMode !== "text" || !snapshot.highlights) return false;
-    const session = start("text", snapshot, "PDF生成中…（1/" + snapshot.textTotal + "）");
+    const report = kind === "diff" ? textReport(snapshot, null) : null;
+    const pageCount = report ? report.layout.pages.length
+      : kind === "pair" ? snapshot.textTotal : (snapshot.documents[kind]?.numPages || 0);
+    const session = start("text", snapshot, "PDF生成中…（1/" + pageCount + "）");
     try {
       await pdfExporter.saveText({
-        pageCount: snapshot.textTotal,
+        pageCount,
         dpi: snapshot.comparison.dpi,
-        filename: "textdiff.pdf",
+        filename: `${textFilename(kind)}.pdf`,
         onPage(pageIndex, total) {
           setOwnedStatus(session, `PDF生成中…（${pageIndex + 1}/${total}）`);
         },
-        renderPage: pageIndex => renderTextPage(snapshot, pageIndex),
+        renderPage: pageIndex => (
+          report ? textReportPage(report, pageIndex) : renderTextKind(snapshot, pageIndex, kind)
+        ),
       });
       setOwnedStatus(session, "PDFを保存しました");
       return true;
