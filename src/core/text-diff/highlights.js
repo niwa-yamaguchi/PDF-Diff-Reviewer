@@ -21,7 +21,7 @@ export function buildTextHighlights(oldPages, newPages){
   const oldText = oldFlat.map(l=>l.text).join("\n");
   const newText = newFlat.map(l=>l.text).join("\n");
 
-  const hi = {old:new Map(), new:new Map()};
+  const hi = {old:new Map(), new:new Map(), changes:[]};
   const dmp = new DiffMatchPatch();
   const a = dmp.diff_linesToChars_(oldText, newText);
   const diffs = dmp.diff_main(a.chars1, a.chars2, false);
@@ -34,6 +34,24 @@ export function buildTextHighlights(oldPages, newPages){
         pushHiEntry(hi[side], line.pageIndex, tok, color);
       }
     }
+  };
+  // 差分レポート用の変更記録。表の中の行は applyTableHighlights がセル単位の記録に差し替える。
+  const firstTokenAt = line => line?.tokens[0] ? [line.tokens[0].transform[4], line.tokens[0].transform[5]] : null;
+  const pushChange = (kind, oldLine, newLine, parts=[]) => {
+    const oldText = oldLine?.text ?? "", newText = newLine?.text ?? "";
+    if(!oldText.trim() && !newText.trim()) return;
+    // 末尾に改行の無い最終行は行差分で別行扱いになり、同じ文字列同士が組になることがある。
+    if(kind==="changed" && oldText===newText) return;
+    hi.changes.push({
+      kind, oldText, newText, parts,
+      oldPage: oldLine ? oldLine.pageIndex : null, newPage: newLine ? newLine.pageIndex : null,
+      oldAt: firstTokenAt(oldLine), newAt: firstTokenAt(newLine),
+    });
+  };
+  const markWhole = (side, idx, kind) => {
+    const flat = side==="old" ? oldFlat : newFlat;
+    highlightLine(flat, side, idx, kind, null);
+    pushChange(kind, side==="old" ? flat[idx] : null, side==="new" ? flat[idx] : null);
   };
 
   let oldIdx = 0, newIdx = 0;
@@ -50,6 +68,7 @@ export function buildTextHighlights(oldPages, newPages){
           const oldLine = oldFlat[oldIdx+k], newLine = newFlat[newIdx+k];
           const cdiffs = dmp.diff_main(oldLine.text, newLine.text);
           dmp.diff_cleanupSemantic(cdiffs);
+          pushChange("changed", oldLine, newLine, cdiffs.map(d => [d[0], d[1]]));
           let oldPos=0, newPos=0;
           for(const part of cdiffs){
             const pop = part[0], ptext = part[1];
@@ -63,18 +82,18 @@ export function buildTextHighlights(oldPages, newPages){
             }
           }
         }
-        for(let k=n;k<cnt;k++) highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
-        for(let k=n;k<addCnt;k++) highlightLine(newFlat, "new", newIdx+k, "added", null);
+        for(let k=n;k<cnt;k++) markWhole("old", oldIdx+k, "removed");
+        for(let k=n;k<addCnt;k++) markWhole("new", newIdx+k, "added");
         oldIdx += cnt; newIdx += addCnt;
         i++;
         continue;
       }
-      for(let k=0;k<cnt;k++) highlightLine(oldFlat, "old", oldIdx+k, "removed", null);
+      for(let k=0;k<cnt;k++) markWhole("old", oldIdx+k, "removed");
       oldIdx += cnt;
       continue;
     }
     if(op===1){
-      for(let k=0;k<cnt;k++) highlightLine(newFlat, "new", newIdx+k, "added", null);
+      for(let k=0;k<cnt;k++) markWhole("new", newIdx+k, "added");
       newIdx += cnt;
     }
   }

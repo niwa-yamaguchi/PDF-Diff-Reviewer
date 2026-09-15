@@ -1,5 +1,6 @@
 import { legendLayout, LG_BORDER_PT } from "../../core/legend/layout.js";
 import { drawChangeLabel } from "../../core/change-review/label.js";
+import { layoutTextReport } from "../../core/text-diff/report-layout.js";
 
 const BOX_COLOR = "#ff9500";
 const BOX_FILL = "rgba(255,149,0,0.18)";
@@ -312,6 +313,56 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
   context.textAlign = "left";
   context.fillText("NEW", newX + 4, newLabelY + labelHeight / 2);
   context.drawImage(newSource, newX + (cellW - newSource.width) / 2, newLabelY + labelHeight);
+  return canvas;
+}
+
+const REPORT_FONT_PT = 10;
+const A4_PT = Object.freeze({ width: 595, height: 842 });
+
+// paged=false は PNG 用。A4幅のまま、全件が入る高さの1枚にする。
+export function layoutTextReportPages({ reference, changes, dpi, paged }) {
+  const unit = dpi / 72;
+  const fontPx = Math.max(12, Math.round(REPORT_FONT_PT * unit));
+  const context = createLike(reference, 1, 1).getContext("2d");
+  context.font = `${fontPx}px sans-serif`;
+  return layoutTextReport(changes, text => context.measureText(text).width, {
+    width: Math.round(A4_PT.width * unit),
+    height: paged ? Math.round(A4_PT.height * unit) : Infinity,
+    fontPx,
+  });
+}
+
+export function composeTextReportPage({ reference, layout, title, pageIndex, colors }) {
+  const { width, height, fontPx, lineH, margin } = layout;
+  const canvas = whiteCanvas(reference, width, height);
+  const context = canvas.getContext("2d");
+  const rule = Math.max(1, Math.round(fontPx / 12));
+  context.font = `${fontPx}px sans-serif`;
+  context.textBaseline = "middle";
+  context.fillStyle = "#222";
+  context.fillText(title, margin, margin + lineH / 2);
+  context.textAlign = "right";
+  context.fillText(`${pageIndex + 1} / ${layout.pages.length}`, width - margin, margin + lineH / 2);
+  context.textAlign = "left";
+  context.fillStyle = "#999";
+  context.fillRect(margin, margin + lineH * 1.25, width - margin * 2, rule);
+
+  const runColor = { removed: colors.removed, added: colors.added, meta: "#666", plain: "#222" };
+  for (const item of layout.pages[pageIndex].items) {
+    const middle = item.y + lineH / 2;
+    if (item.type === "badge") {
+      context.fillStyle = colors[item.kind];
+      context.fillRect(item.x, item.y + lineH * 0.1, item.w, lineH * 0.8);
+      context.fillStyle = "#111";
+      context.fillText(item.text, item.x + fontPx / 2, middle);
+      continue;
+    }
+    context.fillStyle = runColor[item.style];
+    context.fillText(item.text, item.x, middle);
+    // 色だけに頼らないよう、削除は取り消し線、追加は下線を付ける。
+    if (item.style === "removed") context.fillRect(item.x, middle - rule / 2, item.w, rule);
+    if (item.style === "added") context.fillRect(item.x, item.y + lineH * 0.85, item.w, rule);
+  }
   return canvas;
 }
 

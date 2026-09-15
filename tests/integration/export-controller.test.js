@@ -82,6 +82,7 @@ function harness(overrides = {}) {
   state.textReview.highlights = {
     old: new Map([[0, [{ color: "removed", token: { str: "A" } }]]]),
     new: new Map([[1, [{ color: "added", token: { str: "B" } }]]]),
+    changes: [],
   };
   state.textReview.extraction = { old: [[{ text: "A" }]], new: [[{ text: "B" }]] };
   const dom = {
@@ -326,7 +327,7 @@ describe("visual export snapshots", () => {
       return clone;
     };
 
-    const saving = controller.saveVisualPng();
+    const saving = controller.saveVisualPng("pair");
     state.visual.toggleSide = "new";
     state.visual.mode = "diff";
     state.documents.currentPage = 1;
@@ -334,7 +335,7 @@ describe("visual export snapshots", () => {
     await saving;
 
     expect(oldSide.pixels).toEqual(sourcePixels);
-    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "toggle_p1.png");
+    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "pair_p1.png");
   });
 
   test("keeps diff overlay PNG distinct from paired toggle PNG", async () => {
@@ -364,8 +365,8 @@ describe("visual export snapshots", () => {
     state.documents.currentPage = 1;
     state.boxEditor.showBoxes = false;
     state.visual.toggleCache = { sideCanvases: { old: oldSide, new: newSide } };
-    await controller.saveVisualPng();
-    expect(dependencies.download).toHaveBeenLastCalledWith(expect.any(Blob), "toggle_p2.png");
+    await controller.saveVisualPng("pair");
+    expect(dependencies.download).toHaveBeenLastCalledWith(expect.any(Blob), "pair_p2.png");
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText" && call[2] === "OLD")).toBe(true);
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "fillText" && call[2] === "NEW")).toBe(true);
     expect(composed[1].getContext("2d").calls.some(call => call[0] === "strokeRect" && call[1] === "#ff9500")).toBe(false);
@@ -395,18 +396,17 @@ describe("visual export snapshots", () => {
       sideCanvases: { old: canvas(8, 6), new: canvas(8, 6) },
     };
 
-    await expect(controller.saveVisualPng()).resolves.toBe(true);
+    await expect(controller.saveVisualPng("pair")).resolves.toBe(true);
     expect(dependencies.download).toHaveBeenCalledTimes(1);
     expect(dependencies.errorReporter.report).not.toHaveBeenCalled();
   });
 
-  test("toggle PDF renders each page as a paired OLD/NEW sheet named toggle.pdf", async () => {
-    const { state, dependencies, controller } = harness();
-    state.visual.mode = "toggle";
+  test("pair PDF renders each page as a paired OLD/NEW sheet named pair.pdf even from diff mode", async () => {
+    const { dependencies, controller } = harness();
     const composed = [];
     const snapshots = [];
     dependencies.pdfExporter.saveVisual.mockImplementation(async ({ filename, pageCount, renderPage }) => {
-      expect(filename).toBe("toggle.pdf");
+      expect(filename).toBe("pair.pdf");
       for (let page = 0; page < pageCount; page += 1) composed.push(await renderPage(page));
     });
     dependencies.renderVisualOffscreen.mockImplementation(async ({ renderSnapshot, pageIndex }) => {
@@ -421,7 +421,7 @@ describe("visual export snapshots", () => {
       };
     });
 
-    await controller.saveVisualPdf();
+    await controller.saveVisualPdf("pair");
 
     expect(snapshots).toHaveLength(2);
     expect(composed[0].getContext("2d").calls.some(call => call[0] === "fillText" && call[2] === "OLD")).toBe(true);
@@ -429,6 +429,53 @@ describe("visual export snapshots", () => {
     const images = composed[0].getContext("2d").calls.filter(call => call[0] === "drawImage");
     expect(images).toHaveLength(2);
     expect(images[1][2]).toBeGreaterThan(images[0][2]);
+  });
+
+  test("diff PNG while in toggle mode renders the current page offscreen as a diff", async () => {
+    const { state, dependencies, controller } = harness();
+    state.visual.mode = "toggle";
+    const diffCanvas = canvas(60, 30);
+    dependencies.renderVisualOffscreen.mockImplementation(async ({ renderSnapshot }) => {
+      expect(renderSnapshot.mode).toBe("diff");
+      return { canvas: diffCanvas, boxes: [] };
+    });
+
+    await expect(controller.saveVisualPng("diff")).resolves.toBe(true);
+
+    expect(dependencies.renderVisualOffscreen).toHaveBeenCalledTimes(1);
+    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "diff_p1.png");
+  });
+
+  test("old/new exports write only that side with the box legend and no diff colors", async () => {
+    const { state, dependencies, controller } = harness();
+    state.visual.mode = "toggle";
+    const oldSide = canvas(40, 80);
+    const newSide = canvas(40, 80);
+    const composed = [];
+    newSide.cloneNode = () => {
+      const clone = canvas(0, 0, []);
+      composed.push(clone);
+      return clone;
+    };
+    state.visual.toggleCache = { sideCanvases: { old: oldSide, new: newSide } };
+
+    await controller.saveVisualPng("new");
+
+    expect(dependencies.renderVisualOffscreen).not.toHaveBeenCalled();
+    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "new_p1.png");
+    const calls = composed[0].getContext("2d").calls;
+    expect(calls.filter(call => call[0] === "drawImage").map(call => call[1])).toEqual([newSide]);
+    expect(calls.filter(call => call[0] === "fillText").map(call => call[2])).toEqual(["変更枠"]);
+
+    dependencies.pdfExporter.saveVisual.mockImplementation(async ({ filename, pageCount, renderPage }) => {
+      expect(filename).toBe("old.pdf");
+      for (let page = 0; page < pageCount; page += 1) await renderPage(page);
+    });
+    dependencies.renderVisualOffscreen.mockImplementation(async ({ renderSnapshot }) => {
+      expect(renderSnapshot.mode).toBe("toggle");
+      return { canvas: newSide, boxes: [], toggleCache: { sideCanvases: { old: oldSide, new: newSide } } };
+    });
+    await expect(controller.saveVisualPdf("old")).resolves.toBe(true);
   });
 });
 
@@ -462,6 +509,55 @@ describe("text export snapshots", () => {
     expect([dom.newTextCanvas.width, dom.newTextCanvas.height]).toEqual(before.newTextSize);
     expect(state.textReview.renderGeneration).toBe(before.textRenderGeneration);
     expect(state.textReview.extractGeneration).toBe(before.textExtractGeneration);
+  });
+
+  test("diff text export writes the change report instead of page images", async () => {
+    const { state, dependencies, controller } = harness();
+    state.ui.topMode = "text";
+    state.textReview.highlights.changes = [
+      { kind: "changed", oldPage: 0, newPage: 0, oldText: "REV A", newText: "REV B", parts: [[0, "REV "], [-1, "A"], [1, "B"]] },
+      { kind: "added", oldPage: null, newPage: 1, oldText: "", newText: "note", parts: [] },
+    ];
+    const composed = [];
+    dependencies.pdfExporter.saveText.mockImplementation(async ({ filename, pageCount, renderPage }) => {
+      expect(filename).toBe("textreport.pdf");
+      for (let page = 0; page < pageCount; page += 1) composed.push(await renderPage(page));
+    });
+
+    await expect(controller.saveTextPdf("diff")).resolves.toBe(true);
+
+    expect(dependencies.renderTextOffscreen).not.toHaveBeenCalled();
+    const texts = composed.flatMap(item => item.getContext("2d").calls)
+      .filter(call => call[0] === "fillText").map(call => call[2]);
+    expect(texts).toEqual(expect.arrayContaining(["REV ", "A", "B", "note", "#2  旧 — → 新 p2"]));
+
+    await expect(controller.saveTextPng("diff")).resolves.toBe(true);
+    expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "textreport_p1.png");
+  });
+
+  test("old/new text exports render only that side over its own page count", async () => {
+    const { state, dependencies, controller } = harness();
+    state.ui.topMode = "text";
+    state.documents.oldDoc = { id: "old", numPages: 3 };
+    const sides = [];
+    dependencies.renderTextOffscreen.mockImplementation(async ({ side }) => {
+      sides.push(side);
+      return canvas(100, 200);
+    });
+    dependencies.pdfExporter.saveText.mockImplementation(async ({ filename, pageCount, renderPage }) => {
+      expect(filename).toBe("text_old.pdf");
+      expect(pageCount).toBe(3);
+      for (let page = 0; page < pageCount; page += 1) await renderPage(page);
+    });
+
+    await expect(controller.saveTextPdf("old")).resolves.toBe(true);
+    expect(sides).toEqual(["old", "old", "old"]);
+
+    dependencies.renderTextOffscreen.mockResolvedValue(null);
+    await expect(controller.saveTextPng("new")).resolves.toBe(false);
+    expect(dependencies.errorReporter.report).toHaveBeenCalledWith(
+      expect.any(Error), "PNGの保存に失敗しました", expect.anything(),
+    );
   });
 });
 

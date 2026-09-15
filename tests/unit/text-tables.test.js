@@ -20,6 +20,7 @@ test("detects a three-row table and replaces row highlights with cell highlights
   const hi = {
     old: new Map([[0, [{ token: oldRowToken, color: "changed" }]]]),
     new: new Map([[0, [{ token: newRowToken, color: "changed" }]]]),
+    changes: [],
   };
   const returned = applyTableHighlights([oldLines], [newLines], hi);
 
@@ -28,4 +29,20 @@ test("detects a three-row table and replaces row highlights with cell highlights
   expect(hi.new.get(0).some((entry) => entry.token === newRowToken)).toBe(false);
   expect(hi.old.get(0)).toContainEqual({ token: oldLines[1].tokens[1], color: "changed" });
   expect(hi.new.get(0)).toContainEqual({ token: newLines[1].tokens[1], color: "changed" });
+});
+
+test("replaces line change records inside a diffed table with cell records in place", () => {
+  const hi = {
+    old: new Map(),
+    new: new Map(),
+    changes: [
+      { kind: "changed", oldPage: 0, newPage: 0, oldText: "A2 B2", newText: "A2 X2", parts: [], oldAt: [10, 70], newAt: [10, 70] },
+      { kind: "added", oldPage: null, newPage: 1, oldText: "", newText: "next page", parts: [], oldAt: null, newAt: [10, 90] },
+    ],
+  };
+  applyTableHighlights([lines("B2")], [lines("X2")], hi);
+  expect(hi.changes.map(c => [c.kind, c.oldText, c.newText, c.parts])).toEqual([
+    ["changed", "B2", "X2", [[-1, "B2"], [1, "X2"]]],
+    ["added", "", "next page", []],
+  ]);
 });

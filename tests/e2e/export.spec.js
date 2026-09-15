@@ -47,13 +47,19 @@ test("downloads visual and text PNG/PDF without changing either committed view",
 
   await expectDownload(page, "#dlPng", "diff_p1.png", visualView);
   await expectDownload(page, "#dlPdf", "diff.pdf", visualView);
+  // 表示中のモードと違う形式も選べる（差分表示のまま旧版を保存）。
+  await page.locator("#exportKind").selectOption("old");
+  await expectDownload(page, "#dlPng", "old_p1.png", visualView);
 
   await page.locator("#modeToggle").click();
   await expect(page.locator("#status")).toHaveText("新旧切替（OLD表示中）");
-  const togglePng = await expectDownload(page, "#dlPng", "toggle_p1.png", visualView);
-  const size = await pngSize(togglePng);
+  await page.locator("#exportKind").selectOption("pair");
+  const pairPng = await expectDownload(page, "#dlPng", "pair_p1.png", visualView);
+  const size = await pngSize(pairPng);
   expect(size.width).toBeGreaterThan(size.height);
-  await expectDownload(page, "#dlPdf", "toggle.pdf", visualView);
+  await expectDownload(page, "#dlPdf", "pair.pdf", visualView);
+  await page.locator("#exportKind").selectOption("diff");
+  await expectDownload(page, "#dlPng", "diff_p1.png", visualView);
 
   await page.locator("#topText").click();
   await page.locator("#runText").click();
@@ -62,4 +68,9 @@ test("downloads visual and text PNG/PDF without changing either committed view",
 
   await expectDownload(page, "#dlTextPng", "textdiff_p1.png", textView);
   await expectDownload(page, "#dlTextPdf", "textdiff.pdf", textView);
+  await page.locator("#textExportKind").selectOption("new");
+  await expectDownload(page, "#dlTextPng", "text_new_p1.png", textView);
+  await page.locator("#textExportKind").selectOption("diff");
+  await expectDownload(page, "#dlTextPng", "textreport_p1.png", textView);
+  await expectDownload(page, "#dlTextPdf", "textreport.pdf", textView);
 });
