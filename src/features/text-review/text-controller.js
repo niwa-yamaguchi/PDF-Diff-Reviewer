@@ -1,7 +1,7 @@
 import { assembleFromLeaves, reconstructLinesInItemOrder } from "../../core/text-diff/tokens.js";
 import { xyCut } from "../../core/text-diff/xy-cut.js";
 import { buildTextHighlights } from "../../core/text-diff/highlights.js";
-import { applyTableHighlights } from "../../core/text-diff/tables.js";
+import { applyTableHighlights, detectTables } from "../../core/text-diff/tables.js";
 
 const XYCUT_MAX_DEPTH = 6;
 const XYCUT_MIN_BLOCK_TOKENS = 2;
@@ -17,7 +17,8 @@ export async function extractPageTokens({
 }) {
   const page = await doc.getPage(pageIndex + 1);
   const content = await page.getTextContent();
-  if (page.rotate % 180 !== 0) return reconstructLinesInItemOrder(content.items);
+  const plain = reconstructLinesInItemOrder(content.items);
+  if (page.rotate % 180 !== 0) return plain;
 
   const tokens = [];
   let verticalCount = 0;
@@ -37,12 +38,10 @@ export async function extractPageTokens({
     });
   });
 
-  if (tokens.length && verticalCount * 2 > tokens.length) {
-    return reconstructLinesInItemOrder(content.items);
-  }
-  if (tokens.length < XYCUT_MIN_BLOCK_TOKENS) {
-    return reconstructLinesInItemOrder(content.items);
-  }
+  if (tokens.length && verticalCount * 2 > tokens.length) return plain;
+  if (tokens.length < XYCUT_MIN_BLOCK_TOKENS) return plain;
+  // 表は列をまたいで行が揃うため、列カットすると1行が列方向に分断される。表のあるページは描画順のまま返す。
+  if (detectTables(plain).length) return plain;
 
   const context = { hadVerticalCut: false };
   const leaves = xyCut(tokens, {
@@ -53,9 +52,7 @@ export async function extractPageTokens({
     colMinSideLines: COL_MIN_SIDE_LINES,
     context,
   });
-  const result = context.hadVerticalCut
-    ? assembleFromLeaves(content.items, leaves)
-    : reconstructLinesInItemOrder(content.items);
+  const result = context.hadVerticalCut ? assembleFromLeaves(content.items, leaves) : plain;
 
   if (debugXYCut) {
     onDebug({
