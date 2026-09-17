@@ -169,6 +169,7 @@ function diffRowPair(oldRow, newRow, pageIndex, hi, out){
   out.push({
     kind, oldText, newText, parts,
     oldPage: oldText ? pageIndex : null, newPage: newText ? pageIndex : null,
+    oldTokens: oldRow.flat(), newTokens: newRow.flat(),
   });
 }
 
@@ -181,6 +182,7 @@ function diffWholeRow(row, side, pageIndex, hi, out){
     kind, oldText: side==="old" ? label : "", newText: side==="new" ? label : "",
     parts: [],
     oldPage: side==="old" ? pageIndex : null, newPage: side==="new" ? pageIndex : null,
+    oldTokens: side==="old" ? row.flat() : [], newTokens: side==="new" ? row.flat() : [],
   });
 }
 

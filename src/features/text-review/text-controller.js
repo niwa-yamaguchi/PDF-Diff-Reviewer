@@ -1,6 +1,6 @@
 import { assembleFromLeaves, reconstructLinesInItemOrder } from "../../core/text-diff/tokens.js";
 import { xyCut } from "../../core/text-diff/xy-cut.js";
-import { buildTextHighlights } from "../../core/text-diff/highlights.js";
+import { buildTextHighlights, collapseMovedRows } from "../../core/text-diff/highlights.js";
 import { applyTableHighlights, detectTables } from "../../core/text-diff/tables.js";
 
 const XYCUT_MAX_DEPTH = 6;
@@ -301,6 +301,7 @@ export function createTextController({
 
       const highlights = buildTextHighlights(extraction.old, extraction.new);
       applyTableHighlights(extraction.old, extraction.new, highlights);
+      collapseMovedRows(highlights);
       if (!currentSession(session)) {
         abandonSession(session);
         return false;

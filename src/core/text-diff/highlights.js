@@ -46,6 +46,8 @@ export function buildTextHighlights(oldPages, newPages){
       kind, oldText, newText, parts,
       oldPage: oldLine ? oldLine.pageIndex : null, newPage: newLine ? newLine.pageIndex : null,
       oldAt: firstTokenAt(oldLine), newAt: firstTokenAt(newLine),
+      // collapseMovedRows が着色を取り消すための手がかり。同関数が最後に削除する。
+      oldTokens: oldLine ? oldLine.tokens : [], newTokens: newLine ? newLine.tokens : [],
     });
   };
   const markWhole = (side, idx, kind) => {
@@ -97,5 +99,42 @@ export function buildTextHighlights(oldPages, newPages){
       newIdx += cnt;
     }
   }
+  return hi;
+}
+
+// 表ごとに列の切れ目が変わると同じ行でも空白位置がずれるため、照合は空白を除いて行う。
+const moveKey = text => text.replace(/\s+/g, "");
+
+function dropHighlights(map, pageIndex, tokens){
+  if(pageIndex == null || !tokens || !tokens.length) return;
+  const arr = map.get(pageIndex);
+  if(!arr) return;
+  const drop = new Set(tokens);
+  map.set(pageIndex, arr.filter(entry => !drop.has(entry.token)));
+}
+
+// 行の挿入でページ送りが変わると、内容が同じ行でも「削除＋追加」になる。差分の最小編集としては
+// 正しいが、レビュー上は変更ではないので、同一内容の削除／追加を1対1で組にして取り消す。
+export function collapseMovedRows(hi){
+  const pending = new Map();
+  hi.changes.forEach((change, index) => {
+    if(change.kind !== "added") return;
+    const key = moveKey(change.newText);
+    if(!key) return;
+    if(!pending.has(key)) pending.set(key, []);
+    pending.get(key).push(index);
+  });
+  const dropped = new Set();
+  hi.changes.forEach((change, index) => {
+    if(change.kind !== "removed") return;
+    const queue = pending.get(moveKey(change.oldText));
+    if(!queue || !queue.length) return;
+    const match = hi.changes[queue.shift()];
+    dropped.add(change); dropped.add(match);
+    dropHighlights(hi.old, change.oldPage, change.oldTokens);
+    dropHighlights(hi.new, match.newPage, match.newTokens);
+  });
+  hi.changes = hi.changes.filter(change => !dropped.has(change));
+  for(const change of hi.changes){ delete change.oldTokens; delete change.newTokens; }
   return hi;
 }
