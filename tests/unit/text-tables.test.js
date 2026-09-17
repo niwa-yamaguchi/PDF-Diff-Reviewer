@@ -57,10 +57,10 @@ test("pairs tables by shape when an extra table appears above on one side", () =
 
   applyTableHighlights([oldLines], [newLines], hi);
 
-  expect(hi.changes.map((c) => [c.kind, c.oldText, c.newText])).toEqual([["changed", "B2", "X2"]]);
+  expect(hi.changes.map((c) => [c.kind, c.oldText, c.newText])).toEqual([["changed", "A2 B2", "A2 X2"]]);
 });
 
-test("replaces line change records inside a diffed table with cell records in place", () => {
+test("replaces line change records inside a diffed table with one record per changed row", () => {
   const hi = {
     old: new Map(),
     new: new Map(),
@@ -70,8 +70,11 @@ test("replaces line change records inside a diffed table with cell records in pl
     ],
   };
   applyTableHighlights([lines("B2")], [lines("X2")], hi);
-  expect(hi.changes.map(c => [c.kind, c.oldText, c.newText, c.parts])).toEqual([
-    ["changed", "B2", "X2", [[-1, "B2"], [1, "X2"]]],
-    ["added", "", "next page", []],
+  expect(hi.changes.map(c => [c.kind, c.oldText, c.newText])).toEqual([
+    ["changed", "A2 B2", "A2 X2"],
+    ["added", "", "next page"],
   ]);
+  const joined = (parts, keep) => parts.filter(([op]) => keep(op)).map(([, text]) => text).join("");
+  expect(joined(hi.changes[0].parts, op => op <= 0)).toBe("A2 B2");
+  expect(joined(hi.changes[0].parts, op => op >= 0)).toBe("A2 X2");
 });

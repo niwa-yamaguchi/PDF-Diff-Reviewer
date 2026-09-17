@@ -138,16 +138,37 @@ function alignRows(oldRows, newRows){
   return pairs;
 }
 
-function diffCellPair(oldCell, newCell, pageIndex, hi, out){
+// 着色はセル単位。差があったかだけを返し、記録は呼び出し側が行単位でまとめる。
+function markCellPair(oldCell, newCell, pageIndex, hi){
   const oldStr = tableCellText(oldCell), newStr = tableCellText(newCell);
-  if(oldStr === newStr) return;
+  if(oldStr === newStr) return false;
   const kind = !newStr ? "removed" : !oldStr ? "added" : "changed";
   if(kind!=="added") for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, kind);
   if(kind!=="removed") for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, kind);
+  return true;
+}
+
+// 1行の変更をセルごとの記録に割ると "*" や "3" だけの記録が並んでどの部品か分からなくなる。
+// 記録は行につき1件、本文は行テキストで作る。
+function diffRowPair(oldRow, newRow, pageIndex, hi, out){
+  let differs = false;
+  for(let c=0;c<oldRow.length;c++){
+    if(markCellPair(oldRow[c], newRow[c], pageIndex, hi)) differs = true;
+  }
+  if(!differs) return;
+  const oldText = rowLabel(rowCells(oldRow)), newText = rowLabel(rowCells(newRow));
+  if(oldText === newText) return;
+  const kind = !newText ? "removed" : !oldText ? "added" : "changed";
+  let parts = [];
+  if(kind === "changed"){
+    const dmp = new DiffMatchPatch();
+    const cdiffs = dmp.diff_main(oldText, newText);
+    dmp.diff_cleanupSemantic(cdiffs);
+    parts = cdiffs.map(d => [d[0], d[1]]);
+  }
   out.push({
-    kind, oldText: oldStr, newText: newStr,
-    parts: kind==="changed" ? [[-1, oldStr], [1, newStr]] : [],
-    oldPage: oldStr ? pageIndex : null, newPage: newStr ? pageIndex : null,
+    kind, oldText, newText, parts,
+    oldPage: oldText ? pageIndex : null, newPage: newText ? pageIndex : null,
   });
 }
 
@@ -169,19 +190,17 @@ function applyTableDiff(oldTable, newTable, pageIndex, hi){
   removeHighlightsInBox(hi.new, pageIndex, newTable.box);
   const changes = hi.changes;
   const at = removeChangesInTables(changes, pageIndex, oldTable.box, newTable.box);
-  const cellChanges = [];
+  const records = [];
   for(const pair of alignRows(oldTable.rows, newTable.rows)){
     if(pair.old !== null && pair.new !== null){
-      for(let c=0;c<oldTable.colCount;c++){
-        diffCellPair(oldTable.rows[pair.old][c], newTable.rows[pair.new][c], pageIndex, hi, cellChanges);
-      }
+      diffRowPair(oldTable.rows[pair.old], newTable.rows[pair.new], pageIndex, hi, records);
       continue;
     }
     const side = pair.old !== null ? "old" : "new";
     const row = side==="old" ? oldTable.rows[pair.old] : newTable.rows[pair.new];
-    diffWholeRow(row, side, pageIndex, hi, cellChanges);
+    diffWholeRow(row, side, pageIndex, hi, records);
   }
-  changes.splice(at, 0, ...cellChanges);
+  changes.splice(at, 0, ...records);
 }
 
 function overlapArea(a, b){
