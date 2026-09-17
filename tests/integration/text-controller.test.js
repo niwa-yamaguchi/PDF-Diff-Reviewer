@@ -589,4 +589,21 @@ describe("extractPageTokens", () => {
       .toEqual(["A", "B", "C", "D", "E", "F"]);
     expect(onDebug).not.toHaveBeenCalled();
   });
+
+  test("keeps item order on pages holding a table instead of cutting columns", async () => {
+    const onDebug = vi.fn();
+    const cell = (str, x, y) => ({ str, width: 10, transform: [10, 0, 0, 10, x, y] });
+    const items = [
+      cell("L1", 10, 90), cell("R1", 100, 90),
+      cell("L2", 10, 70), cell("R2", 100, 70),
+      cell("L3", 10, 50), cell("R3", 100, 50),
+    ];
+    const page = { rotate: 0, getTextContent: vi.fn().mockResolvedValue({ items }) };
+    const document = { getPage: vi.fn().mockResolvedValue(page) };
+
+    const result = await extractPageTokens({ doc: document, pageIndex: 0, debugXYCut: true, onDebug });
+
+    expect(result.map(line => line.text)).toEqual(["L1R1", "L2R2", "L3R3"]);
+    expect(onDebug).not.toHaveBeenCalled();
+  });
 });
