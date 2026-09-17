@@ -31,6 +31,35 @@ test("detects a three-row table and replaces row highlights with cell highlights
   expect(hi.new.get(0)).toContainEqual({ token: newLines[1].tokens[1], color: "changed" });
 });
 
+const row = (left, right, y) => ({ text: `${left} ${right}`, tokens: [tok(left, 10, y), tok(right, 100, y)] });
+const solo = (str, y) => ({ text: str, tokens: [tok(str, 10, y)] });
+
+test("aligns table rows by content when a row is inserted and another drops off", () => {
+  const oldLines = [row("A1", "B1", 90), row("A2", "B2", 70), row("A3", "B3", 50), row("A4", "B4", 30)];
+  const newLines = [row("A0", "B0", 90), row("A1", "B1", 70), row("A2", "B2", 50), row("A3", "B3", 30)];
+  const hi = { old: new Map(), new: new Map(), changes: [] };
+
+  applyTableHighlights([oldLines], [newLines], hi);
+
+  expect(hi.changes.filter((c) => c.kind === "changed")).toEqual([]);
+  expect(hi.changes.map((c) => c.kind).sort()).toEqual(["added", "removed"]);
+  expect(hi.changes.find((c) => c.kind === "added").newText).toContain("A0");
+  expect(hi.changes.find((c) => c.kind === "removed").oldText).toContain("A4");
+});
+
+test("pairs tables by shape when an extra table appears above on one side", () => {
+  const withSecondCell = (second) => [
+    solo("note", 110), row("A1", "B1", 90), row("A2", second, 70), row("A3", "B3", 50), row("A4", "B4", 30),
+  ];
+  const oldLines = withSecondCell("B2");
+  const newLines = [row("S1", "T1", 170), row("S2", "T2", 150), row("S3", "T3", 130), ...withSecondCell("X2")];
+  const hi = { old: new Map(), new: new Map(), changes: [] };
+
+  applyTableHighlights([oldLines], [newLines], hi);
+
+  expect(hi.changes.map((c) => [c.kind, c.oldText, c.newText])).toEqual([["changed", "B2", "X2"]]);
+});
+
 test("replaces line change records inside a diffed table with cell records in place", () => {
   const hi = {
     old: new Map(),
