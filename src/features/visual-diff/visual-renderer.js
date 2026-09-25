@@ -3,10 +3,16 @@ import { DIFF_RGB } from "../../core/image-diff/diff-compute.js";
 const QUAD_PROBE_LONG = 512;
 const BOX_BASE_DPI = 150;
 const BOX_BASE = 16;
-const BOX_MIN_BLOCKS = 2;
+const BOX_MIN_PIXELS_AT_BASE = 4;
 
 function blockSize(comparison) {
   return Math.max(4, Math.round(BOX_BASE * comparison.dpi / BOX_BASE_DPI));
+}
+
+// 変更枠は変更画素の面積で採否を決める。ブロック数だとマス目との位置関係で小さな変更が残ったり消えたりする。
+function minChangePixels(comparison) {
+  const ratio = comparison.dpi / BOX_BASE_DPI;
+  return Math.max(2, Math.round(BOX_MIN_PIXELS_AT_BASE * ratio * ratio));
 }
 
 function toleranceRadiusPx(comparison) {
@@ -346,7 +352,7 @@ function diffRequest(comparison, prepared, { needsImage, needsBoxes }) {
       threshold: comparison.threshold,
       radius: toleranceRadiusPx(comparison),
       block: blockSize(comparison),
-      minBlocks: BOX_MIN_BLOCKS,
+      minPixels: minChangePixels(comparison),
       needsImage,
       needsBoxes,
     },

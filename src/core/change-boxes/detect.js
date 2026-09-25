@@ -6,7 +6,7 @@ function changeKind(bits) {
   return "changed";
 }
 
-export function computeBoxes(flags, cols, rows, block, minBlocks) {
+export function computeBoxes(flags, counts, cols, rows, block, minPixels) {
   const DIRS4 = [[-1, 0], [1, 0], [0, -1], [0, 1]];
   const dil = new Uint8Array(cols * rows);
   const offs = [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]];
@@ -29,11 +29,11 @@ export function computeBoxes(flags, cols, rows, block, minBlocks) {
       if (!dil[i] || seen[i]) continue;
       let head = 0, tail = 0;
       qx[tail] = c; qy[tail] = r; tail++; seen[i] = 1;
-      let minC = c, maxC = c, minR = r, maxR = r, origCount = 0, kindBits = 0;
+      let minC = c, maxC = c, minR = r, maxR = r, changedPixels = 0, kindBits = 0;
       while (head < tail) {
         const cx = qx[head], cy = qy[head]; head++;
         const bits = flags[cy * cols + cx];
-        if (bits) { origCount++; kindBits |= bits; }
+        if (bits) { changedPixels += counts[cy * cols + cx]; kindBits |= bits; }
         if (cx < minC) minC = cx; if (cx > maxC) maxC = cx;
         if (cy < minR) minR = cy; if (cy > maxR) maxR = cy;
         for (const [dx, dy] of DIRS4) {
@@ -43,7 +43,7 @@ export function computeBoxes(flags, cols, rows, block, minBlocks) {
           if (dil[ni] && !seen[ni]) { seen[ni] = 1; qx[tail] = nx; qy[tail] = ny; tail++; }
         }
       }
-      if (origCount < minBlocks) continue;
+      if (changedPixels < minPixels) continue;
       boxes.push({
         x: minC * block,
         y: minR * block,
