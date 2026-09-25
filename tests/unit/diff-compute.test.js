@@ -14,7 +14,7 @@ function base(overrides = {}) {
     threshold: 128,
     radius: 0,
     block: 8,
-    minBlocks: 2,
+    minPixels: 2,
     needsImage: true,
     needsBoxes: true,
     ...overrides,

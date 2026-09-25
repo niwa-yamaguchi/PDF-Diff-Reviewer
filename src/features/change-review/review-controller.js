@@ -110,7 +110,6 @@ export function createChangeReviewController({
   async function select(id, { preserveEdit = false } = {}) {
     const ticket = ++selectionTicket;
     const review = state.review;
-    const generation = review.indexGeneration;
     const item = orderedItems().find(item => item.id === id);
     if (!item || state.ui.topMode !== "visual") return false;
     if (!preserveEdit) stopBoxEditing?.();
@@ -125,7 +124,8 @@ export function createChangeReviewController({
         if (navigationTicket === ticket) navigationTicket = null;
       }
     }
-    if (ticket !== selectionTicket || review !== state.review || generation !== review.indexGeneration
+    // ページ描画は背景の索引を一時停止して indexGeneration を進めるため、世代では判定しない。
+    if (ticket !== selectionTicket || review !== state.review
       || state.ui.topMode !== "visual" || review.selectedId !== id) return false;
     const current = orderedItems().find(item => item.id === id);
     if (!current || current.pageIndex !== state.documents.currentPage) return false;
@@ -280,7 +280,17 @@ export function createChangeReviewController({
     const entries = new Map([...(pending?.entriesById || []), ...review.entriesById]);
     let items;
     let summary = { inherited: 0, reset: 0 };
-    if (source === "manual") {
+    // 設定変更では一覧が消えるので、既存項目への自動検出の再登録は解像度違い（索引と表示）だけ。
+    // 解像度で枠の形が変わっても同じ変更なので、IDとレビューを保って座標だけ換算する。
+    const rescaled = source === "auto" && current?.length && current.every(item => item.pageKey === pageKey
+      && (Math.abs(item.rect.w - item.normalizedRect.w * dimensions.width) > 0.5
+        || Math.abs(item.rect.h - item.normalizedRect.h * dimensions.height) > 0.5));
+    if (rescaled) {
+      items = current.map(item => ({ ...item, rect: {
+        x: item.normalizedRect.x * dimensions.width, y: item.normalizedRect.y * dimensions.height,
+        w: item.normalizedRect.w * dimensions.width, h: item.normalizedRect.h * dimensions.height,
+      } }));
+    } else if (source === "manual") {
       items = boxes.map(box => ({
         ...createReviewItems({ boxes: [box], pageIndex, pageKey, ...dimensions,
           source: box.source || "manual", allocateId: () => box.id || allocateId() })[0],

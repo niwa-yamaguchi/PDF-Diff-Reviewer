@@ -43,7 +43,7 @@ export function computeDiff({
   threshold,
   radius = 0,
   block,
-  minBlocks,
+  minPixels,
   needsImage = true,
   needsBoxes = true,
   onProgress = null,
@@ -52,6 +52,7 @@ export function computeDiff({
   const columns = Math.ceil(width / block);
   const rows = Math.ceil(height / block);
   const flags = new Uint8Array(columns * rows);
+  const counts = new Uint32Array(columns * rows);
   const image = needsImage ? new Uint8ClampedArray(width * height * 4) : null;
   if (image) image.fill(255);
   let removedCount = 0;
@@ -60,6 +61,7 @@ export function computeDiff({
   const flag = (x, y, bit) => {
     const index = Math.floor(y / block) * columns + Math.floor(x / block);
     flags[index] |= bit;
+    counts[index] += 1;
   };
 
   if (radius > 0) {
@@ -123,7 +125,7 @@ export function computeDiff({
 
   report(1);
   const boxes = needsBoxes
-    ? computeBoxes(flags, columns, rows, block, minBlocks)
+    ? computeBoxes(flags, counts, columns, rows, block, minPixels)
       .map(box => {
         const [clamped] = clampBoxes([box], width, height);
         return clamped ? { ...clamped, kind: box.kind } : null;
