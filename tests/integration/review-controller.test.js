@@ -252,6 +252,15 @@ test("selects across pages and persists confirmation and comments", async () => 
   expect(state.review.panelOpen).toBe(false);
 });
 
+// Break: treating the page render's background pause as a re-index skips focus after crossing pages.
+test("focuses the next page's change even though page rendering pauses background indexing", async () => {
+  let harness;
+  harness = navigationHarness(() => { harness.controller.pauseBackground(); });
+  await harness.controller.select("change-3");
+  expect(harness.state.documents.currentPage).toBe(1);
+  expect(harness.out.style.transform).toBe("translate(-100px,20px) scale(4)");
+});
+
 // Break: using Map insertion order or stopping at either end breaks the inspection sequence.
 test("cycles previous and next in page then rectangle display order", async () => {
   const { state, controller, visits } = navigationHarness();

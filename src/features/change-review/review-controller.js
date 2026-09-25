@@ -110,7 +110,6 @@ export function createChangeReviewController({
   async function select(id, { preserveEdit = false } = {}) {
     const ticket = ++selectionTicket;
     const review = state.review;
-    const generation = review.indexGeneration;
     const item = orderedItems().find(item => item.id === id);
     if (!item || state.ui.topMode !== "visual") return false;
     if (!preserveEdit) stopBoxEditing?.();
@@ -125,7 +124,8 @@ export function createChangeReviewController({
         if (navigationTicket === ticket) navigationTicket = null;
       }
     }
-    if (ticket !== selectionTicket || review !== state.review || generation !== review.indexGeneration
+    // ページ描画は背景の索引を一時停止して indexGeneration を進めるため、世代では判定しない。
+    if (ticket !== selectionTicket || review !== state.review
       || state.ui.topMode !== "visual" || review.selectedId !== id) return false;
     const current = orderedItems().find(item => item.id === id);
     if (!current || current.pageIndex !== state.documents.currentPage) return false;
