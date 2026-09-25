@@ -432,6 +432,17 @@ test("redraw matches exact rectangles across ordering changes and safely reconci
   expect(redraw.currentBoxes.map(box => box.id)).toEqual(["change-2", "change-3", "change-1"]);
 });
 
+// Break: re-detecting at the display DPI splits or reshapes indexed boxes and resets their reviews.
+test("a redraw at another resolution keeps indexed reviews and rescales their rectangles", () => {
+  const { state, controller } = harness(1);
+  controller.commitPage(page(0));
+  state.review.entriesById.set("change-1", { status: "confirmed", comment: "checked" });
+  const redraw = controller.commitPage({ ...page(0, [box(20), box(33)]), width: 250, height: 250 });
+  expect(redraw.currentBoxes).toEqual([{ x: 25, y: 25, w: 50, h: 50, id: "change-1", kind: "added", source: "auto" }]);
+  expect(state.review.entriesById.get("change-1")).toEqual({ status: "confirmed", comment: "checked" });
+  expect(state.review.itemsByPage.get(0)[0].normalizedRect).toEqual({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 });
+});
+
 test("matching rectangles cannot inherit IDs after their page identity or kind changes", () => {
   const { controller } = harness(1);
   controller.commitPage(page(0));
