@@ -1,5 +1,5 @@
 const REQUIRED_IDS = Object.freeze([
-  "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
+  "alignAddNew", "alignAuto", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
   "boxLayer", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "exportKind", "textExportKind", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
@@ -13,7 +13,7 @@ const REQUIRED_IDS = Object.freeze([
   "reviewPanel", "reviewRail", "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext",
   "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
   "reviewAdd", "reviewReset",
-  "minimap", "minimapCanvas",
+  "minimap", "minimapCanvas", "pageMapNotice",
 ]);
 
 function required(value, name) {

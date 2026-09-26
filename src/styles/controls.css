@@ -81,6 +81,9 @@
   .alignpad button:hover{border-color:var(--signal)}
   .alignpad button:disabled{opacity:.4;cursor:not-allowed}
   .alignpad .full{grid-column:1 / -1}
+  .alignpad button.suggest{border-color:var(--signal);color:var(--signal)}
+  .pagemap-notice{font-size:10px;color:var(--muted);line-height:1.4}
+  .pagemap-notice:empty{display:none}
   .autoalign{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg)}
   .autoalign input{width:14px;height:14px;accent-color:var(--signal);cursor:pointer}
   .alignreadout{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px;min-height:13px}

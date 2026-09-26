@@ -9,7 +9,7 @@ import { reviewDom } from "../helpers/review-dom.js";
 import { bindControls } from "../../src/app/bind-controls.js";
 
 const ids = [
-  "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
+  "alignAddNew", "alignAuto", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
   "boxLayer", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "exportKind", "textExportKind", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
@@ -19,7 +19,7 @@ const ids = [
   "textPrev", "textStatus", "textZoom1", "textZoomFit", "textZoomIn", "textZoomOut",
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
-  "zoomLabel", "zoomOut", "minimap", "minimapCanvas",
+  "zoomLabel", "zoomOut", "minimap", "minimapCanvas", "pageMapNotice",
 ];
 
 function element(id) {
@@ -106,7 +106,7 @@ test("an opened review group renders its 72 DPI thumbnails using the index Worke
   await vi.waitFor(() => expect(app.state.review.thumbnailsByPage.get(1)?.get("change-1"))
     .toBe("data:image/png;base64,crop"));
   expect(dependencies.renderDiffPage.mock.calls[0][0].comparison.dpi).toBe(72);
-  expect(lanes.map(lane => lane.run.mock.calls.length)).toEqual([0, 0, 1]);
+  expect(lanes.map(lane => lane.run.mock.calls.length)).toEqual([0, 0, 1, 0]);
   expect(document.getElementById("reviewList").querySelector("img").src).toBe("data:image/png;base64,crop");
 });
 
@@ -199,7 +199,7 @@ function fakeDependencies(overrides = {}) {
     createDocumentController: vi.fn(({ onReady, onLoadAccepted, confirmDiscard }) => {
       expect(() => onReady()).not.toThrow();
       expect(() => onLoadAccepted({ documentGeneration: 1 })).not.toThrow();
-      expect(confirmDiscard()).toBe(true);
+      expect(() => confirmDiscard()).not.toThrow();
       return controller("documents");
     }),
     createCanvas: vi.fn(), createWhiteCanvas: vi.fn(), downloadBlob: vi.fn(),
@@ -213,6 +213,7 @@ function fakeDependencies(overrides = {}) {
     applyInvalidatingChange: vi.fn(() => true),
     createMinimapController: vi.fn(() => ({ refreshSource() {}, render() {},
       pointerDown() {}, pointerMove() {}, pointerUp() {}, pointerCancel() {} })),
+    createPageMappingController: vi.fn(() => ({ run: vi.fn(async () => null) })),
     ...overrides,
   };
 }
@@ -975,4 +976,103 @@ test("Escape closes a narrow open drawer only when not creating or editing", asy
     key: "Escape", preventDefault, target: { tagName: "BUTTON" },
   });
   expect(desktop.state.review.panelOpen).toBe(true);
+});
+
+function pageMappingApp({ run, confirm = () => true } = {}) {
+  const document = fakeDocument();
+  const toggles = [];
+  document.getElementById("alignAuto").classList = { toggle: (name, on) => toggles.push([name, on]) };
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createPageMappingController: vi.fn(() => ({ run })),
+    createBoxEditorController: vi.fn(() => ({
+      confirmDiscard: confirm, syncInvalidated() {}, cancelDrag() {}, startEdit: () => true,
+      stopEditing() {}, deleteById: () => true, draw() {},
+    })),
+  });
+  const window = { confirm: () => true, console: { error: vi.fn() }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  Object.assign(app.state.documents, {
+    oldDoc: { numPages: 3 }, newDoc: { numPages: 4 }, pages: 4,
+    oldSequence: [0, 1, 2], newSequence: [0, 1, 2, 3], alignmentOps: [],
+  });
+  const { appController } = dependencies.bindControls.mock.calls[0][0];
+  const { onReady } = dependencies.createDocumentController.mock.calls[0][0];
+  return { app, appController, onReady, document, toggles, window, dependencies };
+}
+
+const inserted = { oldSequence: [0, 1, null, 2], newSequence: [0, 1, 2, 3], similarity: [1, 1, null, 0.62] };
+
+test("loading documents with different page counts suggests automatic page mapping", () => {
+  const { onReady, document, toggles } = pageMappingApp({ run: vi.fn() });
+  onReady();
+  expect(document.getElementById("pageMapNotice").textContent)
+    .toBe("ページ数が異なります（旧 3／新 4）。自動でページ整列できます");
+  expect(toggles.at(-1)).toEqual(["suggest", true]);
+  expect(document.getElementById("alignAuto").disabled).toBe(false);
+});
+
+test("automatic page mapping applies before rendering and one undo restores the previous order", async () => {
+  const { app, appController, document, toggles } = pageMappingApp({ run: vi.fn(async () => inserted) });
+  await appController.autoMapPages();
+  expect(app.state.documents.oldSequence).toEqual([0, 1, null, 2]);
+  expect(app.state.documents.pages).toBe(4);
+  expect(app.state.documents.alignmentOps).toEqual([
+    { kind: "auto", oldSequence: [0, 1, 2], newSequence: [0, 1, 2, 3] },
+  ]);
+  expect(document.getElementById("pageMapNotice").textContent)
+    .toBe("新 P3 を追加と判定。類似度が低い対応：スロット 4（62%）");
+  expect(toggles.at(-1)).toEqual(["suggest", false]);
+  expect(document.getElementById("alignUndo").disabled).toBe(false);
+
+  await appController.undoAlignment();
+  expect(app.state.documents.oldSequence).toEqual([0, 1, 2]);
+  expect(app.state.documents.newSequence).toEqual([0, 1, 2, 3]);
+  expect(app.state.documents.alignmentOps).toEqual([]);
+});
+
+// Break: 自動整列の後の手動整列を Undo すると、自動整列の結果まで巻き戻る。
+test("manual alignment after auto mapping undoes one layer at a time", async () => {
+  const { app, appController } = pageMappingApp({ run: vi.fn(async () => inserted) });
+  await appController.autoMapPages();
+  app.state.documents.newSequence.splice(1, 0, null);
+  app.state.documents.alignmentOps.push({ side: "new", slot: 1 });
+  await appController.undoAlignment();
+  expect(app.state.documents.newSequence).toEqual([0, 1, 2, 3]);
+  expect(app.state.documents.oldSequence).toEqual([0, 1, null, 2]);
+  await appController.undoAlignment();
+  expect(app.state.documents.oldSequence).toEqual([0, 1, 2]);
+});
+
+test("a mapping equal to the current order records nothing", async () => {
+  const run = vi.fn(async () => ({ oldSequence: [0, 1, 2], newSequence: [0, 1, 2, 3], similarity: [] }));
+  const { app, appController, document } = pageMappingApp({ run });
+  await appController.autoMapPages();
+  expect(app.state.documents.alignmentOps).toEqual([]);
+  expect(document.getElementById("pageMapNotice").textContent).toBe("変更はありませんでした");
+});
+
+test("declining to discard edited boxes leaves the order and history unchanged", async () => {
+  const { app, appController } = pageMappingApp({ run: vi.fn(async () => inserted), confirm: () => false });
+  await appController.autoMapPages();
+  expect(app.state.documents.oldSequence).toEqual([0, 1, 2]);
+  expect(app.state.documents.alignmentOps).toEqual([]);
+});
+
+test("a page failure aborts without changing the order", async () => {
+  const failure = Object.assign(new Error("broken"), { side: "new", pageIndex: 6 });
+  const { app, appController, document, window } = pageMappingApp({ run: vi.fn(async () => { throw failure; }) });
+  await appController.autoMapPages();
+  expect(app.state.documents.oldSequence).toEqual([0, 1, 2]);
+  expect(document.getElementById("pageMapNotice").textContent)
+    .toBe("新版 P7 の解析に失敗したため自動整列を中止しました");
+  expect(window.console.error).toHaveBeenCalled();
+  expect(document.getElementById("alignAuto").disabled).toBe(false);
+});
+
+test("a stale mapping result is discarded silently", async () => {
+  const { app, appController } = pageMappingApp({ run: vi.fn(async () => null) });
+  await appController.autoMapPages();
+  expect(app.state.documents.oldSequence).toEqual([0, 1, 2]);
+  expect(app.state.documents.alignmentOps).toEqual([]);
 });

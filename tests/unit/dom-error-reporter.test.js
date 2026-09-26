@@ -3,7 +3,7 @@ import { collectDom } from "../../src/app/dom.js";
 import { createErrorReporter } from "../../src/app/error-reporter.js";
 
 const ids = [
-  "alignAddNew", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
+  "alignAddNew", "alignAuto", "alignDelOld", "alignReadout", "alignUndo", "autoAlign",
   "boxLayer", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "exportKind", "textExportKind", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
@@ -17,7 +17,7 @@ const ids = [
   "reviewPanel", "reviewRail", "reviewRailToggle", "reviewBackdrop", "reviewPrev", "reviewNext",
   "reviewTotal", "reviewProgress", "reviewIndexStatus", "reviewNotice", "reviewList",
   "reviewAdd", "reviewReset",
-  "minimap", "minimapCanvas",
+  "minimap", "minimapCanvas", "pageMapNotice",
 ];
 
 function fakeDocument({ missing, missingSelector } = {}) {
