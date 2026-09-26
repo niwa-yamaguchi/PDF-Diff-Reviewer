@@ -42,3 +42,24 @@ test("MATCH_MIN separates revised sheets from other sheets sharing the frame", a
   expect(Math.max(...cross)).toBeLessThan(matrix.matchMin - 0.05);
   expect(Math.min(...same)).toBeGreaterThan(matrix.matchMin + 0.05);
 });
+
+test("suggests, applies and undoes automatic page mapping", async ({ page }) => {
+  await page.goto("/");
+  await page.setInputFiles("#fileOld", join(fixtures, "sheets-old.pdf"));
+  await page.setInputFiles("#fileNew", join(fixtures, "sheets-new.pdf"));
+  await expect(page.locator("#pageMapNotice"))
+    .toHaveText("ページ数が異なります（旧 5／新 6）。自動でページ整列できます");
+  await expect(page.locator("#alignAuto")).toHaveClass(/suggest/);
+
+  await page.locator("#alignAuto").click();
+  await expect(page.locator("#pageMapNotice")).toContainText("新 P3 を追加と判定", { timeout: 60_000 });
+  await expect(page.locator("#pageMapNotice")).not.toContainText("削除");
+
+  await page.locator("#run").click();
+  await expect(page.locator("#status")).toHaveText(/差分を表示中|差分なし/);
+  await expect(page.locator("#pageLabel")).toContainText("1 / 6");
+
+  await page.locator("#alignUndo").click();
+  await expect(page.locator("#pageLabel")).toContainText("1 / 6");
+  await expect(page.locator("#alignUndo")).toBeDisabled();
+});

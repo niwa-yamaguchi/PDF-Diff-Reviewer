@@ -123,11 +123,11 @@
       <div class="field">
         <span class="label">ページ整列（空白の挿入で再整列）</span>
         <div class="alignpad">
+          <button id="alignAuto" class="full" disabled title="全ページの類似度から新旧ページの対応を求め、空白を挿入して整列">自動でページ整列</button>
+          <span id="pageMapNotice" class="full pagemap-notice" role="status"></span>
           <button id="alignDelOld" disabled title="このスロットの旧ページが削除された扱いにし、新側に空白を挿入して以降を再整列">この旧ページは削除されたページ</button>
           <button id="alignAddNew" disabled title="このスロットの新ページが追加された扱いにし、旧側に空白を挿入して以降を再整列">この新ページは追加されたページ</button>
           <button id="alignUndo" class="full" disabled title="直前の整列操作を取り消す">↩ 取り消す</button>
-          <button id="alignAuto" class="full" disabled title="全ページの類似度から新旧ページの対応を求め、空白を挿入して整列">自動でページ整列</button>
-          <span id="pageMapNotice" class="full pagemap-notice" role="status"></span>
         </div>
         <span class="hint" style="font-size:10px;color:var(--muted)">※PDFを読み込み直すと整列はリセットされます</span>
       </div>
