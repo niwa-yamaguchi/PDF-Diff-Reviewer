@@ -303,5 +303,11 @@ export function createVisualController({
     return showPage(state.documents.currentPage);
   }
 
-  return { showPage, flipToggleSide, refreshAfterAlign, cancelPendingPage };
+  return {
+    showPage,
+    flipToggleSide,
+    refreshAfterAlign,
+    cancelPendingPage,
+    isRenderPending: () => activeInteractiveTicket !== null,
+  };
 }

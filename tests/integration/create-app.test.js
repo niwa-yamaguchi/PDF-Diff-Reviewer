@@ -191,7 +191,7 @@ function fakeDependencies(overrides = {}) {
     })),
     createVisualController: vi.fn(({ drawBoxes }) => {
       expect(() => drawBoxes()).not.toThrow();
-      return controller("visual");
+      return { ...controller("visual"), isRenderPending: () => false };
     }),
     createTextController: vi.fn(() => controller("text")),
     createExportController: vi.fn(() => ({ ...controller("export"), invalidateDocuments() {} })),
@@ -978,7 +978,7 @@ test("Escape closes a narrow open drawer only when not creating or editing", asy
   expect(desktop.state.review.panelOpen).toBe(true);
 });
 
-function pageMappingApp({ run, confirm = () => true } = {}) {
+function pageMappingApp({ run, confirm = () => true, dependencyOverrides = {} } = {}) {
   const document = fakeDocument();
   const toggles = [];
   document.getElementById("alignAuto").classList = { toggle: (name, on) => toggles.push([name, on]) };
@@ -990,6 +990,7 @@ function pageMappingApp({ run, confirm = () => true } = {}) {
       stopEditing() {}, deleteById: () => true, draw() {},
     })),
     createDocumentController: vi.fn(() => ({ name: "documents" })),
+    ...dependencyOverrides,
   });
   const window = { confirm: () => true, console: { error: vi.fn() }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
   const app = createApp({ document, window, dependencies });
@@ -998,8 +999,10 @@ function pageMappingApp({ run, confirm = () => true } = {}) {
     oldSequence: [0, 1, 2], newSequence: [0, 1, 2, 3], alignmentOps: [],
   });
   const { appController } = dependencies.bindControls.mock.calls[0][0];
-  const { onReady } = dependencies.createDocumentController.mock.calls[0][0];
-  return { app, appController, onReady, document, toggles, window, dependencies };
+  const { onReady, onLoadAccepted, onLoadRestored } = dependencies.createDocumentController.mock.calls[0][0];
+  return {
+    app, appController, onReady, onLoadAccepted, onLoadRestored, document, toggles, window, dependencies,
+  };
 }
 
 const inserted = { oldSequence: [0, 1, null, 2], newSequence: [0, 1, 2, 3], similarity: [1, 1, null, 0.62] };
@@ -1010,6 +1013,20 @@ test("loading documents with different page counts suggests automatic page mappi
   expect(document.getElementById("pageMapNotice").textContent)
     .toBe("ページ数が異なります（旧 3／新 4）。自動でページ整列できます");
   expect(toggles.at(-1)).toEqual(["suggest", true]);
+  expect(document.getElementById("alignAuto").disabled).toBe(false);
+});
+
+// Break: 差し替え読み込み中は generation だけでは stale を検知できないので、
+// #alignAuto を押せる状態のままにすると古い文書の解析結果が新しい文書に適用される。
+test("a pending reload disables automatic page mapping until it settles", () => {
+  const { onReady, onLoadAccepted, onLoadRestored, document } = pageMappingApp({ run: vi.fn() });
+  onReady();
+  expect(document.getElementById("alignAuto").disabled).toBe(false);
+
+  onLoadAccepted({ documentGeneration: 2 });
+  expect(document.getElementById("alignAuto").disabled).toBe(true);
+
+  onLoadRestored();
   expect(document.getElementById("alignAuto").disabled).toBe(false);
 });
 
@@ -1030,6 +1047,44 @@ test("automatic page mapping applies before rendering and one undo restores the 
   expect(app.state.documents.oldSequence).toEqual([0, 1, 2]);
   expect(app.state.documents.newSequence).toEqual([0, 1, 2, 3]);
   expect(app.state.documents.alignmentOps).toEqual([]);
+});
+
+// Break: 描画済みの状態に自動整列を適用しても再描画パスが通ることを確かめないと、
+// 未描画時の分岐だけ直して描画済みパスを壊しても気づけない。
+test("automatic page mapping applied after rendering refreshes through the visual controller", async () => {
+  const refreshAfterAlign = vi.fn(async () => ({ committed: true }));
+  const { app, appController } = pageMappingApp({
+    run: vi.fn(async () => inserted),
+    dependencyOverrides: {
+      createVisualController: () => ({ refreshAfterAlign, isRenderPending: () => false }),
+    },
+  });
+  app.state.visual.rendered = true;
+
+  await appController.autoMapPages();
+
+  expect(refreshAfterAlign).toHaveBeenCalledTimes(1);
+  expect(app.state.documents.oldSequence).toEqual([0, 1, null, 2]);
+});
+
+// Break: 手動整列の Undo がページ数不一致の提案表示まで無条件に消してしまう。
+test("undoing a manual alignment keeps the page-count suggestion notice", async () => {
+  const refreshAfterAlign = vi.fn(async () => ({ committed: true }));
+  const { app, appController, onReady, document } = pageMappingApp({
+    run: vi.fn(),
+    dependencyOverrides: {
+      createVisualController: () => ({ refreshAfterAlign, isRenderPending: () => false }),
+    },
+  });
+  onReady();
+  const notice = document.getElementById("pageMapNotice").textContent;
+  expect(notice).toBe("ページ数が異なります（旧 3／新 4）。自動でページ整列できます");
+
+  app.state.visual.rendered = true;
+  await appController.alignAddNew();
+  await appController.undoAlignment();
+
+  expect(document.getElementById("pageMapNotice").textContent).toBe(notice);
 });
 
 // Break: 自動整列の後の手動整列を Undo すると、自動整列の結果まで巻き戻る。
@@ -1076,4 +1131,60 @@ test("a stale mapping result is discarded silently", async () => {
   await appController.autoMapPages();
   expect(app.state.documents.oldSequence).toEqual([0, 1, 2]);
   expect(app.state.documents.alignmentOps).toEqual([]);
+});
+
+function diffPageResult(pageLabel) {
+  return {
+    canvas: { width: 100, height: 100 },
+    boxes: [],
+    autoBoxes: undefined,
+    stats: { removed: "削除 0", added: "追加 0", boxes: "変更箇所 0" },
+    status: "差分を表示中",
+    pageLabel,
+  };
+}
+
+function autoMapDuringFirstRenderApp({ mappingResult }) {
+  const document = fakeDocument();
+  const out = document.getElementById("out");
+  out.getContext = () => ({ clearRect() {}, drawImage() {} });
+  const renderDiffPage = vi.fn()
+    .mockImplementationOnce(() => new Promise(resolve => { renderDiffPage.resolveFirst = resolve; }))
+    .mockResolvedValue(diffPageResult("1 / 3（再描画）"));
+  const dependencies = fakeDependencies({
+    bindControls: vi.fn(),
+    createVisualController,
+    renderDiffPage,
+    createPageMappingController: vi.fn(() => ({ run: vi.fn(async () => mappingResult) })),
+  });
+  const window = { confirm: () => true, console: { error: vi.fn() }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
+  const app = createApp({ document, window, dependencies });
+  Object.assign(app.state.documents, {
+    oldDoc: { numPages: 2 }, newDoc: { numPages: 3 }, pages: 2,
+    oldSequence: [0, 1], newSequence: [0, 1], alignmentOps: [],
+  });
+  const { appController } = dependencies.bindControls.mock.calls[0][0];
+  return { app, appController, document, renderDiffPage };
+}
+
+// Break: 最初の描画中に自動整列が終わると invalidatePageAlignment が世代を進め、
+// 描画中だった showPage は not-current のまま何もコミットせず、ステータスが
+// 進捗表示に固まって二度目のクリックが必要になる。
+test("automatic page mapping completed during the first render restarts it instead of stalling", async () => {
+  const mappingResult = { oldSequence: [0, 1, null], newSequence: [0, 1, 2], similarity: [1, 1, null] };
+  const { app, appController, document, renderDiffPage } = autoMapDuringFirstRenderApp({ mappingResult });
+
+  const runPromise = appController.runVisual();
+  await appController.autoMapPages();
+
+  expect(renderDiffPage).toHaveBeenCalledTimes(2);
+  expect(app.state.visual.rendered).toBe(true);
+  expect(document.getElementById("pageLabel").textContent).toBe("1 / 3（再描画）");
+  expect(document.getElementById("status").textContent).toBe("差分を表示中");
+
+  renderDiffPage.resolveFirst(diffPageResult("stale"));
+  await runPromise;
+
+  expect(document.getElementById("pageLabel").textContent).toBe("1 / 3（再描画）");
+  expect(document.getElementById("status").textContent).toBe("差分を表示中");
 });

@@ -21,8 +21,12 @@ export function createPageMappingController({
 
   async function run() {
     const generation = state.documents.generation;
-    const stale = () => state.documents.generation !== generation;
     const docs = { old: state.documents.oldDoc, new: state.documents.newDoc };
+    // ページ読み込み中は generation が上がらないまま oldDoc/newDoc が差し替わるため、
+    // どちらの変化も stale の判定に含める。
+    const stale = () => state.documents.generation !== generation
+      || state.documents.oldDoc !== docs.old
+      || state.documents.newDoc !== docs.new;
     const masks = { old: [], new: [] };
     const total = docs.old.numPages + docs.new.numPages;
     let done = 0;

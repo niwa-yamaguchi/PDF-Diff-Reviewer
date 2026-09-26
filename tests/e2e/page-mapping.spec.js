@@ -59,7 +59,14 @@ test("suggests, applies and undoes automatic page mapping", async ({ page }) => 
   await expect(page.locator("#status")).toHaveText(/差分を表示中|差分なし/);
   await expect(page.locator("#pageLabel")).toContainText("1 / 6");
 
+  // 挿入されたスロット（3枚目）で並びが効いていることを、旧側が空白になる
+  // ラベル表示で確認する。Undo で元の 1 対 1 の対応に戻ることも合わせて見る。
+  await page.locator("#next").click();
+  await expect(page.locator("#pageLabel")).toContainText("2 / 6");
+  await page.locator("#next").click();
+  await expect(page.locator("#pageLabel")).toContainText("3 / 6（旧 空白 ↔ 新P3）");
+
   await page.locator("#alignUndo").click();
-  await expect(page.locator("#pageLabel")).toContainText("1 / 6");
+  await expect(page.locator("#pageLabel")).toContainText("3 / 6（旧P3 ↔ 新P3）");
   await expect(page.locator("#alignUndo")).toBeDisabled();
 });

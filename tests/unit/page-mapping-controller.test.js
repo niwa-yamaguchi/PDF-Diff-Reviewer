@@ -73,3 +73,16 @@ test("a failure caused by document replacement resolves null instead of reportin
   });
   await expect(controller.run()).resolves.toBeNull();
 });
+
+// Break: 差し替えが settleBatch を経て generation を戻さないまま新しい文書を差し込むと、
+// 古い解析結果が新しい文書に適用されてしまう。
+test("a document swap mid-run without a generation bump resolves null without mapping", async () => {
+  const { controller, state, runJob } = setup();
+  const replacementNewDoc = { numPages: 3 };
+  runJob.mockImplementation(async type => {
+    state.documents.newDoc = replacementNewDoc;
+    return type === "pageSignature" ? new Uint8Array(1) : {};
+  });
+  await expect(controller.run()).resolves.toBeNull();
+  expect(runJob.mock.calls.some(([type]) => type === "pageMap")).toBe(false);
+});

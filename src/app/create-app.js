@@ -631,12 +631,16 @@ export function createApp({ document, window, dependencies = {} }) {
       reviewController.cancelIndex();
       pageMapLane.cancel();
       showPageMapNotice("");
+      // 読み込み中は generation を跨いでも oldDoc/newDoc が古いままなので、
+      // 完了 (onReady) か復元 (onLoadRestored) まで自動整列を開始させない。
+      dom.alignAuto.disabled = true;
       textController?.invalidateDocuments?.(documentGeneration);
       exportController?.invalidateDocuments?.(documentGeneration);
     },
     onLoadRestored() {
       if (state.visual.rendered) void reviewController.resumeIndex();
       reviewView.render({ preserveCommentFocus: true });
+      updateAlignButtons();
     },
     confirmDiscard: () => boxEditorController?.confirmDiscard?.() ?? true,
   });
@@ -650,6 +654,9 @@ export function createApp({ document, window, dependencies = {} }) {
 
   async function refreshPageAlignment() {
     if (!state.visual.rendered) {
+      // 最初の描画がまだ進行中なら、この後の invalidatePageAlignment がその描画を
+      // not-current にして黙って捨てるので、新しい並びで自分から描き直す。
+      const renderInFlight = visualController.isRenderPending();
       reviewController.cancelIndex();
       deps.invalidatePageAlignment(state);
       state.documents.pages = Math.max(
@@ -658,6 +665,7 @@ export function createApp({ document, window, dependencies = {} }) {
       );
       state.documents.currentPage = 0;
       updateAlignButtons();
+      if (renderInFlight) return visualController.showPage(state.documents.currentPage);
       return;
     }
     await visualController.refreshAfterAlign({
@@ -971,7 +979,9 @@ export function createApp({ document, window, dependencies = {} }) {
           : state.documents.newSequence;
         if (sequence[operation.slot] === null) sequence.splice(operation.slot, 1);
       }
-      showPageMapNotice("");
+      // 手動操作の取り消しはページ数不一致の提案表示を消さない。自動整列を
+      // 取り消したときだけ、その結果の通知をクリアする。
+      if (operation.kind === "auto") showPageMapNotice("");
       await refreshPageAlignment();
     },
     previousVisualPage() {
