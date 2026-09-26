@@ -16,6 +16,8 @@ import { createCanvas, createWhiteCanvas } from "../platform/canvas.js";
 import { downloadBlob } from "../platform/download.js";
 import { pdfjsLib } from "../platform/pdfjs.js";
 import { createDocumentController } from "../features/documents/document-controller.js";
+import { createPageMappingController } from "../features/documents/page-mapping-controller.js";
+import { describeMapping } from "../core/page-mapping/page-mapping.js";
 import { framePlan, pageLabelText, sequenceIndex } from "../features/documents/page-layout.js";
 import {
   alignProbeScale,
@@ -59,6 +61,8 @@ function withMaximumDpi(snapshot, maximumDpi) {
   });
 }
 
+const sameSequence = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+
 const DEFAULT_DEPENDENCIES = Object.freeze({
   bindControls,
   createAppState,
@@ -69,6 +73,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   pdfjsLib,
   jsPDF,
   createDocumentController,
+  createPageMappingController,
   framePlan,
   pageLabelText,
   sequenceIndex,
@@ -129,6 +134,7 @@ export function createApp({ document, window, dependencies = {} }) {
   let activeInteractions = 0;
   let backgroundPaused = false;
   let backgroundResumeTimer = null;
+  let pageMapRunning = false;
 
   function pauseBackground() {
     if (backgroundPaused || !reviewController) return;
@@ -284,10 +290,17 @@ export function createApp({ document, window, dependencies = {} }) {
   });
 
   function updateAlignButtons() {
-    const on = Boolean(state.documents.oldDoc && state.documents.newDoc) && state.visual.rendered;
+    const loaded = Boolean(state.documents.oldDoc && state.documents.newDoc);
+    const on = loaded && state.visual.rendered && !pageMapRunning;
+    dom.alignAuto.disabled = !loaded || pageMapRunning;
     dom.alignAddNew.disabled = !on;
     dom.alignDelOld.disabled = !on;
-    dom.alignUndo.disabled = !on || state.documents.alignmentOps.length === 0;
+    dom.alignUndo.disabled = !loaded || pageMapRunning || state.documents.alignmentOps.length === 0;
+  }
+
+  function showPageMapNotice(text, { suggest = false } = {}) {
+    dom.pageMapNotice.textContent = text;
+    dom.alignAuto.classList.toggle("suggest", suggest);
   }
 
   function updateAlignReadout() {
@@ -364,6 +377,15 @@ export function createApp({ document, window, dependencies = {} }) {
   const interactiveLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
   const exportLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
   const indexLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
+  const pageMapLane = deps.createWorkerLane({ createWorker: deps.createDiffWorker });
+  const pageMappingController = deps.createPageMappingController({
+    state,
+    pageSizePt: deps.pageSizePt,
+    renderPageCanvas: deps.renderPageCanvas,
+    canvasToRgba: deps.canvasToRgba,
+    runJob: (type, payload, transfer) => pageMapLane.run(type, payload, { transfer }),
+    onProgress: (done, total) => showPageMapNotice(`ページを解析中… ${done}/${total}`),
+  });
 
   // 描画1回につき1セッション。cancel() 以前に始まった描画からのジョブは
   // レーンへ到達した時点で RenderCancelled となり、現行の描画がレーンを取れる。
@@ -596,15 +618,29 @@ export function createApp({ document, window, dependencies = {} }) {
     onReady() {
       boxEditorController?.syncInvalidated?.();
       reviewView.render({ preserveCommentFocus: true });
+      updateAlignButtons();
+      const { oldDoc, newDoc } = state.documents;
+      if (oldDoc && newDoc && oldDoc.numPages !== newDoc.numPages) {
+        showPageMapNotice(
+          `ページ数が異なります（旧 ${oldDoc.numPages}／新 ${newDoc.numPages}）。自動でページ整列できます`,
+          { suggest: true },
+        );
+      }
     },
     onLoadAccepted: ({ documentGeneration }) => {
       reviewController.cancelIndex();
+      pageMapLane.cancel();
+      showPageMapNotice("");
+      // 読み込み中は generation を跨いでも oldDoc/newDoc が古いままなので、
+      // 完了 (onReady) か復元 (onLoadRestored) まで自動整列を開始させない。
+      dom.alignAuto.disabled = true;
       textController?.invalidateDocuments?.(documentGeneration);
       exportController?.invalidateDocuments?.(documentGeneration);
     },
     onLoadRestored() {
       if (state.visual.rendered) void reviewController.resumeIndex();
       reviewView.render({ preserveCommentFocus: true });
+      updateAlignButtons();
     },
     confirmDiscard: () => boxEditorController?.confirmDiscard?.() ?? true,
   });
@@ -615,6 +651,32 @@ export function createApp({ document, window, dependencies = {} }) {
     reviewView.render({ preserveCommentFocus: true });
     if (state.visual.rendered && state.ui.topMode === "visual") void reviewController.startIndex();
   };
+
+  async function refreshPageAlignment() {
+    if (!state.visual.rendered) {
+      // 最初の描画がまだ進行中なら、この後の invalidatePageAlignment がその描画を
+      // not-current にして黙って捨てるので、新しい並びで自分から描き直す。
+      const renderInFlight = visualController.isRenderPending();
+      reviewController.cancelIndex();
+      deps.invalidatePageAlignment(state);
+      state.documents.pages = Math.max(
+        state.documents.oldSequence.length,
+        state.documents.newSequence.length,
+      );
+      state.documents.currentPage = 0;
+      updateAlignButtons();
+      if (renderInFlight) return visualController.showPage(state.documents.currentPage);
+      return;
+    }
+    await visualController.refreshAfterAlign({
+      invalidatePageAlignment: state => {
+        reviewController.cancelIndex();
+        deps.invalidatePageAlignment(state);
+      },
+      syncInvalidatedBoxEditor,
+    });
+  }
+
   function applyComparisonSettingChange(update, invalidate) {
     const applied = deps.applyInvalidatingChange(state, {
       confirmDiscard: confirmDiscardBoxEdits,
@@ -856,45 +918,71 @@ export function createApp({ document, window, dependencies = {} }) {
       scheduleViewportSyncIfLayoutChanged();
       return changing;
     },
+    async autoMapPages() {
+      if (pageMapRunning || !state.documents.oldDoc || !state.documents.newDoc) return;
+      pageMapRunning = true;
+      updateAlignButtons();
+      showPageMapNotice("ページを解析中…");
+      let result;
+      try {
+        result = await pageMappingController.run();
+      } catch (error) {
+        window.console.error("自動ページ整列", error);
+        showPageMapNotice(error?.pageIndex == null
+          ? "自動整列に失敗しました"
+          : `${error.side === "old" ? "旧版" : "新版"} P${error.pageIndex + 1} の解析に失敗したため自動整列を中止しました`);
+        return;
+      } finally {
+        pageMapRunning = false;
+        updateAlignButtons();
+      }
+      if (!result) return;
+      const { oldSequence, newSequence } = state.documents;
+      if (sameSequence(result.oldSequence, oldSequence) && sameSequence(result.newSequence, newSequence)) {
+        showPageMapNotice("変更はありませんでした");
+        return;
+      }
+      if (!confirmDiscardBoxEdits()) {
+        showPageMapNotice("");
+        return;
+      }
+      state.documents.alignmentOps.push({
+        kind: "auto", oldSequence: [...oldSequence], newSequence: [...newSequence],
+      });
+      state.documents.oldSequence = [...result.oldSequence];
+      state.documents.newSequence = [...result.newSequence];
+      showPageMapNotice(describeMapping(result));
+      await refreshPageAlignment();
+    },
     async alignAddNew() {
       if (!state.visual.rendered || !confirmDiscardBoxEdits()) return;
       state.documents.oldSequence.splice(state.documents.currentPage, 0, null);
       state.documents.alignmentOps.push({ side: "old", slot: state.documents.currentPage });
-      await visualController.refreshAfterAlign({
-        invalidatePageAlignment: state => {
-          reviewController.cancelIndex();
-          deps.invalidatePageAlignment(state);
-        },
-        syncInvalidatedBoxEditor,
-      });
+      await refreshPageAlignment();
     },
     async alignDeleteOld() {
       if (!state.visual.rendered || !confirmDiscardBoxEdits()) return;
       state.documents.newSequence.splice(state.documents.currentPage, 0, null);
       state.documents.alignmentOps.push({ side: "new", slot: state.documents.currentPage });
-      await visualController.refreshAfterAlign({
-        invalidatePageAlignment: state => {
-          reviewController.cancelIndex();
-          deps.invalidatePageAlignment(state);
-        },
-        syncInvalidatedBoxEditor,
-      });
+      await refreshPageAlignment();
     },
     async undoAlignment() {
       const operation = state.documents.alignmentOps[state.documents.alignmentOps.length - 1];
-      if (!operation || !confirmDiscardBoxEdits()) return;
+      if (!operation || pageMapRunning || !confirmDiscardBoxEdits()) return;
       state.documents.alignmentOps.pop();
-      const sequence = operation.side === "old"
-        ? state.documents.oldSequence
-        : state.documents.newSequence;
-      if (sequence[operation.slot] === null) sequence.splice(operation.slot, 1);
-      await visualController.refreshAfterAlign({
-        invalidatePageAlignment: state => {
-          reviewController.cancelIndex();
-          deps.invalidatePageAlignment(state);
-        },
-        syncInvalidatedBoxEditor,
-      });
+      if (operation.kind === "auto") {
+        state.documents.oldSequence = operation.oldSequence;
+        state.documents.newSequence = operation.newSequence;
+      } else {
+        const sequence = operation.side === "old"
+          ? state.documents.oldSequence
+          : state.documents.newSequence;
+        if (sequence[operation.slot] === null) sequence.splice(operation.slot, 1);
+      }
+      // 手動操作の取り消しはページ数不一致の提案表示を消さない。自動整列を
+      // 取り消したときだけ、その結果の通知をクリアする。
+      if (operation.kind === "auto") showPageMapNotice("");
+      await refreshPageAlignment();
     },
     previousVisualPage() {
       boxEditorController.stopEditing();

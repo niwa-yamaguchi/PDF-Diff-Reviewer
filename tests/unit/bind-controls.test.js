@@ -97,7 +97,7 @@ test("binds controls once and delegates events to their owning public handlers",
     "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle",
     "toggleFlip", "boxToggle", "boxEdit", "boxDel", "boxReset", "dpi", "th",
     "tolerance", "nudgeReset", "quadReset", "rotReset", "scaleReset", "autoAlign",
-    "run", "alignAddNew", "alignDelOld", "alignUndo", "prev", "next", "dlPng",
+    "run", "alignAuto", "alignAddNew", "alignDelOld", "alignUndo", "prev", "next", "dlPng",
     "dlPdf", "dlTextPng", "dlTextPdf", "exportKind", "textExportKind", "runText", "textPrev", "textNext",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",
@@ -154,6 +154,8 @@ test("binds controls once and delegates events to their owning public handlers",
   expect(textRenderer.handleWheel).toHaveBeenCalledWith(dom.oldTextWrap, move);
   dom.dlPng.emit("click");
   expect(exportController.saveVisualPng).toHaveBeenCalledTimes(1);
+  dom.alignAuto.emit("click");
+  expect(appController.autoMapPages).toHaveBeenCalledTimes(1);
   dom.modeDiff.emit("click");
   expect(appController.setDiffMode).toHaveBeenCalledTimes(1);
   windowTarget.emit("resize");
@@ -175,7 +177,7 @@ test("replaces every active event binding when the same document is bound again"
     "fileOld", "fileNew", "dropOld", "dropNew", "modeDiff", "modeToggle",
     "toggleFlip", "boxToggle", "boxEdit", "boxDel", "boxReset", "dpi", "th",
     "tolerance", "nudgeReset", "quadReset", "rotReset", "scaleReset", "autoAlign",
-    "run", "alignAddNew", "alignDelOld", "alignUndo", "prev", "next", "dlPng",
+    "run", "alignAuto", "alignAddNew", "alignDelOld", "alignUndo", "prev", "next", "dlPng",
     "dlPdf", "dlTextPng", "dlTextPdf", "exportKind", "textExportKind", "runText", "textPrev", "textNext",
     "topVisual", "topText", "zoomIn", "zoomOut", "zoomFit", "zoom1",
     "textZoomIn", "textZoomOut", "textZoomFit", "textZoom1",

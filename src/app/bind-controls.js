@@ -147,6 +147,7 @@ export function bindControls({
   listen(dom.autoAlign, "change", event => appController.setAutoAlign(event));
 
   listen(dom.run, "click", () => appController.runVisual());
+  listen(dom.alignAuto, "click", () => appController.autoMapPages());
   listen(dom.alignAddNew, "click", () => appController.alignAddNew());
   listen(dom.alignDelOld, "click", () => appController.alignDeleteOld());
   listen(dom.alignUndo, "click", () => appController.undoAlignment());
