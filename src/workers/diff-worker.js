@@ -1,5 +1,6 @@
 import { computeAlignment, computeQuadrant } from "../core/alignment/align-compute.js";
 import { computeDiff } from "../core/image-diff/diff-compute.js";
+import { mapPages, pageSignature } from "../core/page-mapping/page-mapping.js";
 
 function runDiff(id, payload) {
   const result = computeDiff({
@@ -14,6 +15,11 @@ const HANDLERS = {
   diff: runDiff,
   align: (id, payload) => ({ result: computeAlignment(payload), transfer: [] }),
   quadrant: (id, payload) => ({ result: computeQuadrant(payload), transfer: [] }),
+  pageSignature: (id, payload) => {
+    const mask = pageSignature(payload);
+    return { result: mask, transfer: [mask.buffer] };
+  },
+  pageMap: (id, payload) => ({ result: mapPages(payload.oldMasks, payload.newMasks), transfer: [] }),
 };
 
 self.onmessage = ({ data }) => {
