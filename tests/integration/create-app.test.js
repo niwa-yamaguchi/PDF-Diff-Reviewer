@@ -199,7 +199,7 @@ function fakeDependencies(overrides = {}) {
     createDocumentController: vi.fn(({ onReady, onLoadAccepted, confirmDiscard }) => {
       expect(() => onReady()).not.toThrow();
       expect(() => onLoadAccepted({ documentGeneration: 1 })).not.toThrow();
-      expect(() => confirmDiscard()).not.toThrow();
+      expect(confirmDiscard()).toBe(true);
       return controller("documents");
     }),
     createCanvas: vi.fn(), createWhiteCanvas: vi.fn(), downloadBlob: vi.fn(),
@@ -989,6 +989,7 @@ function pageMappingApp({ run, confirm = () => true } = {}) {
       confirmDiscard: confirm, syncInvalidated() {}, cancelDrag() {}, startEdit: () => true,
       stopEditing() {}, deleteById: () => true, draw() {},
     })),
+    createDocumentController: vi.fn(() => ({ name: "documents" })),
   });
   const window = { confirm: () => true, console: { error: vi.fn() }, getComputedStyle: () => ({ getPropertyValue: () => "#000" }) };
   const app = createApp({ document, window, dependencies });
