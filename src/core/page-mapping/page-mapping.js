@@ -17,26 +17,38 @@ function rotateMask(mask, n) {
   const out = new Uint8Array(n * n);
   for (let y = 0; y < n; y += 1) {
     for (let x = 0; x < n; x += 1) out[x * n + (n - 1 - y)] = mask[y * n + x];
-    }
+  }
   return out;
+}
+
+// 90°刻みの4回転を1回だけ作る。mapPages は同じ新マスクを旧マスク全件と
+// 比較するので、ここを呼ぶ側でマスクごとに使い回す。
+function maskRotations(mask, n) {
+  const rotations = [mask];
+  for (let k = 1; k < 4; k += 1) rotations.push(rotateMask(rotations[k - 1], n));
+  return rotations;
+}
+
+function bestRotatedSimilarity(oldMask, rotations, n) {
+  let best = 0;
+  for (const rotated of rotations) best = Math.max(best, inkIoU(oldMask, rotated, n * n));
+  return best;
 }
 
 export function pageSimilarity(oldMask, newMask) {
   const n = SIGNATURE_GRID;
-  let best = 0;
-  let rotated = newMask;
-  for (let k = 0; k < 4; k += 1) {
-    best = Math.max(best, inkIoU(oldMask, rotated, n * n));
-    rotated = rotateMask(rotated, n);
-  }
-  return best;
+  return bestRotatedSimilarity(oldMask, maskRotations(newMask, n), n);
 }
 
 // 順序を保つ系列アラインメント。空白の挿入は0点、対応は (類似度 − τ) 点。
 export function mapPages(oldMasks, newMasks, { matchMin = MATCH_MIN } = {}) {
   const m = oldMasks.length;
   const n = newMasks.length;
-  const sim = oldMasks.map(oldMask => newMasks.map(newMask => pageSimilarity(oldMask, newMask)));
+  const grid = SIGNATURE_GRID;
+  const newRotations = newMasks.map(mask => maskRotations(mask, grid));
+  const sim = oldMasks.map(oldMask => newRotations.map(
+    rotations => bestRotatedSimilarity(oldMask, rotations, grid),
+  ));
   const score = Array.from({ length: m + 1 }, () => new Float64Array(n + 1));
   for (let i = 1; i <= m; i += 1) {
     for (let j = 1; j <= n; j += 1) {
