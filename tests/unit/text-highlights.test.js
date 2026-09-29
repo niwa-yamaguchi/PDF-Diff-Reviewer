@@ -61,3 +61,23 @@ test("records line changes in document order for the diff report", () => {
   ]);
   expect(hi.changes[0].parts).toEqual([[0, "REV "], [-1, "A"], [1, "B"]]);
 });
+
+test("ignores a line break that only moved within a paragraph", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const hi = buildTextHighlights(
+    [[line("2 段垂下が有効なら、"), line("停止せずに運転します")]],
+    [[line("2 段垂下が有効なら、停止"), line("せずに運転します")]],
+  );
+  expect(hi.changes).toEqual([]);
+  expect(hi.old.size + hi.new.size).toBe(0);
+});
+
+test("ignores a space added between sentences but keeps real edits in the block", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const hi = buildTextHighlights(
+    [[line("ありません。停電のあと"), line("REV A")]],
+    [[line("ありません。 停電のあと"), line("REV B")]],
+  );
+  expect(hi.changes.map(c => [c.oldText, c.newText])).toEqual([["REV A", "REV B"]]);
+  expect(hi.old.get(0).map(e => e.token.str)).toEqual(["REV A"]);
+});
