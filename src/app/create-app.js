@@ -196,7 +196,6 @@ export function createApp({ document, window, dependencies = {} }) {
   const textColors = Object.freeze({
     removed: cssVar("--removed"),
     added: cssVar("--added-text"),
-    changed: cssVar("--changed"),
   });
   const minimapColors = Object.freeze({
     amber: cssVar("--signal"),

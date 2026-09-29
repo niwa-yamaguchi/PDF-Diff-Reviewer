@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { applyTableHighlights, detectTables } from "../../src/core/text-diff/tables.js";
 
-const tok = (str, x, y) => ({ str, off: 0, width: str.length * 5, transform: [10, 0, 0, 10, x, y] });
+const tok = (str, x, y) => ({ str, off: 0, width: str.length * 5, w: str.length * 5, transform: [10, 0, 0, 10, x, y] });
 const lines = (middleRight) => [
   { text: "A1 B1", tokens: [tok("A1", 10, 90), tok("B1", 100, 90)] },
   { text: `A2 ${middleRight}`, tokens: [tok("A2", 10, 70), tok(middleRight, 100, 70)] },
@@ -27,8 +27,9 @@ test("detects a three-row table and replaces row highlights with cell highlights
   expect(returned).toBe(hi);
   expect(hi.old.get(0).some((entry) => entry.token === oldRowToken)).toBe(false);
   expect(hi.new.get(0).some((entry) => entry.token === newRowToken)).toBe(false);
-  expect(hi.old.get(0)).toContainEqual({ token: oldLines[1].tokens[1], color: "changed" });
-  expect(hi.new.get(0)).toContainEqual({ token: newLines[1].tokens[1], color: "changed" });
+  // 追加だけなので旧版側は塗らず、新版側も足された文字だけを塗る。
+  expect(hi.old.get(0)).toEqual([]);
+  expect(hi.new.get(0)).toEqual([{ token: newLines[1].tokens[1], color: "added", start: 3, end: 10 }]);
 });
 
 const row = (left, right, y) => ({ text: `${left} ${right}`, tokens: [tok(left, 10, y), tok(right, 100, y)] });
@@ -77,4 +78,24 @@ test("replaces line change records inside a diffed table with one record per cha
   const joined = (parts, keep) => parts.filter(([op]) => keep(op)).map(([, text]) => text).join("");
   expect(joined(hi.changes[0].parts, op => op <= 0)).toBe("A2 B2");
   expect(joined(hi.changes[0].parts, op => op >= 0)).toBe("A2 X2");
+});
+
+test("keeps a paragraph split into items by glyph changes out of the table", () => {
+  // 本文は「⾯」のような字形の違う文字で項目が分かれるが、項目どうしは詰まっている。
+  const para = { text: "設定画⾯では", tokens: [tok("設定画", 10, 110), tok("⾯", 25, 110), tok("では", 30, 110)] };
+  const tables = detectTables([para, row("A1", "B1", 90), row("A2", "B2", 70), row("A3", "B3", 50)]);
+  expect(tables).toHaveLength(1);
+  expect(tables[0].rowCount).toBe(3);
+});
+
+test("joins a wrapped cell line into its table row", () => {
+  const tables = detectTables([
+    row("A1", "B1", 90),
+    row("A2", "B2 head", 70), { text: "B2 tail", tokens: [tok("B2 tail", 100, 54)] },
+    row("A3", "B3", 33),
+  ]);
+  expect(tables).toHaveLength(1);
+  expect(tables[0].rows.map(r => r.map(c => c.map(t => t.str).join("")))).toEqual([
+    ["A1", "B1"], ["A2", "B2 headB2 tail"], ["A3", "B3"],
+  ]);
 });

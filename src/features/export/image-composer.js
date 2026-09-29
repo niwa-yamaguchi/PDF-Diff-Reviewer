@@ -286,7 +286,6 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
   const legendItems = [
     { color: colors.removed, label: "削除" },
     { color: colors.added, label: "追加" },
-    { color: colors.changed, label: "変更" },
   ];
   const options = { chrome: false };
   const measured = measureLegend(context, legendItems, TEXT_LEGEND_UNIT, options);

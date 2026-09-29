@@ -3,12 +3,12 @@ import { buildTextHighlights, collapseMovedRows } from "../../src/core/text-diff
 
 const token = (str, off) => ({ str, off, width: str.length, transform: [1, 0, 0, 1, off, 0] });
 
-test("marks changed characters on both sides", () => {
+test("marks removed characters on the old side and added ones on the new side", () => {
   const oldPages = [[{ text: "REV A", tokens: [token("REV A", 0)] }]];
   const newPages = [[{ text: "REV B", tokens: [token("REV B", 0)] }]];
   const hi = buildTextHighlights(oldPages, newPages);
-  expect(hi.old.get(0)[0].color).toBe("changed");
-  expect(hi.new.get(0)[0].color).toBe("changed");
+  expect(hi.old.get(0)[0].color).toBe("removed");
+  expect(hi.new.get(0)[0].color).toBe("added");
 });
 
 const movedToken = (str, y) => ({ str, off: 0, width: str.length, transform: [1, 0, 0, 1, 10, y] });
@@ -60,4 +60,31 @@ test("records line changes in document order for the diff report", () => {
     ["added", null, 1, "", "added"],
   ]);
   expect(hi.changes[0].parts).toEqual([[0, "REV "], [-1, "A"], [1, "B"]]);
+});
+
+test("ignores a line break that only moved within a paragraph", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const hi = buildTextHighlights(
+    [[line("2 段垂下が有効なら、"), line("停止せずに運転します")]],
+    [[line("2 段垂下が有効なら、停止"), line("せずに運転します")]],
+  );
+  expect(hi.changes).toEqual([]);
+  expect(hi.old.size + hi.new.size).toBe(0);
+});
+
+test("ignores a space added between sentences but keeps real edits in the block", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const hi = buildTextHighlights(
+    [[line("ありません。停電のあと"), line("REV A")]],
+    [[line("ありません。 停電のあと"), line("REV B")]],
+  );
+  expect(hi.changes.map(c => [c.oldText, c.newText])).toEqual([["REV A", "REV B"]]);
+  expect(hi.old.get(0).map(e => e.token.str)).toEqual(["REV A"]);
+});
+
+test("highlights only the changed characters inside a text item", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const hi = buildTextHighlights([[line("校正、初期化を行います")]], [[line("校正、初期化、模擬警報を行います")]]);
+  expect(hi.old.get(0)).toBeUndefined();
+  expect(hi.new.get(0)).toEqual([{ token: hi.new.get(0)[0].token, color: "added", start: 6, end: 11 }]);
 });

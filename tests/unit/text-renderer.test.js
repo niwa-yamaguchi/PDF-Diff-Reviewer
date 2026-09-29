@@ -213,3 +213,13 @@ describe("shared text viewport", () => {
     expect(renderer.getView().scale).toBe(1.12);
   });
 });
+
+test("draws only the character range of a partial highlight", () => {
+  const target = canvas();
+  const viewport = { scale: 2, transform: [2, 0, 0, 2, 0, 0] };
+  const token = { str: "ABCD", w: 20, transform: [1, 0, 0, 5, 3, 4], off: 0 };
+
+  drawTokenHighlight({ context: target.context, viewport, token, colorKey: "changed", transform, colors, start: 1, end: 3 });
+
+  expect(target.context.fillRect).toHaveBeenCalledWith(16, 6, 20, 12);
+});

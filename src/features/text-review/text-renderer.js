@@ -49,15 +49,31 @@ function sideHighlights(snapshot, side, pageIndex) {
   return snapshot.highlights?.[side]?.get(pageIndex) ?? null;
 }
 
-export function drawTokenHighlight({ context, viewport, token, colorKey, transform, colors }) {
+// pdf.js は文字ごとの位置を返さないので、トークン内の文字位置は汎用フォントで測った幅の比で近似する。
+// ponytail: 実フォントとの字幅差で端が数px ずれる。問題になれば pdf.js の glyph 幅を使う。
+function advanceFraction(context, str, index) {
+  if (index <= 0) return 0;
+  if (index >= str.length) return 1;
+  if (!context.measureText) return index / str.length;
+  context.save();
+  context.font = "100px sans-serif";
+  const total = context.measureText(str).width;
+  const part = context.measureText(str.slice(0, index)).width;
+  context.restore();
+  return total > 0 ? part / total : index / str.length;
+}
+
+export function drawTokenHighlight({ context, viewport, token, colorKey, transform, colors, start = 0, end = token.str.length }) {
   const tx = transform(viewport.transform, token.transform);
   const advanceLength = Math.hypot(tx[0], tx[1]) || 1;
   const ux = tx[0] / advanceLength;
   const uy = tx[1] / advanceLength;
-  const width = token.w * viewport.scale;
+  const from = advanceFraction(context, token.str, start);
+  const width = token.w * viewport.scale * (advanceFraction(context, token.str, end) - from);
+  const shift = token.w * viewport.scale * from;
   const descentFraction = 0.2;
-  const p0x = tx[4] - tx[2] * descentFraction;
-  const p0y = tx[5] - tx[3] * descentFraction;
+  const p0x = tx[4] - tx[2] * descentFraction + ux * shift;
+  const p0y = tx[5] - tx[3] * descentFraction + uy * shift;
   const vx = tx[2] * (1 + descentFraction);
   const vy = tx[3] * (1 + descentFraction);
   const p1x = p0x + ux * width;
@@ -115,8 +131,8 @@ export async function renderTextPage({
 
   const entries = sideHighlights(snapshot, side, pageIndex);
   if (entries) {
-    for (const { token, color } of entries) {
-      drawTokenHighlight({ context, viewport, token, colorKey: color, transform, colors });
+    for (const { token, color, start, end } of entries) {
+      drawTokenHighlight({ context, viewport, token, colorKey: color, transform, colors, start, end });
     }
   }
   return canvas;
@@ -139,8 +155,8 @@ export async function renderTextPageOffscreen({
   await page.render({ canvasContext: context, viewport }).promise;
   const entries = sideHighlights(snapshot, side, pageIndex);
   if (entries) {
-    for (const { token, color } of entries) {
-      drawTokenHighlight({ context, viewport, token, colorKey: color, transform, colors });
+    for (const { token, color, start, end } of entries) {
+      drawTokenHighlight({ context, viewport, token, colorKey: color, transform, colors, start, end });
     }
   }
   return canvas;

@@ -1,9 +1,21 @@
 import DiffMatchPatch from "diff-match-patch";
 import { flattenLines } from "./tokens.js";
 
-function pushHiEntry(map, pageIndex, token, color){
+function pushHiEntry(map, pageIndex, token, color, start=0, end=token.str.length){
   if(!map.has(pageIndex)) map.set(pageIndex, []);
-  map.get(pageIndex).push({token, color});
+  // start/end はトークン内の文字位置。トークン全体なら省き、描画側でトークン幅いっぱいに塗る。
+  map.get(pageIndex).push(start<=0 && end>=token.str.length ? {token, color} : {token, color, start, end});
+}
+
+// 行のうち [start, end) の文字を着色する。範囲を省くと行全体。
+// line.offs があればトークンの行内位置をそちらから取る（表のセルのようにトークンの off が別の行基準のとき）。
+export function highlightLineRange(map, line, color, start=null, end=null){
+  line.tokens.forEach((tok, i) => {
+    if(start==null){ pushHiEntry(map, line.pageIndex, tok, color); return; }
+    const off = line.offs ? line.offs[i] : tok.off;
+    if(off >= end || off + tok.str.length <= start) return;
+    pushHiEntry(map, line.pageIndex, tok, color, start-off, end-off);
+  });
 }
 
 function diffChunkLineCount(text){
@@ -11,8 +23,61 @@ function diffChunkLineCount(text){
   return text.endsWith("\n") ? n-1 : n;
 }
 
-function rangeOverlapsToken(tok, start, end){
-  return tok.off < end && (tok.off + tok.str.length) > start;
+// 空白を除いた文字列と、その各文字の元の位置 [行, 行内の位置]、各行末の文字位置。
+function stripLines(lines){
+  let text = "";
+  const at = [], ends = [];
+  lines.forEach((line, k) => {
+    for(let c=0;c<line.text.length;c++){
+      if(/\s/.test(line.text[c])) continue;
+      text += line.text[c];
+      at.push([k, c]);
+    }
+    ends.push(text.length);
+  });
+  return {text, at, ends};
+}
+
+// 行の並びどうしを、連結し空白を除いて文字単位で比べる。行を添字で組むと折り返し位置が
+// ずれただけの行が全て変更になり、文間の空白の有無だけでも変更になるため。
+// ranges は変わった文字の [行, 行内の開始, 終了]、sync は両側の行末が一致区間の同じ文字位置に来る行数の組。
+export function diffStrippedLines(oldLines, newLines, dmp=new DiffMatchPatch()){
+  const o = stripLines(oldLines), n = stripLines(newLines);
+  const cdiffs = dmp.diff_main(o.text, n.text);
+  dmp.diff_cleanupSemantic(cdiffs);
+  const ranges = {old:[], new:[]};
+  const collect = (out, s, from, to) => {
+    for(let p=from;p<to;){
+      const [k, c] = s.at[p];
+      let end = c+1;
+      for(p++; p<to && s.at[p][0]===k; p++) end = s.at[p][1]+1;
+      out.push([k, c, end]);
+    }
+  };
+  const sync = [[0, 0]];
+  let oldPos = 0, newPos = 0;
+  for(const [pop, ptext] of cdiffs){
+    const len = ptext.length;
+    if(pop===0){
+      let j = sync[sync.length-1][1];
+      for(let k=sync[sync.length-1][0]; k<oldLines.length; k++){
+        if(o.ends[k] < oldPos) continue;
+        if(o.ends[k] > oldPos+len) break;
+        const target = newPos + o.ends[k] - oldPos;
+        while(j < newLines.length && n.ends[j] < target) j++;
+        if(j < newLines.length && n.ends[j]===target) sync.push([k+1, j+1]);
+      }
+      oldPos += len; newPos += len;
+    } else if(pop===-1){
+      collect(ranges.old, o, oldPos, oldPos+len);
+      oldPos += len;
+    } else {
+      collect(ranges.new, n, newPos, newPos+len);
+      newPos += len;
+    }
+  }
+  sync.push([oldLines.length, newLines.length]);
+  return {ranges, sync};
 }
 
 export function buildTextHighlights(oldPages, newPages){
@@ -27,14 +92,8 @@ export function buildTextHighlights(oldPages, newPages){
   const diffs = dmp.diff_main(a.chars1, a.chars2, false);
   dmp.diff_charsToLines_(diffs, a.lineArray);
 
-  const highlightLine = (flat, side, idx, color, rangeStart, rangeEnd) => {
-    const line = flat[idx];
-    for(const tok of line.tokens){
-      if(rangeStart==null || rangeOverlapsToken(tok, rangeStart, rangeEnd)){
-        pushHiEntry(hi[side], line.pageIndex, tok, color);
-      }
-    }
-  };
+  const highlightLine = (flat, side, idx, color, rangeStart, rangeEnd) =>
+    highlightLineRange(hi[side], flat[idx], color, rangeStart, rangeEnd);
   // 差分レポート用の変更記録。表の中の行は applyTableHighlights がセル単位の記録に差し替える。
   const firstTokenAt = line => line?.tokens[0] ? [line.tokens[0].transform[4], line.tokens[0].transform[5]] : null;
   const pushChange = (kind, oldLine, newLine, parts=[]) => {
@@ -56,6 +115,36 @@ export function buildTextHighlights(oldPages, newPages){
     pushChange(kind, side==="old" ? flat[idx] : null, side==="new" ? flat[idx] : null);
   };
 
+  const joinLines = (flat, start, count) => {
+    const lines = flat.slice(start, start+count);
+    return lines.length ? {text:lines.map(l=>l.text).join(""), pageIndex:lines[0].pageIndex, tokens:lines.flatMap(l=>l.tokens)} : null;
+  };
+  const diffBlock = (oldStart, oldCnt, newStart, newCnt) => {
+    const {ranges, sync} = diffStrippedLines(oldFlat.slice(oldStart, oldStart+oldCnt), newFlat.slice(newStart, newStart+newCnt), dmp);
+    const marked = {old:new Array(oldCnt).fill(false), new:new Array(newCnt).fill(false)};
+    // 文字の着色は旧版から消えた文字を削除、新版に入った文字を追加とする。置き換えも両側にそれぞれ塗る。
+    for(const [k, c, e] of ranges.old){ highlightLine(oldFlat, "old", oldStart+k, "removed", c, e); marked.old[k] = true; }
+    for(const [k, c, e] of ranges.new){ highlightLine(newFlat, "new", newStart+k, "added", c, e); marked.new[k] = true; }
+    // 行数が揃う区間は行ごとに記録する。表の行が末尾まで変わると区切りが見つからず、1件にまとまってしまうため。
+    const segments = [];
+    for(let s=1;s<sync.length;s++){
+      const [a0, b0] = sync[s-1], [a1, b1] = sync[s];
+      if(a1-a0 === b1-b0) for(let k=0;k<a1-a0;k++) segments.push([a0+k, b0+k, a0+k+1, b0+k+1]);
+      else segments.push([a0, b0, a1, b1]);
+    }
+    for(const [a0, b0, a1, b1] of segments){
+      if(!marked.old.slice(a0, a1).some(Boolean) && !marked.new.slice(b0, b1).some(Boolean)) continue;
+      const oldLine = joinLines(oldFlat, oldStart+a0, a1-a0), newLine = joinLines(newFlat, newStart+b0, b1-b0);
+      if(oldLine && newLine){
+        const parts = dmp.diff_main(oldLine.text, newLine.text);
+        dmp.diff_cleanupSemantic(parts);
+        pushChange("changed", oldLine, newLine, parts.map(d => [d[0], d[1]]));
+      } else {
+        pushChange(oldLine ? "removed" : "added", oldLine, newLine);
+      }
+    }
+  };
+
   let oldIdx = 0, newIdx = 0;
   for(let i=0;i<diffs.length;i++){
     const op = diffs[i][0], text = diffs[i][1];
@@ -65,27 +154,7 @@ export function buildTextHighlights(oldPages, newPages){
       const next = diffs[i+1];
       if(next && next[0]===1){
         const addCnt = diffChunkLineCount(next[1]);
-        const n = Math.min(cnt, addCnt);
-        for(let k=0;k<n;k++){
-          const oldLine = oldFlat[oldIdx+k], newLine = newFlat[newIdx+k];
-          const cdiffs = dmp.diff_main(oldLine.text, newLine.text);
-          dmp.diff_cleanupSemantic(cdiffs);
-          pushChange("changed", oldLine, newLine, cdiffs.map(d => [d[0], d[1]]));
-          let oldPos=0, newPos=0;
-          for(const part of cdiffs){
-            const pop = part[0], ptext = part[1];
-            if(pop===0){ oldPos+=ptext.length; newPos+=ptext.length; }
-            else if(pop===-1){
-              highlightLine(oldFlat, "old", oldIdx+k, "changed", oldPos, oldPos+ptext.length);
-              oldPos += ptext.length;
-            } else {
-              highlightLine(newFlat, "new", newIdx+k, "changed", newPos, newPos+ptext.length);
-              newPos += ptext.length;
-            }
-          }
-        }
-        for(let k=n;k<cnt;k++) markWhole("old", oldIdx+k, "removed");
-        for(let k=n;k<addCnt;k++) markWhole("new", newIdx+k, "added");
+        diffBlock(oldIdx, cnt, newIdx, addCnt);
         oldIdx += cnt; newIdx += addCnt;
         i++;
         continue;
