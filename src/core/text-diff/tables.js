@@ -1,4 +1,5 @@
 import DiffMatchPatch from "diff-match-patch";
+import { diffStrippedLines, highlightLineRange } from "./highlights.js";
 
 const TABLE_ROWS_MIN = 3;
 const TABLE_COLS_MIN = 2;
@@ -138,11 +139,26 @@ function alignRows(oldRows, newRows){
   return pairs;
 }
 
-// 着色はセル単位。差があったかだけを返し、記録は呼び出し側が行単位でまとめる。
+function cellLine(cell, pageIndex){
+  const tokens = cell.slice().sort((a,b)=>a.transform[4]-b.transform[4]);
+  const offs = [];
+  let text = "";
+  for(const tok of tokens){ offs.push(text.length); text += tok.str; }
+  return {text, tokens, offs, pageIndex};
+}
+
+// 着色は変わった文字だけ。差があったかだけを返し、記録は呼び出し側が行単位でまとめる。
 function markCellPair(oldCell, newCell, pageIndex, hi){
   const oldStr = tableCellText(oldCell), newStr = tableCellText(newCell);
   if(oldStr === newStr) return false;
   const kind = !newStr ? "removed" : !oldStr ? "added" : "changed";
+  if(kind==="changed"){
+    const oldLine = cellLine(oldCell, pageIndex), newLine = cellLine(newCell, pageIndex);
+    const {ranges} = diffStrippedLines([oldLine], [newLine]);
+    for(const [, c, e] of ranges.old) highlightLineRange(hi.old, oldLine, kind, c, e);
+    for(const [, c, e] of ranges.new) highlightLineRange(hi.new, newLine, kind, c, e);
+    return ranges.old.length + ranges.new.length > 0;
+  }
   if(kind!=="added") for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, kind);
   if(kind!=="removed") for(const tok of newCell) pushHiEntry(hi.new, pageIndex, tok, kind);
   return true;

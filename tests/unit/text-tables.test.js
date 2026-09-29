@@ -27,8 +27,9 @@ test("detects a three-row table and replaces row highlights with cell highlights
   expect(returned).toBe(hi);
   expect(hi.old.get(0).some((entry) => entry.token === oldRowToken)).toBe(false);
   expect(hi.new.get(0).some((entry) => entry.token === newRowToken)).toBe(false);
-  expect(hi.old.get(0)).toContainEqual({ token: oldLines[1].tokens[1], color: "changed" });
-  expect(hi.new.get(0)).toContainEqual({ token: newLines[1].tokens[1], color: "changed" });
+  // 追加だけなので旧版側は塗らず、新版側も足された文字だけを塗る。
+  expect(hi.old.get(0)).toEqual([]);
+  expect(hi.new.get(0)).toEqual([{ token: newLines[1].tokens[1], color: "changed", start: 3, end: 10 }]);
 });
 
 const row = (left, right, y) => ({ text: `${left} ${right}`, tokens: [tok(left, 10, y), tok(right, 100, y)] });

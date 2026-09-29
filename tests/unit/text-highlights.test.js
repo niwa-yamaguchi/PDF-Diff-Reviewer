@@ -81,3 +81,10 @@ test("ignores a space added between sentences but keeps real edits in the block"
   expect(hi.changes.map(c => [c.oldText, c.newText])).toEqual([["REV A", "REV B"]]);
   expect(hi.old.get(0).map(e => e.token.str)).toEqual(["REV A"]);
 });
+
+test("highlights only the changed characters inside a text item", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const hi = buildTextHighlights([[line("校正、初期化を行います")]], [[line("校正、初期化、模擬警報を行います")]]);
+  expect(hi.old.get(0)).toBeUndefined();
+  expect(hi.new.get(0)).toEqual([{ token: hi.new.get(0)[0].token, color: "changed", start: 6, end: 11 }]);
+});
