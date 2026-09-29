@@ -4,6 +4,8 @@ import { diffStrippedLines, highlightLineRange } from "./highlights.js";
 const TABLE_ROWS_MIN = 3;
 const TABLE_COLS_MIN = 2;
 const TABLE_XQ = 8;
+const CELL_GAP_EM = 1;
+const ROW_JOIN_EM = 1.85;
 
 function clusterColumns(xs, tol){
   const sorted = xs.slice().sort((a,b)=>a-b);
@@ -16,10 +18,54 @@ function clusterColumns(xs, tol){
   return clusters.map(c=>c.sum/c.n);
 }
 
+// 行を字間の大きな所で区切ったセル候補。本文は字形の違う文字（⾯・⼊など）で項目が細かく分かれるが、
+// 項目どうしは詰まっているので区切られない。空白だけの項目は直前のセルに含める。
+function lineCells(line){
+  const cells = [];
+  let cur = null, end = -Infinity;
+  for(const tok of line.tokens.slice().sort((a,b)=>a.transform[4]-b.transform[4])){
+    if(!tok.str.trim()){ if(cur) cur.push(tok); continue; }
+    const x = tok.transform[4];
+    const fh = Math.hypot(tok.transform[2], tok.transform[3]) || 1;
+    if(!cur || x - end > CELL_GAP_EM * fh){ cur = [tok]; cells.push(cur); end = -Infinity; }
+    else cur.push(tok);
+    end = Math.max(end, x + tok.w);
+  }
+  return cells;
+}
+
+// 表の行。セルが折り返すと続きの行は1セルだけになるので、直前の行に近い1セルの行は同じ表の行に含める。
+// 複数セルの行は常に新しい行とする。行間は折り返しで約1.6em、表の行送りで2em以上。
+// ponytail: 行送りの閾値は文書の組版次第。外れる文書が出たら罫線から行を取る方式を検討する。
+function groupRows(pageLines){
+  const rows = [];
+  let cur = null;
+  for(const line of pageLines){
+    const cells = lineCells(line);
+    const tok = line.tokens[0];
+    const y = tok ? tok.transform[5] : 0;
+    const fh = tok ? Math.hypot(tok.transform[2], tok.transform[3]) || 1 : 1;
+    if(cur && cells.length===1 && cur.cells.length && y >= cur.bottom - ROW_JOIN_EM * fh){
+      cur.cells.push(cells[0]);
+      cur.bottom = Math.min(cur.bottom, y);
+      continue;
+    }
+    cur = {cells, bottom:y, inline:cells.length >= TABLE_COLS_MIN};
+    rows.push(cur);
+  }
+  return rows;
+}
+
+// 列はセルの左端から求める。表と見なすのは、半数以上の行で複数のセルが1本の行に並ぶ所だけ。
+// 1セルずつの行しか無ければ段組みの本文で、XY-cut に任せる。
+// 列はセルの左端から求める。本文の項目の位置まで列に数えると、本文の行が表の行に見え、
+// 表の中でも1つのセルが途中で割れる。
 export function detectTables(pageLines){
   if(!pageLines || pageLines.length < TABLE_ROWS_MIN) return [];
+  const rows = groupRows(pageLines);
+  const rowGroups = rows.map(r => r.cells);
   const allX = [];
-  for(const line of pageLines) for(const tok of line.tokens) allX.push(tok.transform[4]);
+  for(const groups of rowGroups) if(groups.length >= TABLE_COLS_MIN) for(const g of groups) allX.push(g[0].transform[4]);
   if(!allX.length) return [];
   const cols = clusterColumns(allX, TABLE_XQ);
   if(cols.length < TABLE_COLS_MIN) return [];
@@ -29,42 +75,42 @@ export function detectTables(pageLines){
     for(let i=0;i<cols.length;i++){ const d=Math.abs(cols[i]-x); if(d<bd){ bd=d; best=i; } }
     return best;
   };
-  const lineColSets = pageLines.map(line => {
-    const set = new Set();
-    for(const tok of line.tokens) set.add(nearestCol(tok.transform[4]));
-    return set;
-  });
+  const rowColSets = rowGroups.map(groups => new Set(groups.map(g => nearestCol(g[0].transform[4]))));
 
   const tables = [];
   let runStart = -1, unionCols = new Set();
   const flushRun = end => {
-    if(runStart>=0 && (end-runStart)>=TABLE_ROWS_MIN && unionCols.size>=TABLE_COLS_MIN){
-      tables.push(buildTableFromRun(pageLines, runStart, end, [...unionCols].sort((x,y)=>x-y), nearestCol));
+    const inline = rows.slice(Math.max(runStart, 0), end).filter(r => r.inline).length;
+    if(runStart>=0 && (end-runStart)>=TABLE_ROWS_MIN && unionCols.size>=TABLE_COLS_MIN && inline*2 >= end-runStart){
+      tables.push(buildTableFromRun(rowGroups, runStart, end, [...unionCols].sort((x,y)=>x-y), nearestCol));
     }
     runStart = -1; unionCols = new Set();
   };
-  for(let i=0;i<pageLines.length;i++){
-    if(lineColSets[i].size >= TABLE_COLS_MIN){
+  for(let i=0;i<rowGroups.length;i++){
+    if(rowColSets[i].size >= TABLE_COLS_MIN){
       if(runStart<0) runStart = i;
-      for(const c of lineColSets[i]) unionCols.add(c);
+      for(const c of rowColSets[i]) unionCols.add(c);
     } else flushRun(i);
   }
-  flushRun(pageLines.length);
+  flushRun(rowGroups.length);
   return tables;
 }
 
-function buildTableFromRun(pageLines, rowStart, rowEnd, colIdxs, nearestCol){
+// セル内のトークンは行の順・行内は左から。折り返したセルも読む順に並ぶ。
+function buildTableFromRun(rowGroups, rowStart, rowEnd, colIdxs, nearestCol){
   const colIndexMap = new Map(colIdxs.map((c,i)=>[c,i]));
   const rows = [];
   let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
   for(let r=rowStart;r<rowEnd;r++){
     const cells = colIdxs.map(()=>[]);
-    for(const tok of pageLines[r].tokens){
-      const ci = nearestCol(tok.transform[4]);
-      if(colIndexMap.has(ci)) cells[colIndexMap.get(ci)].push(tok);
-      const x = tok.transform[4], y = tok.transform[5];
-      if(x<minX) minX=x; if(x>maxX) maxX=x;
-      if(y<minY) minY=y; if(y>maxY) maxY=y;
+    for(const group of rowGroups[r]){
+      const ci = nearestCol(group[0].transform[4]);
+      if(colIndexMap.has(ci)) cells[colIndexMap.get(ci)].push(...group);
+      for(const tok of group){
+        const x = tok.transform[4], y = tok.transform[5];
+        if(x<minX) minX=x; if(x>maxX) maxX=x;
+        if(y<minY) minY=y; if(y>maxY) maxY=y;
+      }
     }
     rows.push(cells);
   }
@@ -72,7 +118,7 @@ function buildTableFromRun(pageLines, rowStart, rowEnd, colIdxs, nearestCol){
 }
 
 function tableCellText(cell){
-  return cell.slice().sort((a,b)=>a.transform[4]-b.transform[4]).map(t=>t.str).join("").trim();
+  return cell.map(t=>t.str).join("").trim();
 }
 
 function pushHiEntry(map, pageIndex, token, color){
@@ -140,11 +186,10 @@ function alignRows(oldRows, newRows){
 }
 
 function cellLine(cell, pageIndex){
-  const tokens = cell.slice().sort((a,b)=>a.transform[4]-b.transform[4]);
   const offs = [];
   let text = "";
-  for(const tok of tokens){ offs.push(text.length); text += tok.str; }
-  return {text, tokens, offs, pageIndex};
+  for(const tok of cell){ offs.push(text.length); text += tok.str; }
+  return {text, tokens:cell, offs, pageIndex};
 }
 
 // 着色は変わった文字だけ。差があったかだけを返し、記録は呼び出し側が行単位でまとめる。
