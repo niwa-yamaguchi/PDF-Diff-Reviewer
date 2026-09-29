@@ -200,8 +200,8 @@ function markCellPair(oldCell, newCell, pageIndex, hi){
   if(kind==="changed"){
     const oldLine = cellLine(oldCell, pageIndex), newLine = cellLine(newCell, pageIndex);
     const {ranges} = diffStrippedLines([oldLine], [newLine]);
-    for(const [, c, e] of ranges.old) highlightLineRange(hi.old, oldLine, kind, c, e);
-    for(const [, c, e] of ranges.new) highlightLineRange(hi.new, newLine, kind, c, e);
+    for(const [, c, e] of ranges.old) highlightLineRange(hi.old, oldLine, "removed", c, e);
+    for(const [, c, e] of ranges.new) highlightLineRange(hi.new, newLine, "added", c, e);
     return ranges.old.length + ranges.new.length > 0;
   }
   if(kind!=="added") for(const tok of oldCell) pushHiEntry(hi.old, pageIndex, tok, kind);

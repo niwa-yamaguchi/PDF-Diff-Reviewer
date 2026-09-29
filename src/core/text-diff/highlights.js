@@ -122,8 +122,9 @@ export function buildTextHighlights(oldPages, newPages){
   const diffBlock = (oldStart, oldCnt, newStart, newCnt) => {
     const {ranges, sync} = diffStrippedLines(oldFlat.slice(oldStart, oldStart+oldCnt), newFlat.slice(newStart, newStart+newCnt), dmp);
     const marked = {old:new Array(oldCnt).fill(false), new:new Array(newCnt).fill(false)};
-    for(const [k, c, e] of ranges.old){ highlightLine(oldFlat, "old", oldStart+k, "changed", c, e); marked.old[k] = true; }
-    for(const [k, c, e] of ranges.new){ highlightLine(newFlat, "new", newStart+k, "changed", c, e); marked.new[k] = true; }
+    // 文字の着色は旧版から消えた文字を削除、新版に入った文字を追加とする。置き換えも両側にそれぞれ塗る。
+    for(const [k, c, e] of ranges.old){ highlightLine(oldFlat, "old", oldStart+k, "removed", c, e); marked.old[k] = true; }
+    for(const [k, c, e] of ranges.new){ highlightLine(newFlat, "new", newStart+k, "added", c, e); marked.new[k] = true; }
     // 行数が揃う区間は行ごとに記録する。表の行が末尾まで変わると区切りが見つからず、1件にまとまってしまうため。
     const segments = [];
     for(let s=1;s<sync.length;s++){

@@ -3,12 +3,12 @@ import { buildTextHighlights, collapseMovedRows } from "../../src/core/text-diff
 
 const token = (str, off) => ({ str, off, width: str.length, transform: [1, 0, 0, 1, off, 0] });
 
-test("marks changed characters on both sides", () => {
+test("marks removed characters on the old side and added ones on the new side", () => {
   const oldPages = [[{ text: "REV A", tokens: [token("REV A", 0)] }]];
   const newPages = [[{ text: "REV B", tokens: [token("REV B", 0)] }]];
   const hi = buildTextHighlights(oldPages, newPages);
-  expect(hi.old.get(0)[0].color).toBe("changed");
-  expect(hi.new.get(0)[0].color).toBe("changed");
+  expect(hi.old.get(0)[0].color).toBe("removed");
+  expect(hi.new.get(0)[0].color).toBe("added");
 });
 
 const movedToken = (str, y) => ({ str, off: 0, width: str.length, transform: [1, 0, 0, 1, 10, y] });
@@ -86,5 +86,5 @@ test("highlights only the changed characters inside a text item", () => {
   const line = text => ({ text, tokens: [token(text, 0)] });
   const hi = buildTextHighlights([[line("校正、初期化を行います")]], [[line("校正、初期化、模擬警報を行います")]]);
   expect(hi.old.get(0)).toBeUndefined();
-  expect(hi.new.get(0)).toEqual([{ token: hi.new.get(0)[0].token, color: "changed", start: 6, end: 11 }]);
+  expect(hi.new.get(0)).toEqual([{ token: hi.new.get(0)[0].token, color: "added", start: 6, end: 11 }]);
 });
