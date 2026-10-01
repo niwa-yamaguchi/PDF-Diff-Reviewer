@@ -24,3 +24,7 @@ for (const path of files.filter(path => /\.(?:html|css|js)$/.test(path))) {
     throw new Error(`Production dist contains a runtime CDN URL: ${path}`);
   }
 }
+const licenses = await readFile("dist/THIRD_PARTY_LICENSES.txt", "utf8");
+for (const name of ["pdfjs-dist@", "jspdf@", "diff-match-patch@"]) {
+  if (!licenses.includes(name)) throw new Error(`THIRD_PARTY_LICENSES.txt is missing ${name}`);
+}
