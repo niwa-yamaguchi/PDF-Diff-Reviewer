@@ -130,6 +130,9 @@ test("tolerates a shifted line when the radius covers the shift", () => {
 
   expect(strict.removed + strict.added).toBeGreaterThan(0);
   expect(tolerant.removed + tolerant.added).toBe(0);
+  expect(tolerant.boxes).toHaveLength(0);
+  expect([...tolerant.image.slice(2 * 4, 2 * 4 + 3)]).toEqual(DIFF_RGB.removed);
+  expect([...tolerant.image.slice(3 * 4, 3 * 4 + 3)]).toEqual(DIFF_RGB.added);
 });
 
 test("reports monotonically increasing progress ending at one", () => {

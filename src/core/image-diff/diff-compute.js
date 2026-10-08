@@ -83,16 +83,15 @@ export function computeDiff({
       for (let x = 0; x < width; x += 1) {
         const index = y * width + x;
         if (!(oldMask[index] || newMask[index])) continue;
+        // Tolerated pixels keep their red/blue color; only counting and boxes skip them.
+        if (oldMask[index] && newMask[index]) paint(image, index, DIFF_RGB.common);
+        else paint(image, index, oldMask[index] ? DIFF_RGB.removed : DIFF_RGB.added);
         if (removed[index]) {
-          paint(image, index, DIFF_RGB.removed);
           removedCount += 1;
           flag(x, y, CHANGE_BITS.removed);
         } else if (added[index]) {
-          paint(image, index, DIFF_RGB.added);
           addedCount += 1;
           flag(x, y, CHANGE_BITS.added);
-        } else {
-          paint(image, index, DIFF_RGB.common);
         }
       }
       report(DILATE_PHASE + ((y + 1) / height) * (1 - DILATE_PHASE));
