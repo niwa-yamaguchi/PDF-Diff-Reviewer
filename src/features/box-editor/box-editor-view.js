@@ -74,10 +74,13 @@ export function drawBoxLayer({
     const y = view.ty + focused.y * scale;
     const boxWidth = focused.w * scale;
     const boxHeight = focused.h * scale;
+    // A second fill layer and a thicker frame mark the selection.
     context.setLineDash([]);
-    context.strokeStyle = "#fff";
-    context.lineWidth = 2;
-    context.strokeRect(x - 2, y - 2, boxWidth + 4, boxHeight + 4);
+    context.fillStyle = BOX_FILL;
+    context.fillRect(x, y, boxWidth, boxHeight);
+    context.strokeStyle = BOX_COLOR;
+    context.lineWidth = 4;
+    context.strokeRect(x + 2, y + 2, Math.max(0, boxWidth - 4), Math.max(0, boxHeight - 4));
   }
 
   if (editing && activeIndex >= 0 && activeIndex < boxes.length) {

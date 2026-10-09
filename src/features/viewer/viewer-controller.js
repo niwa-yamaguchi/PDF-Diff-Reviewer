@@ -67,6 +67,14 @@ export function createViewerController({ state, dom, window, onTransform = () =>
     try { dom.wrap.releasePointerCapture(pointerId); } catch (_) { /* capture may already be gone */ }
   }
 
+  // A press released without dragging is a click on the drawing, not a pan.
+  function handlePointerUp(event) {
+    const clicked = pan && event?.pointerId === pan.pointerId
+      && Math.hypot(event.clientX - pan.startX, event.clientY - pan.startY) < 4;
+    cancelPan(event);
+    if (clicked) dom.onClick?.(event);
+  }
+
   function handleWheel(event) {
     if (!visualIsActive() || !hasImage()) return;
     event.preventDefault();
@@ -121,7 +129,7 @@ export function createViewerController({ state, dom, window, onTransform = () =>
     handleWheel,
     handlePointerDown,
     handlePointerMove,
-    handlePointerUp: cancelPan,
+    handlePointerUp,
     handlePointerCancel: cancelPan,
     handleDoubleClick: fit,
     handleResize() {

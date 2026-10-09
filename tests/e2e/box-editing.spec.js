@@ -170,3 +170,21 @@ test("reset to auto after confirmation removes hand edits and Undo restores the 
   await expect(restored).toBeVisible();
   await expect(restored.locator("textarea")).toHaveValue("復帰後も戻すコメント");
 });
+
+test("clicking a change box on the drawing opens and focuses its list item for Delete", async ({ page }) => {
+  await loadReview(page);
+  const cards = page.locator('[data-review-page="0"] [data-change-id]');
+  const total = await cards.count();
+  const target = page.locator(`[data-change-id="${await cards.nth(1).getAttribute("data-change-id")}"]`);
+  await target.locator(".review-select").click();
+  await page.locator("#reviewRailToggle").click();
+  await expect(page.locator("#reviewPanel")).toBeHidden();
+
+  const wrap = await page.locator(".canvas-wrap").boundingBox();
+  await page.mouse.click(wrap.x + wrap.width / 2, wrap.y + wrap.height / 2);
+  await expect(page.locator("#reviewPanel")).toBeVisible();
+  await expect(target.locator(".review-select")).toBeFocused();
+  await page.keyboard.press("Delete");
+  await expect(target).toHaveCount(0);
+  await expect(cards).toHaveCount(total - 1);
+});

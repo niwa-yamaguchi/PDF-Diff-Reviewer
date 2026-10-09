@@ -23,6 +23,9 @@ export function drawChangeLabel(context, { number, comment }, { x, y, fontPx, ma
   }
   const text = chars.join("");
   const top = y >= height ? y - height : y;
+  // Translucent backing keeps the label readable over drawing lines.
+  context.fillStyle = "rgba(255,255,255,0.75)";
+  context.fillRect(x, top, context.measureText(text).width + pad * 2, height);
   context.fillStyle = color;
   context.textBaseline = "middle";
   context.textAlign = "left";

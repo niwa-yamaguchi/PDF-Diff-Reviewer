@@ -107,7 +107,7 @@ export function createChangeReviewController({
 
   const orderedItems = () => sortReviewItems([...state.review.itemsByPage.values()].flat());
 
-  async function select(id, { preserveEdit = false } = {}) {
+  async function select(id, { preserveEdit = false, zoom = true } = {}) {
     const ticket = ++selectionTicket;
     const review = state.review;
     const item = orderedItems().find(item => item.id === id);
@@ -129,7 +129,7 @@ export function createChangeReviewController({
       || state.ui.topMode !== "visual" || review.selectedId !== id) return false;
     const current = orderedItems().find(item => item.id === id);
     if (!current || current.pageIndex !== state.documents.currentPage) return false;
-    focusRect(current.rect, { padding: 0.25, maxScale: 4 });
+    if (zoom) focusRect(current.rect, { padding: 0.25, maxScale: 4 });
     onChanged();
     return true;
   }
