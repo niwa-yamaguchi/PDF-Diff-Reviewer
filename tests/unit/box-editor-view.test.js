@@ -97,8 +97,7 @@ test("draws review focus independently from edit selection and keeps handles on 
     outputVisible: true,
   });
 
-  expect(context.strokeRect).toHaveBeenCalledWith(57, 67, 26, 16);
-  expect(context.strokeRect).toHaveBeenCalledWith(54, 64, 32, 22);
+  expect(context.strokeRect).toHaveBeenCalledWith(62, 72, 16, 6);
   expect(context.fillRect).toHaveBeenCalledWith(5, 15, 10, 10);
   expect(context.fillRect).not.toHaveBeenCalledWith(55, 65, 10, 10);
 });
@@ -214,8 +213,7 @@ test("the browser view maps the selected review id to the focused box", () => {
 
   view.redraw();
 
-  expect(context.strokeRect).toHaveBeenCalledWith(47, 57, 26, 36);
-  expect(context.strokeRect).toHaveBeenCalledWith(44, 54, 32, 42);
+  expect(context.strokeRect).toHaveBeenCalledWith(52, 62, 16, 26);
 });
 
 test("the browser view converts native client coordinates even when PointerEvent exposes x and y aliases", () => {

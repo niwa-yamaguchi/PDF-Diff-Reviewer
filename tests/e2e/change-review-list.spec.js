@@ -210,15 +210,13 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 820, height: 900 
     expect((await page.locator("#pageLabel").boundingBox()).height).toBeLessThan(45);
     const selectedFrame = await page.locator("#boxLayer").evaluate(canvas => {
       const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
-      let ring = 0, orange = 0;
+      let orange = 0;
       for (let i = 0; i < pixels.length; i += 4) {
         if (pixels[i + 3] < 250) continue;
-        if (pixels[i] === 14 && pixels[i + 1] === 21 && pixels[i + 2] === 29) ring++;
         if (pixels[i] === 255 && pixels[i + 1] === 149 && pixels[i + 2] === 0) orange++;
       }
-      return { ring, orange };
+      return { orange };
     });
-    expect(selectedFrame.ring).toBeGreaterThan(0);
     expect(selectedFrame.orange).toBeGreaterThan(0);
     const beforeWidth = (await wrap.boundingBox()).width;
     if (viewport.width === 1280) expect(bounds.x).toBeGreaterThanOrEqual((await wrap.boundingBox()).x + beforeWidth);
