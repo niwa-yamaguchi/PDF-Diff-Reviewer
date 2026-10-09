@@ -227,6 +227,7 @@ export function createApp({ document, window, dependencies = {} }) {
       hasImage,
       isSpaceHeld: () => spaceHeld,
       onBoxPointerDown: event => boxEditorController?.pointerDown?.(event),
+      onClick: event => void selectBoxAt(event),
     },
     window,
     onTransform: scheduleTransformFrame,
@@ -690,6 +691,16 @@ export function createApp({ document, window, dependencies = {} }) {
   function restoreCommittedRange(element, label) {
     element.value = element.dataset.committed;
     label.textContent = element.value;
+  }
+
+  // Clicking a change box on the drawing selects it in the list so Delete / comment work right away.
+  async function selectBoxAt(event) {
+    if (state.boxEditor.mode !== "idle" || !state.boxEditor.showBoxes) return;
+    const id = state.boxEditor.currentBoxes?.[boxEditorController.hitBox(boxEditorView.toImagePoint(event))]?.id;
+    if (!id || !await reviewController.select(id, { zoom: false })) return;
+    if (!state.review.panelOpen) reviewController.togglePanel(true);
+    [...dom.reviewList.querySelectorAll("[data-change-id]")].find(item => item.dataset.changeId === id)
+      ?.querySelector(".review-select")?.focus({ preventScroll: true });
   }
 
   function isTypingTarget(event) {
