@@ -59,6 +59,12 @@ export function diffStrippedLines(oldLines, newLines, dmp=new DiffMatchPatch()){
   for(const [pop, ptext] of cdiffs){
     const len = ptext.length;
     if(pop===0){
+      // 一致区間の始まりが両側とも行頭なら、そこも区切り。行末だけを見ると、ブロック先頭の行が丸ごと
+      // 消えた（ページ送りで次ページへ移った）とき区切りが見つからず、続く行の変更と1件にまとまる。
+      const lineStart = (ends, pos) => { let c = 0; while(c < ends.length && ends[c] <= pos) c++; return (c ? ends[c-1] : 0)===pos ? c : -1; };
+      const [lastK, lastJ] = sync[sync.length-1];
+      const k0 = lineStart(o.ends, oldPos), j0 = lineStart(n.ends, newPos);
+      if(k0 >= lastK && j0 >= lastJ && (k0 > lastK || j0 > lastJ)) sync.push([k0, j0]);
       let j = sync[sync.length-1][1];
       for(let k=sync[sync.length-1][0]; k<oldLines.length; k++){
         if(o.ends[k] < oldPos) continue;
@@ -105,8 +111,8 @@ export function buildTextHighlights(oldPages, newPages){
       kind, oldText, newText, parts,
       oldPage: oldLine ? oldLine.pageIndex : null, newPage: newLine ? newLine.pageIndex : null,
       oldAt: firstTokenAt(oldLine), newAt: firstTokenAt(newLine),
-      // collapseMovedRows が着色を取り消すための手がかり。同関数が最後に削除する。
-      oldTokens: oldLine ? oldLine.tokens : [], newTokens: newLine ? newLine.tokens : [],
+      // collapseMovedRows が行ごとに照合し着色を取り消すための元の行。同関数が最後に削除する。
+      oldRows: oldLine ? oldLine.rows || [oldLine] : [], newRows: newLine ? newLine.rows || [newLine] : [],
     });
   };
   const markWhole = (side, idx, kind) => {
@@ -117,7 +123,7 @@ export function buildTextHighlights(oldPages, newPages){
 
   const joinLines = (flat, start, count) => {
     const lines = flat.slice(start, start+count);
-    return lines.length ? {text:lines.map(l=>l.text).join(""), pageIndex:lines[0].pageIndex, tokens:lines.flatMap(l=>l.tokens)} : null;
+    return lines.length ? {text:lines.map(l=>l.text).join(""), pageIndex:lines[0].pageIndex, tokens:lines.flatMap(l=>l.tokens), rows:lines} : null;
   };
   const diffBlock = (oldStart, oldCnt, newStart, newCnt) => {
     const {ranges, sync} = diffStrippedLines(oldFlat.slice(oldStart, oldStart+oldCnt), newFlat.slice(newStart, newStart+newCnt), dmp);
@@ -183,27 +189,40 @@ function dropHighlights(map, pageIndex, tokens){
 }
 
 // 行の挿入でページ送りが変わると、内容が同じ行でも「削除＋追加」になる。差分の最小編集としては
-// 正しいが、レビュー上は変更ではないので、同一内容の削除／追加を1対1で組にして取り消す。
+// 正しいが、レビュー上は変更ではないので、同一内容の削除／追加の行を1対1で組にして取り消す。
+// 照合は記録単位でなく行単位。移った行が隣の行の削除とまとめて1件になることがあるため。
+// 行は {text, tokens, pageIndex}。全行が組になった記録は消し、一部だけなら残りの行で本文を作り直す。
 export function collapseMovedRows(hi){
   const pending = new Map();
-  hi.changes.forEach((change, index) => {
-    if(change.kind !== "added") return;
-    const key = moveKey(change.newText);
-    if(!key) return;
-    if(!pending.has(key)) pending.set(key, []);
-    pending.get(key).push(index);
+  for(const change of hi.changes){
+    if(change.kind !== "added") continue;
+    for(const row of change.newRows){
+      const key = moveKey(row.text);
+      if(!key) continue;
+      if(!pending.has(key)) pending.set(key, []);
+      pending.get(key).push(row);
+    }
+  }
+  const moved = new Set();
+  for(const change of hi.changes){
+    if(change.kind !== "removed") continue;
+    for(const row of change.oldRows){
+      const match = pending.get(moveKey(row.text))?.shift();
+      if(!match) continue;
+      moved.add(row); moved.add(match);
+      dropHighlights(hi.old, row.pageIndex, row.tokens);
+      dropHighlights(hi.new, match.pageIndex, match.tokens);
+    }
+  }
+  hi.changes = hi.changes.filter(change => {
+    const side = change.kind==="removed" ? "old" : change.kind==="added" ? "new" : null;
+    if(!side) return true;
+    const rows = change[side+"Rows"];
+    const left = rows.filter(row => moveKey(row.text) && !moved.has(row));
+    if(!left.length) return false;
+    if(left.length < rows.length) change[side+"Text"] = left.map(row => row.text).join("");
+    return true;
   });
-  const dropped = new Set();
-  hi.changes.forEach((change, index) => {
-    if(change.kind !== "removed") return;
-    const queue = pending.get(moveKey(change.oldText));
-    if(!queue || !queue.length) return;
-    const match = hi.changes[queue.shift()];
-    dropped.add(change); dropped.add(match);
-    dropHighlights(hi.old, change.oldPage, change.oldTokens);
-    dropHighlights(hi.new, match.newPage, match.newTokens);
-  });
-  hi.changes = hi.changes.filter(change => !dropped.has(change));
-  for(const change of hi.changes){ delete change.oldTokens; delete change.newTokens; }
+  for(const change of hi.changes){ delete change.oldRows; delete change.newRows; }
   return hi;
 }

@@ -21,8 +21,8 @@ test("drops a row that only moved to another page, highlights included", () => {
     new: new Map([[1, [{ token: newTok, color: "added" }]]]),
     changes: [
       // 表ごとに列の切れ目が変わるため、同じ行でも空白の位置だけがずれる。
-      { kind: "removed", oldText: "R 18 part", newText: "", parts: [], oldPage: 0, newPage: null, oldTokens: [oldTok], newTokens: [] },
-      { kind: "added", oldText: "", newText: "R 18  part", parts: [], oldPage: null, newPage: 1, oldTokens: [], newTokens: [newTok] },
+      { kind: "removed", oldText: "R 18 part", newText: "", parts: [], oldPage: 0, newPage: null, oldRows: [{ text: "R 18 part", tokens: [oldTok], pageIndex: 0 }], newRows: [] },
+      { kind: "added", oldText: "", newText: "R 18  part", parts: [], oldPage: null, newPage: 1, oldRows: [], newRows: [{ text: "R 18  part", tokens: [newTok], pageIndex: 1 }] },
     ],
   };
 
@@ -35,8 +35,8 @@ test("drops a row that only moved to another page, highlights included", () => {
 
 test("keeps the surplus removal when the same text returns only once", () => {
   const record = (kind, text, page) => (kind === "removed"
-    ? { kind, oldText: text, newText: "", parts: [], oldPage: page, newPage: null, oldTokens: [], newTokens: [] }
-    : { kind, oldText: "", newText: text, parts: [], oldPage: null, newPage: page, oldTokens: [], newTokens: [] });
+    ? { kind, oldText: text, newText: "", parts: [], oldPage: page, newPage: null, oldRows: [{ text, tokens: [], pageIndex: page }], newRows: [] }
+    : { kind, oldText: "", newText: text, parts: [], oldPage: null, newPage: page, oldRows: [], newRows: [{ text, tokens: [], pageIndex: page }] });
   const hi = {
     old: new Map(),
     new: new Map(),
@@ -87,4 +87,30 @@ test("highlights only the changed characters inside a text item", () => {
   const hi = buildTextHighlights([[line("校正、初期化を行います")]], [[line("校正、初期化、模擬警報を行います")]]);
   expect(hi.old.get(0)).toBeUndefined();
   expect(hi.new.get(0)).toEqual([{ token: hi.new.get(0)[0].token, color: "added", start: 6, end: 11 }]);
+});
+
+// L-02153 の部品表で、ページ末の行が次ページへ送られ、隣のページ番号「/ 5」→「/ 6」の変更と1件にまとまっていた。
+test("drops rows pushed to the next page even when the page footer changed next to them", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const led = n => line(`LED ${n}& LEDｽﾍﾟｰｻ * LL-5 ﾏｯｸｴｲﾄ 11978`);
+  const header = () => line("改版 SH 記号 番号 名称 形名 定格 メーカー 数量 備考Code");
+  const unit = () => line("ﾕﾆｯﾄNo.：");
+  const hi = buildTextHighlights(
+    [[led(1), led(2), line("図面番号：L-02153 -22 / 5"), unit()], [header(), led(3)]],
+    [[line("図面番号：L-02153 -22 / 6"), unit()], [header(), led(1), led(2), led(3)]],
+  );
+  collapseMovedRows(hi);
+  expect(hi.changes.map(c => [c.kind, c.oldText, c.newText])).toEqual([["changed", "図面番号：L-02153 -22 / 5", "図面番号：L-02153 -22 / 6"]]);
+  expect(hi.old.get(0).map(e => e.token.str)).toEqual(["図面番号：L-02153 -22 / 5"]);
+  expect(hi.new.get(1)).toEqual([]);
+});
+
+test("keeps the rest of a removal when only some of its lines moved", () => {
+  const line = text => ({ text, tokens: [token(text, 0)] });
+  const hi = buildTextHighlights(
+    [[line("keep"), line("moved row"), line("really gone")], [line("next")]],
+    [[line("keep")], [line("moved row"), line("next")]],
+  );
+  collapseMovedRows(hi);
+  expect(hi.changes.map(c => [c.kind, c.oldText, c.newText])).toEqual([["removed", "really gone", ""]]);
 });
