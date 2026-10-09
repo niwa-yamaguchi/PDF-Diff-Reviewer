@@ -165,7 +165,8 @@
   .review-page{border-bottom:1px solid var(--line)}
   .review-page-title{cursor:pointer;padding:11px 14px;font:11px var(--mono);color:var(--muted);background:var(--panel-2)}
   .review-item{padding:10px 14px 12px;border-top:1px solid var(--line);border-left:3px solid transparent}
-  .review-item.selected{border-left-color:var(--signal);background:var(--ink)}
+  .review-item.selected{border-left-color:var(--signal);background:var(--ink);box-shadow:inset 0 0 0 1px var(--signal)}
+  .review-item.selected .review-number{color:var(--signal);font-weight:700}
   .review-item.editing{border-left-color:var(--signal)}
   .review-panel .review-select{display:flex;width:100%;align-items:center;gap:9px;background:transparent;border:0;border-radius:0;text-align:left;padding:4px 0 8px;min-height:32px}
   .review-number{font:11px var(--mono);color:var(--muted);min-width:30px}
