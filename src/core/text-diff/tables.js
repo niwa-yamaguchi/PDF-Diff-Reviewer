@@ -6,6 +6,7 @@ const TABLE_COLS_MIN = 2;
 const TABLE_XQ = 8;
 const CELL_GAP_EM = 1;
 const ROW_JOIN_EM = 1.85;
+const ROW_TOP_EM = 0.5;
 
 function clusterColumns(xs, tol){
   const sorted = xs.slice().sort((a,b)=>a-b);
@@ -35,7 +36,9 @@ function lineCells(line){
 }
 
 // 表の行。セルが折り返すと続きの行は1セルだけになるので、直前の行に近い1セルの行は同じ表の行に含める。
-// 複数セルの行は常に新しい行とする。行間は折り返しで約1.6em、表の行送りで2em以上。
+// 複数セルの行は新しい行とする。行間は折り返しで約1.6em、表の行送りで2em以上。
+// ただし行の先頭と同じ高さから始まる行は同じ表の行。描画順は「1列目のセル（折り返し含む）→右の列」なので、
+// 1列目が折り返すと右の列が後から同じ高さに戻ってくる。
 // ponytail: 行送りの閾値は文書の組版次第。外れる文書が出たら罫線から行を取る方式を検討する。
 function groupRows(pageLines){
   const rows = [];
@@ -45,12 +48,17 @@ function groupRows(pageLines){
     const tok = line.tokens[0];
     const y = tok ? tok.transform[5] : 0;
     const fh = tok ? Math.hypot(tok.transform[2], tok.transform[3]) || 1 : 1;
+    if(cur && cur.cells.length && cur.bottom < cur.top && Math.abs(y - cur.top) <= ROW_TOP_EM * fh){
+      cur.cells.push(...cells);
+      cur.inline = cur.cells.length >= TABLE_COLS_MIN;
+      continue;
+    }
     if(cur && cells.length===1 && cur.cells.length && y >= cur.bottom - ROW_JOIN_EM * fh){
       cur.cells.push(cells[0]);
       cur.bottom = Math.min(cur.bottom, y);
       continue;
     }
-    cur = {cells, bottom:y, inline:cells.length >= TABLE_COLS_MIN};
+    cur = {cells, top:y, bottom:y, inline:cells.length >= TABLE_COLS_MIN};
     rows.push(cur);
   }
   return rows;
@@ -159,7 +167,8 @@ function rowLabel(cells){ return cells.filter(Boolean).join(" "); }
 // 対応が取れた行は {old, new} の組、片側だけの行は相手が null になる。
 function alignRows(oldRows, newRows){
   const dmp = new DiffMatchPatch();
-  const keys = rows => rows.map(r => rowCells(r).join("\t")).join("\n");
+  // 空白は除いて比べる。「4節」と「4 節」のような空白だけの違いで行の対応が外れないように。
+  const keys = rows => rows.map(r => rowCells(r).map(c => c.replace(/\s+/g, "")).join("\t")).join("\n");
   const a = dmp.diff_linesToChars_(keys(oldRows), keys(newRows));
   const diffs = dmp.diff_main(a.chars1, a.chars2, false);
   dmp.diff_charsToLines_(diffs, a.lineArray);
@@ -230,7 +239,8 @@ function diffRowPair(oldRow, newRow, pageIndex, hi, out){
   out.push({
     kind, oldText, newText, parts,
     oldPage: oldText ? pageIndex : null, newPage: newText ? pageIndex : null,
-    oldTokens: oldRow.flat(), newTokens: newRow.flat(),
+    oldRows: oldText ? [{text: oldText, tokens: oldRow.flat(), pageIndex}] : [],
+    newRows: newText ? [{text: newText, tokens: newRow.flat(), pageIndex}] : [],
   });
 }
 
@@ -243,7 +253,8 @@ function diffWholeRow(row, side, pageIndex, hi, out){
     kind, oldText: side==="old" ? label : "", newText: side==="new" ? label : "",
     parts: [],
     oldPage: side==="old" ? pageIndex : null, newPage: side==="new" ? pageIndex : null,
-    oldTokens: side==="old" ? row.flat() : [], newTokens: side==="new" ? row.flat() : [],
+    oldRows: side==="old" ? [{text: label, tokens: row.flat(), pageIndex}] : [],
+    newRows: side==="new" ? [{text: label, tokens: row.flat(), pageIndex}] : [],
   });
 }
 

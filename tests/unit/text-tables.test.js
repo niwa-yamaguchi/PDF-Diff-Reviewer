@@ -99,3 +99,16 @@ test("joins a wrapped cell line into its table row", () => {
     ["A1", "B1"], ["A2", "B2 headB2 tail"], ["A3", "B3"],
   ]);
 });
+
+test("keeps the right columns in the row when the first column wraps", () => {
+  // 描画順は1列目のセル（折り返し含む）が先で、右の列は後から行の先頭の高さに戻ってくる。
+  const tables = detectTables([
+    row("A1", "B1", 90),
+    solo("A2 head", 70), solo("A2 tail", 54), { text: "B2 C2", tokens: [tok("B2", 100, 70), tok("C2", 200, 70)] },
+    row("A3", "B3", 33),
+  ]);
+  expect(tables).toHaveLength(1);
+  expect(tables[0].rows.map(r => r.map(c => c.map(t => t.str).join("")))).toEqual([
+    ["A1", "B1", ""], ["A2 headA2 tail", "B2", "C2"], ["A3", "B3", ""],
+  ]);
+});
