@@ -7,6 +7,7 @@ import {
   VISUAL_BOX_STYLE,
 } from "./image-composer.js";
 import { reviewLabels } from "../../core/change-review/label.js";
+import { buildParagraphReport } from "../../core/text-diff/paragraphs.js";
 
 const VISUAL_COLORS = Object.freeze({
   common: "rgb(60,60,60)",
@@ -119,6 +120,9 @@ function captureSnapshot(state) {
     boxEditor,
     review,
     highlights,
+    // 段落レポートは着色をトークンの同一性で引くので、複製せず元の参照のまま持つ。どちらも差し替えで更新される。
+    textSource: Object.freeze({ extraction: state.textReview.extraction, highlights: state.textReview.highlights }),
+    newFileName: state.documents.newName || "",
     scale: state.textReview.scale,
     textPage: state.textReview.page,
     textTotal: Math.max(documents.old?.numPages || 0, documents.new?.numPages || 0),
@@ -423,19 +427,22 @@ export function createExportController({
     return canvas;
   }
 
-  // pageIndex を渡すとそのページに関わる変更だけの1枚、null なら全件をA4でページ分けする。
-  // 番号は全件での通し番号のままにして、PNGとPDFで同じ変更を指せるようにする。
+  // pageIndex を渡すとそのページに関わる段落だけの1枚、null なら全件をA4でページ分けする。
+  // 番号は全件での通し番号のままにして、PNGとPDFで同じ段落を指せるようにする。
   function textReport(snapshot, pageIndex) {
-    const all = snapshot.highlights.changes.map((change, index) => ({ ...change, number: index + 1 }));
-    const changes = pageIndex == null ? all
-      : all.filter(change => change.oldPage === pageIndex || change.newPage === pageIndex);
-    const count = kind => changes.filter(change => change.kind === kind).length;
+    const all = buildParagraphReport(snapshot.textSource.extraction, snapshot.textSource.highlights)
+      .map((entry, index) => ({ ...entry, number: index + 1 }));
+    const covers = (page, end) => page != null && page <= pageIndex && pageIndex <= end;
+    const entries = pageIndex == null ? all
+      : all.filter(entry => covers(entry.oldPage, entry.oldPageEnd) || covers(entry.newPage, entry.newPageEnd));
+    const count = kind => entries.filter(entry => entry.kind === kind).length;
     const scope = pageIndex == null ? "" : `（p${pageIndex + 1}）`;
+    const name = snapshot.newFileName.replace(/\.pdf$/i, "");
     return {
-      title: `テキスト差分レポート${scope}　変更 ${count("changed")}・削除 ${count("removed")}・追加 ${count("added")}`,
+      title: `${name ? `${name} ` : ""}テキスト差分レポート${scope}　変更 ${count("changed")}・追加 ${count("added")}・削除 ${count("removed")}`,
       layout: layoutTextReportPages({
         reference: dom.oldTextCanvas,
-        changes,
+        entries,
         dpi: snapshot.comparison.dpi,
         paged: pageIndex == null,
       }),

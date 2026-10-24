@@ -118,10 +118,12 @@ export function createDocumentController({
 
     if (staged.old) {
       state.documents.oldDoc = staged.old.doc;
+      state.documents.oldName = staged.old.fileName;
       setDrop(dom.dropOld, staged.old.fileName);
     }
     if (staged.new) {
       state.documents.newDoc = staged.new.doc;
+      state.documents.newName = staged.new.fileName;
       setDrop(dom.dropNew, staged.new.fileName);
     }
     invalidateDocuments(state, { advanceGeneration: false });

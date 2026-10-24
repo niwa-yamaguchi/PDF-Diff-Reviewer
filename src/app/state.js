@@ -22,6 +22,8 @@ export function createAppState() {
     documents: {
       oldDoc: null,
       newDoc: null,
+      oldName: "",
+      newName: "",
       pages: 0,
       currentPage: 0,
       oldSequence: null,

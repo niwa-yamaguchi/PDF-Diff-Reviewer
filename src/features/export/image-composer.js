@@ -319,12 +319,12 @@ const REPORT_FONT_PT = 10;
 const A4_PT = Object.freeze({ width: 595, height: 842 });
 
 // paged=false は PNG 用。A4幅のまま、全件が入る高さの1枚にする。
-export function layoutTextReportPages({ reference, changes, dpi, paged }) {
+export function layoutTextReportPages({ reference, entries, dpi, paged }) {
   const unit = dpi / 72;
   const fontPx = Math.max(12, Math.round(REPORT_FONT_PT * unit));
   const context = createLike(reference, 1, 1).getContext("2d");
   context.font = `${fontPx}px sans-serif`;
-  return layoutTextReport(changes, text => context.measureText(text).width, {
+  return layoutTextReport(entries, text => context.measureText(text).width, {
     width: Math.round(A4_PT.width * unit),
     height: paged ? Math.round(A4_PT.height * unit) : Infinity,
     fontPx,
@@ -343,24 +343,21 @@ export function composeTextReportPage({ reference, layout, title, pageIndex, col
   context.textAlign = "right";
   context.fillText(`${pageIndex + 1} / ${layout.pages.length}`, width - margin, margin + lineH / 2);
   context.textAlign = "left";
-  context.fillStyle = "#999";
-  context.fillRect(margin, margin + lineH * 1.25, width - margin * 2, rule);
 
-  const runColor = { removed: colors.removed, added: colors.added, meta: "#666", plain: "#222" };
-  for (const item of layout.pages[pageIndex].items) {
+  const runColor = { removed: colors.removed, added: colors.added, meta: "#666", head: "#111", plain: "#222" };
+  const items = layout.pages[pageIndex].items;
+  context.fillStyle = "#eee";
+  for (const item of items) if (item.type === "box" && item.head) context.fillRect(item.x, item.y, item.w, item.h);
+  context.strokeStyle = "#555";
+  context.lineWidth = rule;
+  for (const item of items) if (item.type === "box") context.strokeRect(item.x, item.y, item.w, item.h);
+  for (const item of items) {
+    if (item.type !== "run") continue;
     const middle = item.y + lineH / 2;
-    if (item.type === "badge") {
-      context.fillStyle = colors[item.kind];
-      context.fillRect(item.x, item.y + lineH * 0.1, item.w, lineH * 0.8);
-      context.fillStyle = "#111";
-      context.fillText(item.text, item.x + fontPx / 2, middle);
-      continue;
-    }
-    context.fillStyle = runColor[item.style];
+    context.fillStyle = runColor[item.style] || runColor.plain;
     context.fillText(item.text, item.x, middle);
-    // 色だけに頼らないよう、削除は取り消し線、追加は下線を付ける。
-    if (item.style === "removed") context.fillRect(item.x, middle - rule / 2, item.w, rule);
-    if (item.style === "added") context.fillRect(item.x, item.y + lineH * 0.85, item.w, rule);
+    // 変えた文字は新旧とも色に下線を添える（白黒印刷でも追えるように）。
+    if (item.style === "removed" || item.style === "added") context.fillRect(item.x, item.y + lineH * 0.85, item.w, rule);
   }
   return canvas;
 }

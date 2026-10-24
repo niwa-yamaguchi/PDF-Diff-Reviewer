@@ -511,13 +511,21 @@ describe("text export snapshots", () => {
     expect(state.textReview.extractGeneration).toBe(before.textExtractGeneration);
   });
 
-  test("diff text export writes the change report instead of page images", async () => {
+  test("diff text export writes the paragraph report instead of page images", async () => {
     const { state, dependencies, controller } = harness();
     state.ui.topMode = "text";
-    state.textReview.highlights.changes = [
-      { kind: "changed", oldPage: 0, newPage: 0, oldText: "REV A", newText: "REV B", parts: [[0, "REV "], [-1, "A"], [1, "B"]] },
-      { kind: "added", oldPage: null, newPage: 1, oldText: "", newText: "note", parts: [] },
-    ];
+    state.documents.newName = "manual_new.pdf";
+    const tok = (str, y) => ({ str, off: 0, w: str.length * 5, transform: [10, 0, 0, 10, 10, y] });
+    const oldRev = tok("REV A", 700), newRev = tok("REV B", 700), note = tok("note", 700);
+    state.textReview.extraction = {
+      old: [[{ text: "REV A", tokens: [oldRev] }]],
+      new: [[{ text: "REV B", tokens: [newRev] }], [{ text: "note", tokens: [note] }]],
+    };
+    state.textReview.highlights = {
+      old: new Map([[0, [{ token: oldRev, color: "removed", start: 4, end: 5 }]]]),
+      new: new Map([[0, [{ token: newRev, color: "added", start: 4, end: 5 }]], [1, [{ token: note, color: "added" }]]]),
+      changes: [],
+    };
     const composed = [];
     dependencies.pdfExporter.saveText.mockImplementation(async ({ filename, pageCount, renderPage }) => {
       expect(filename).toBe("textreport.pdf");
@@ -529,7 +537,10 @@ describe("text export snapshots", () => {
     expect(dependencies.renderTextOffscreen).not.toHaveBeenCalled();
     const texts = composed.flatMap(item => item.getContext("2d").calls)
       .filter(call => call[0] === "fillText").map(call => call[2]);
-    expect(texts).toEqual(expect.arrayContaining(["REV ", "A", "B", "note", "#2  旧 — → 新 p2"]));
+    expect(texts).toEqual(expect.arrayContaining([
+      "manual_new テキスト差分レポート　変更 1・追加 1・削除 0",
+      "No.・頁", "新", "旧", "REV ", "A", "B", "note", "（新設）", "新 p1", "旧 p1", "新 p2",
+    ]));
 
     await expect(controller.saveTextPng("diff")).resolves.toBe(true);
     expect(dependencies.download).toHaveBeenCalledWith(expect.any(Blob), "textreport_p1.png");
