@@ -4,6 +4,7 @@ import {
   composeToggleExport,
   composeVisualExport,
   layoutTextReportPages,
+  textExportLayout,
   textReportRuns,
   toggleExportLayout,
   VISUAL_BOX_STYLE,
@@ -445,21 +446,32 @@ export function createExportController({
       renderTextOffscreen({ side: "old", pageIndex, snapshot }),
       renderTextOffscreen({ side: "new", pageIndex, snapshot }),
     ]);
-    return composeTextExport({
-      oldCanvas,
-      newCanvas,
-      pageIndex,
-      total: snapshot.textTotal,
-      colors: textColors,
-    });
+    return {
+      canvas: composeTextExport({
+        oldCanvas,
+        newCanvas,
+        pageIndex,
+        total: snapshot.textTotal,
+        colors: textColors,
+      }),
+      panes: textExportLayout({ oldCanvas, newCanvas }).panes,
+    };
   }
 
-  // 並べて（pair）か片側（old/new）のページ画像。差分（diff）は変更一覧レポートとして別に作る。
+  // 並べて（pair）か片側（old/new）のページ画像と、各版のページを置いた左上。差分（diff）は変更一覧レポートとして別に作る。
   async function renderTextKind(snapshot, pageIndex, kind) {
     if (kind === "pair") return renderTextPage(snapshot, pageIndex);
     const canvas = await renderTextOffscreen({ side: kind, pageIndex, snapshot });
     if (!canvas) throw new Error("この版にこのページはありません");
-    return canvas;
+    return { canvas, panes: { [kind]: { x: 0, y: 0 } } };
+  }
+
+  // ページ画像に重ねる各版の文字。ページは snapshot.scale で描いてあるので、その画素のまま左上だけずらす。
+  async function textPageRuns(snapshot, pageIndex, panes) {
+    const runs = await Promise.all(Object.entries(panes).map(async ([side, offset]) => (
+      placeRuns(await pageTextRuns(snapshot.documents[side], pageIndex, snapshot.scale), [1, 0, 0, 1, 0, 0], offset)
+    )));
+    return runs.flat();
   }
 
   // pageIndex を渡すとそのページに関わる段落だけの1枚、null なら全件をA4でページ分けする。
@@ -503,7 +515,7 @@ export function createExportController({
     try {
       const canvas = kind === "diff"
         ? textReportPage(textReport(snapshot, snapshot.textPage), 0)
-        : await renderTextKind(snapshot, snapshot.textPage, kind);
+        : (await renderTextKind(snapshot, snapshot.textPage, kind)).canvas;
       const blob = await toBlob(canvas);
       await download(blob, filename);
       setOwnedStatus(session, "テキスト差分を表示中");
@@ -523,6 +535,7 @@ export function createExportController({
     const pageCount = report ? report.layout.pages.length
       : kind === "pair" ? snapshot.textTotal : (snapshot.documents[kind]?.numPages || 0);
     const session = start("text", snapshot, "PDF生成中…（1/" + pageCount + "）");
+    const runsByPage = new Map();
     try {
       await pdfExporter.saveText({
         pageCount,
@@ -531,10 +544,15 @@ export function createExportController({
         onPage(pageIndex, total) {
           setOwnedStatus(session, `PDF生成中…（${pageIndex + 1}/${total}）`);
         },
-        renderPage: pageIndex => (
-          report ? textReportPage(report, pageIndex) : renderTextKind(snapshot, pageIndex, kind)
-        ),
-        textRuns: report ? pageIndex => textReportRuns({ ...report, pageIndex }) : undefined,
+        renderPage: async pageIndex => {
+          if (report) return textReportPage(report, pageIndex);
+          const { canvas, panes } = await renderTextKind(snapshot, pageIndex, kind);
+          runsByPage.set(pageIndex, await textPageRuns(snapshot, pageIndex, panes));
+          return canvas;
+        },
+        textRuns: report
+          ? pageIndex => textReportRuns({ ...report, pageIndex })
+          : pageIndex => runsByPage.get(pageIndex) || [],
       });
       setOwnedStatus(session, "PDFを保存しました");
       return true;

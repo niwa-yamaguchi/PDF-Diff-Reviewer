@@ -117,6 +117,7 @@ function harness(overrides = {}) {
       return session;
     }),
     renderTextOffscreen: vi.fn(async () => canvas(100, 200)),
+    pageTextRuns: vi.fn(async () => []),
     pdfExporter: {
       saveVisual: vi.fn(async ({ pageCount, renderPage }) => {
         for (let page = 0; page < pageCount; page += 1) await renderPage(page);
@@ -503,6 +504,9 @@ describe("text export snapshots", () => {
 
     expect(new Set(calls.map(call => call.snapshot)).size).toBe(1);
     expect(calls).toHaveLength(4);
+    // 重ねる文字も、書き出し開始時の文書と倍率から取る。
+    expect(dependencies.pageTextRuns.mock.calls.map(([doc, page, scale]) => [doc.id, page, scale]))
+      .toEqual([["old", 0, 2], ["new", 0, 2], ["old", 1, 2], ["new", 1, 2]]);
     expect(dom.oldTextCanvas).toBe(before.oldTextCanvas);
     expect(dom.newTextCanvas).toBe(before.newTextCanvas);
     expect([dom.oldTextCanvas.width, dom.oldTextCanvas.height]).toEqual(before.oldTextSize);
@@ -555,14 +559,20 @@ describe("text export snapshots", () => {
       sides.push(side);
       return canvas(100, 200);
     });
-    dependencies.pdfExporter.saveText.mockImplementation(async ({ filename, pageCount, renderPage }) => {
+    dependencies.pageTextRuns.mockImplementation(async (_doc, page) => [{ text: `P${page + 1}`, x: 5, y: 6, size: 10, w: 20, angle: 0 }]);
+    const runs = [];
+    dependencies.pdfExporter.saveText.mockImplementation(async ({ filename, pageCount, renderPage, textRuns }) => {
       expect(filename).toBe("text_old.pdf");
       expect(pageCount).toBe(3);
-      for (let page = 0; page < pageCount; page += 1) await renderPage(page);
+      for (let page = 0; page < pageCount; page += 1) {
+        await renderPage(page);
+        runs.push(...textRuns(page));
+      }
     });
 
     await expect(controller.saveTextPdf("old")).resolves.toBe(true);
     expect(sides).toEqual(["old", "old", "old"]);
+    expect(runs.map(run => [run.text, run.x, run.y])).toEqual([["P1", 5, 6], ["P2", 5, 6], ["P3", 5, 6]]);
 
     dependencies.renderTextOffscreen.mockResolvedValue(null);
     await expect(controller.saveTextPng("new")).resolves.toBe(false);

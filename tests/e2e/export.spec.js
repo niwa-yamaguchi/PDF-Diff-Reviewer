@@ -70,7 +70,8 @@ test("downloads visual and text PNG/PDF without changing either committed view",
   await page.locator("#textZoomIn").click();
 
   await expectDownload(page, "#dlTextPng", "textdiff_p1.png", textView);
-  await expectDownload(page, "#dlTextPdf", "textdiff.pdf", textView);
+  const textPdf = await readFile(await (await expectDownload(page, "#dlTextPdf", "textdiff.pdf", textView)).path(), "latin1");
+  expect(textPdf).toContain("/ToUnicode");
   await page.locator("#textExportKind").selectOption("new");
   await expectDownload(page, "#dlTextPng", "text_new_p1.png", textView);
   await page.locator("#textExportKind").selectOption("diff");

@@ -260,19 +260,39 @@ export function composeToggleExport({
   return canvas;
 }
 
+// テキスト比較の並べた出力の寸法と、旧・新それぞれのページ画像を置く左上。
+export function textExportLayout({ oldCanvas, newCanvas }) {
+  const oldSize = oldCanvas || newCanvas;
+  const newSize = newCanvas || oldCanvas;
+  const labelHeight = 28;
+  const gap = 24;
+  const cellW = Math.max(oldSize.width, newSize.width);
+  const horizontal = togglePairLayout(cellW, Math.max(oldSize.height, newSize.height)) === "horizontal";
+  const newX = horizontal ? cellW + gap : 0;
+  const newLabelY = horizontal ? 0 : labelHeight + oldSize.height + gap;
+  return {
+    horizontal,
+    labelHeight,
+    cellW,
+    newX,
+    newLabelY,
+    width: horizontal ? cellW * 2 + gap : cellW,
+    height: horizontal
+      ? labelHeight + Math.max(oldSize.height, newSize.height)
+      : labelHeight + oldSize.height + gap + labelHeight + newSize.height,
+    panes: {
+      old: { x: (cellW - oldSize.width) / 2, y: labelHeight },
+      new: { x: newX + (cellW - newSize.width) / 2, y: newLabelY + labelHeight },
+    },
+  };
+}
+
 export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colors }) {
   const reference = oldCanvas || newCanvas;
   if (!reference) throw new Error("テキスト出力元Canvasがありません");
   const oldSource = oldCanvas || whiteCanvas(reference, newCanvas.width, newCanvas.height);
   const newSource = newCanvas || whiteCanvas(reference, oldCanvas.width, oldCanvas.height);
-  const labelHeight = 28;
-  const gap = 24;
-  const cellW = Math.max(oldSource.width, newSource.width);
-  const horizontal = togglePairLayout(cellW, Math.max(oldSource.height, newSource.height)) === "horizontal";
-  const width = horizontal ? cellW * 2 + gap : cellW;
-  const height = horizontal
-    ? labelHeight + Math.max(oldSource.height, newSource.height)
-    : labelHeight + oldSource.height + gap + labelHeight + newSource.height;
+  const { horizontal, labelHeight, cellW, newX, newLabelY, width, height, panes } = textExportLayout({ oldCanvas, newCanvas });
   const canvas = whiteCanvas(reference, width, height);
   const context = canvas.getContext("2d");
 
@@ -308,13 +328,11 @@ export function composeTextExport({ oldCanvas, newCanvas, pageIndex, total, colo
     );
   }
 
-  context.drawImage(oldSource, (cellW - oldSource.width) / 2, labelHeight);
-  const newX = horizontal ? cellW + gap : 0;
-  const newLabelY = horizontal ? 0 : labelHeight + oldSource.height + gap;
+  context.drawImage(oldSource, panes.old.x, panes.old.y);
   context.fillStyle = colors.added;
   context.textAlign = "left";
   context.fillText("NEW", newX + 4, newLabelY + labelHeight / 2);
-  context.drawImage(newSource, newX + (cellW - newSource.width) / 2, newLabelY + labelHeight);
+  context.drawImage(newSource, panes.new.x, panes.new.y);
   return canvas;
 }
 
