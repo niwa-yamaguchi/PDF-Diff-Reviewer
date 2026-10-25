@@ -39,6 +39,30 @@ test.each([
   expect(renderPage).toHaveBeenCalledTimes(2);
 });
 
+test("overlays invisible text in the bundled font when text runs are given", async () => {
+  const calls = [];
+  function JsPdf() {
+    for (const name of ["addPage", "addImage", "save", "addFileToVFS", "addFont", "setFont", "setFontSize", "text"]) {
+      this[name] = vi.fn((...args) => calls.push([name, ...args]));
+    }
+  }
+  const loadFont = vi.fn(async () => "\x00\x01\x00\x00font");
+  const exporter = createPdfExporter({ jsPDF: JsPdf, loadFont });
+
+  await exporter.saveText({
+    pageCount: 1,
+    dpi: 144,
+    renderPage: () => ({ width: 200, height: 400, toDataURL: () => "png" }),
+    textRuns: () => [{ text: "変更点", x: 20, y: 40, size: 24 }],
+    filename: "textreport.pdf",
+  });
+
+  expect(calls.map(([name]) => name)).toEqual(["addFileToVFS", "addFont", "setFont", "addImage", "setFontSize", "text", "save"]);
+  expect(calls[0][2]).toBe("\x00\x01\x00\x00font");
+  expect(calls.find(([name]) => name === "setFontSize")[1]).toBe(12);
+  expect(calls.find(([name]) => name === "text").slice(1)).toEqual(["変更点", 10, 20, { baseline: "middle", renderingMode: "invisible" }]);
+});
+
 test("propagates page rendering and PDF errors without saving a partial document", async () => {
   const save = vi.fn();
   function JsPdf() {

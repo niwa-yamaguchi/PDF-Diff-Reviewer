@@ -15,6 +15,7 @@ import {
 import { createCanvas, createWhiteCanvas } from "../platform/canvas.js";
 import { downloadBlob } from "../platform/download.js";
 import { pdfjsLib } from "../platform/pdfjs.js";
+import { loadReportFont } from "../platform/report-font.js";
 import { createDocumentController } from "../features/documents/document-controller.js";
 import { createPageMappingController } from "../features/documents/page-mapping-controller.js";
 import { describeMapping } from "../core/page-mapping/page-mapping.js";
@@ -72,6 +73,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   downloadBlob,
   pdfjsLib,
   jsPDF,
+  loadReportFont,
   createDocumentController,
   createPageMappingController,
   framePlan,
@@ -589,7 +591,7 @@ export function createApp({ document, window, dependencies = {} }) {
     renderTextOffscreen: ({ side, pageIndex, snapshot }) => (
       textRenderer.renderOffscreen({ side, pageIndex, snapshot })
     ),
-    pdfExporter: deps.createPdfExporter({ jsPDF: deps.jsPDF }),
+    pdfExporter: deps.createPdfExporter({ jsPDF: deps.jsPDF, loadFont: deps.loadReportFont }),
     download: deps.downloadBlob,
     textColors,
     errorReporter,

@@ -362,4 +362,14 @@ export function composeTextReportPage({ reference, layout, title, pageIndex, col
   return canvas;
 }
 
+// composeTextReportPage が描く文字（題と本文）の位置。PDFに透明な文字として重ねる。y は行の中央。
+export function textReportRuns({ layout, title, pageIndex }) {
+  const { fontPx, lineH, margin } = layout;
+  const runs = [{ text: title, x: margin, y: margin + lineH / 2, size: fontPx }];
+  for (const item of layout.pages[pageIndex].items) {
+    if (item.type === "run") runs.push({ text: item.text, x: item.x, y: item.y + lineH / 2, size: fontPx });
+  }
+  return runs;
+}
+
 export const VISUAL_BOX_STYLE = Object.freeze({ color: BOX_COLOR, fill: BOX_FILL });
