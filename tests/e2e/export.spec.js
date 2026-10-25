@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { expectDownload, pngSize } from "../helpers/export-download.js";
 
@@ -72,5 +73,8 @@ test("downloads visual and text PNG/PDF without changing either committed view",
   await expectDownload(page, "#dlTextPng", "text_new_p1.png", textView);
   await page.locator("#textExportKind").selectOption("diff");
   await expectDownload(page, "#dlTextPng", "textreport_p1.png", textView);
-  await expectDownload(page, "#dlTextPdf", "textreport.pdf", textView);
+  const report = await readFile(await (await expectDownload(page, "#dlTextPdf", "textreport.pdf", textView)).path(), "latin1");
+  // 画像だけでなく、検索できる文字（同梱フォントと文字の対応表）が入っている。
+  expect(report).toContain("/FontFile2");
+  expect(report).toContain("/ToUnicode");
 });

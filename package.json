@@ -24,6 +24,7 @@
     "node": ">=22.12 <23"
   },
   "dependencies": {
+    "@expo-google-fonts/noto-sans-jp": "0.4.4",
     "diff-match-patch": "1.0.5",
     "jspdf": "2.5.1",
     "pdfjs-dist": "3.11.174"

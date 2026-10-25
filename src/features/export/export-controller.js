@@ -4,6 +4,7 @@ import {
   composeToggleExport,
   composeVisualExport,
   layoutTextReportPages,
+  textReportRuns,
   VISUAL_BOX_STYLE,
 } from "./image-composer.js";
 import { reviewLabels } from "../../core/change-review/label.js";
@@ -499,6 +500,7 @@ export function createExportController({
         renderPage: pageIndex => (
           report ? textReportPage(report, pageIndex) : renderTextKind(snapshot, pageIndex, kind)
         ),
+        textRuns: report ? pageIndex => textReportRuns({ ...report, pageIndex }) : undefined,
       });
       setOwnedStatus(session, "PDFを保存しました");
       return true;

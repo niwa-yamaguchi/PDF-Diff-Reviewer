@@ -18,6 +18,9 @@ for (const required of ["dist/pdfjs/cmaps", "dist/pdfjs/standard_fonts"]) {
 }
 const worker = files.find(path => /pdf\.worker\.min-[^/\\]+\.js$/.test(path));
 if (!worker) throw new Error("Production dist is missing the local pdf.js worker.");
+if (!files.some(path => /NotoSansJP_400Regular-[^/\\]+\.ttf$/.test(path))) {
+  throw new Error("Production dist is missing the bundled report font.");
+}
 for (const path of files.filter(path => /\.(?:html|css|js)$/.test(path))) {
   const source = await readFile(path, "utf8");
   if (/cdnjs|jsdelivr/i.test(source)) {
@@ -25,6 +28,6 @@ for (const path of files.filter(path => /\.(?:html|css|js)$/.test(path))) {
   }
 }
 const licenses = await readFile("dist/THIRD_PARTY_LICENSES.txt", "utf8");
-for (const name of ["pdfjs-dist@", "jspdf@", "diff-match-patch@"]) {
+for (const name of ["pdfjs-dist@", "jspdf@", "diff-match-patch@", "@expo-google-fonts/noto-sans-jp@"]) {
   if (!licenses.includes(name)) throw new Error(`THIRD_PARTY_LICENSES.txt is missing ${name}`);
 }
