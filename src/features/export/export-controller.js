@@ -112,8 +112,9 @@ function captureSnapshot(state) {
   const review = Object.freeze({
     labels: reviewLabels(reviewItems, state.review?.entriesById),
     // Indexed pages export their review boxes so labels can be matched by id; others export unlabeled.
+    // rect は索引の低解像度のままのことがあるので、正規化座標で持ち、出力ページの寸法で換算する。
     boxesByPage: new Map([...reviewItems].map(([page, items]) => [
-      page, items.map(item => ({ ...item.rect, id: item.id })),
+      page, items.map(item => ({ ...item.normalizedRect, id: item.id })),
     ])),
   });
   return Object.freeze({
@@ -156,6 +157,9 @@ function visualLegend(kind, showBoxes) {
 
 // 差分保存は差分描画、それ以外（並べて／旧版／新版）は新旧切替描画の左右Canvasから作る。
 const renderModeFor = kind => (kind === "diff" ? "diff" : "toggle");
+const scaleBoxes = (boxes, { width, height }) => boxes?.map(box => ({
+  id: box.id, x: box.x * width, y: box.y * height, w: box.w * width, h: box.h * height,
+}));
 
 function visualRenderSnapshot(snapshot, pageIndex, mode) {
   const manualBoxes = snapshot.boxEditor.editsByPage.get(pageIndex);
@@ -417,7 +421,7 @@ export function createExportController({
           runsByPage.set(pageIndex, await visualTextRuns(snapshot, kind, result));
           const manual = snapshot.boxEditor.editsByPage.get(pageIndex);
           const boxes = !snapshot.boxEditor.showBoxes ? []
-            : (manual ?? snapshot.review.boxesByPage.get(pageIndex) ?? result.boxes ?? []);
+            : (manual ?? scaleBoxes(snapshot.review.boxesByPage.get(pageIndex), result.canvas) ?? result.boxes ?? []);
           return composePage(kind, {
             source: result.canvas,
             sides: result.toggleCache?.sideCanvases,

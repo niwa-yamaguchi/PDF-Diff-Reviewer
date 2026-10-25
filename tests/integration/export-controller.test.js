@@ -313,6 +313,26 @@ describe("visual export snapshots", () => {
       .some(call => call[0] === "fillText" && call[2] === "変更枠")).toBe(false);
   });
 
+  test("indexed review boxes are scaled to the exported page, not the lower index resolution", async () => {
+    const { state, dependencies, controller } = harness();
+    state.boxEditor.editsByPage.clear();
+    const composed = [];
+    dependencies.pdfExporter.saveVisual.mockImplementation(async ({ pageCount, renderPage }) => {
+      for (let page = 0; page < pageCount; page += 1) composed.push(await renderPage(page));
+    });
+    dependencies.renderVisualOffscreen.mockResolvedValue({ canvas: canvas(200, 100), boxes: [] });
+    // 索引は低解像度（ここでは出力の半分）なので rect は小さく、正規化座標が正となる。
+    state.review.itemsByPage.set(1, [{
+      id: "c1", pageIndex: 1, rect: { x: 10, y: 5, w: 20, h: 10 },
+      normalizedRect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+    }]);
+
+    await controller.saveVisualPdf();
+    const fill = composed[1].getContext("2d").calls
+      .find(call => call[0] === "fillRect" && call[1] === "rgba(255,149,0,0.18)");
+    expect(fill.slice(-4)).toEqual([20, 10, 40, 20]);
+  });
+
   test("captures visual PNG pixels, filename, boxes and legend before Blob completion", async () => {
     const { state, dom, dependencies, controller } = harness();
     state.visual.mode = "toggle";
