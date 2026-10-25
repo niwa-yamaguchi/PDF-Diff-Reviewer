@@ -11,10 +11,15 @@ function points(canvas, dpi) {
 }
 
 // 画像の上に同じ位置で透明な文字を置き、検索・選択できるようにする（OCR済みPDFと同じ形）。
+// run は画素単位の {text, x, y, size, w?, angle?, baseline?}。angle は時計回りのラジアン。
+// w があれば字間で幅を合わせ、選択範囲が絵の文字からずれないようにする。
 function addInvisibleText(pdf, runs, scale) {
   for (const run of runs) {
     pdf.setFontSize(run.size / scale);
-    pdf.text(run.text, run.x / scale, run.y / scale, { baseline: "middle", renderingMode: "invisible" });
+    const options = { baseline: run.baseline || "alphabetic", renderingMode: "invisible" };
+    if (run.angle) options.angle = -run.angle * 180 / Math.PI;
+    if (run.w) options.charSpace = (run.w / scale - pdf.getTextWidth(run.text)) / [...run.text].length;
+    pdf.text(run.text, run.x / scale, run.y / scale, options);
   }
 }
 

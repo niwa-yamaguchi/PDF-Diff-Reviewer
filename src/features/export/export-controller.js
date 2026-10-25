@@ -5,6 +5,7 @@ import {
   composeVisualExport,
   layoutTextReportPages,
   textReportRuns,
+  toggleExportLayout,
   VISUAL_BOX_STYLE,
 } from "./image-composer.js";
 import { reviewLabels } from "../../core/change-review/label.js";
@@ -179,6 +180,20 @@ function visualRenderSnapshot(snapshot, pageIndex, mode) {
   });
 }
 
+// ページの画素の文字を、行列 [a, b, c, d, e, f] と出力上の左上 offset で書き出し画像の画素へ移す。
+function placeRuns(runs, [a, b, c, d, e, f], offset) {
+  const k = Math.hypot(a, b);
+  const turn = Math.atan2(b, a);
+  return runs.map(run => ({
+    ...run,
+    x: a * run.x + c * run.y + e + offset.x,
+    y: b * run.x + d * run.y + f + offset.y,
+    size: run.size * k,
+    w: run.w * k,
+    angle: run.angle + turn,
+  }));
+}
+
 function toBlob(canvas) {
   return new Promise((resolve, reject) => {
     try {
@@ -199,6 +214,7 @@ export function createExportController({
   createVisualRenderSession,
   renderTextOffscreen,
   pdfExporter,
+  pageTextRuns,
   download,
   errorReporter,
   textColors,
@@ -365,11 +381,27 @@ export function createExportController({
     }
   }
 
+  // 図面に重ねる文字。差分は削除された文字も探せるよう新旧の両方、並べては左右それぞれの位置に置く。
+  async function visualTextRuns(snapshot, kind, result) {
+    const sides = kind === "diff" || kind === "pair" ? ["old", "new"] : [kind];
+    const panes = kind === "pair"
+      ? toggleExportLayout({ oldCanvas: result.toggleCache?.sideCanvases?.old, newCanvas: result.toggleCache?.sideCanvases?.new, dpi: snapshot.comparison.dpi }).panes
+      : null;
+    const runs = await Promise.all(sides.map(async side => {
+      const frame = result.textFrames?.[side];
+      if (!frame) return [];
+      const doc = side === "old" ? snapshot.documents.oldDoc : snapshot.documents.newDoc;
+      return placeRuns(await pageTextRuns(doc, frame.index, frame.scale), frame.matrix, panes?.[side] || { x: 0, y: 0 });
+    }));
+    return runs.flat();
+  }
+
   async function saveVisualPdf(kind = "diff") {
     const snapshot = captureSnapshot(state);
     const session = start("visual", snapshot, "PDF生成中…");
     session.renderSession = createVisualRenderSession();
     const mode = renderModeFor(kind);
+    const runsByPage = new Map();
     try {
       await pdfExporter.saveVisual({
         pageCount: snapshot.documents.pages,
@@ -381,6 +413,7 @@ export function createExportController({
             pageIndex,
             renderSnapshot: visualRenderSnapshot(snapshot, pageIndex, mode),
           });
+          runsByPage.set(pageIndex, await visualTextRuns(snapshot, kind, result));
           const manual = snapshot.boxEditor.editsByPage.get(pageIndex);
           const boxes = !snapshot.boxEditor.showBoxes ? []
             : (manual ?? snapshot.review.boxesByPage.get(pageIndex) ?? result.boxes ?? []);
@@ -395,6 +428,7 @@ export function createExportController({
             total: snapshot.documents.pages,
           });
         },
+        textRuns: pageIndex => runsByPage.get(pageIndex) || [],
       });
       setOwnedStatus(session, "PDFを保存しました");
       return true;

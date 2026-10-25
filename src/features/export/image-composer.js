@@ -145,9 +145,7 @@ function toggleLabelMetrics(dpi) {
   };
 }
 
-function drawPane(context, source, x, y, cellW, cellH, boxes, dpi, labels) {
-  const ox = x + (cellW - source.width) / 2;
-  const oy = y + (cellH - source.height) / 2;
+function drawPane(context, source, { x: ox, y: oy }, boxes, dpi, labels) {
   context.drawImage(source, ox, oy);
   if (!boxes?.length) return;
   const shifted = boxes.map(box => ({
@@ -159,6 +157,32 @@ function drawPane(context, source, x, y, cellW, cellH, boxes, dpi, labels) {
   }));
   drawBoxes(context, shifted, dpi);
   drawBoxLabels(context, shifted, dpi, labels);
+}
+
+// 並べた出力の寸法と、旧・新それぞれの画像を置く左上。片側が無いときはもう片側と同じ大きさの白紙を置く。
+export function toggleExportLayout({ oldCanvas, newCanvas, dpi }) {
+  const oldSize = oldCanvas || newCanvas;
+  const newSize = newCanvas || oldCanvas;
+  const cellW = Math.max(oldSize.width, newSize.width);
+  const cellH = Math.max(oldSize.height, newSize.height);
+  const layout = togglePairLayout(cellW, cellH);
+  const metrics = toggleLabelMetrics(dpi);
+  const horizontal = layout === "horizontal";
+  const newHeaderY = horizontal ? 0 : metrics.labelHeight + cellH + metrics.gap;
+  const cells = {
+    old: { x: 0, y: metrics.labelHeight },
+    new: { x: horizontal ? cellW + metrics.gap : 0, y: newHeaderY + metrics.labelHeight },
+  };
+  const origin = (cell, size) => ({ x: cell.x + (cellW - size.width) / 2, y: cell.y + (cellH - size.height) / 2 });
+  return {
+    horizontal,
+    metrics,
+    cellW,
+    newHeaderY,
+    width: horizontal ? cellW * 2 + metrics.gap : cellW,
+    height: horizontal ? metrics.labelHeight + cellH : metrics.labelHeight * 2 + cellH * 2 + metrics.gap,
+    panes: { old: origin(cells.old, oldSize), new: origin(cells.new, newSize) },
+  };
 }
 
 function drawToggleHeader(context, {
@@ -214,15 +238,8 @@ export function composeToggleExport({
   if (!reference) throw new Error("出力元Canvasがありません");
   const oldSource = oldCanvas || whiteCanvas(reference, newCanvas.width, newCanvas.height);
   const newSource = newCanvas || whiteCanvas(reference, oldCanvas.width, oldCanvas.height);
-  const cellW = Math.max(oldSource.width, newSource.width);
-  const cellH = Math.max(oldSource.height, newSource.height);
-  const layout = togglePairLayout(cellW, cellH);
-  const metrics = toggleLabelMetrics(dpi);
+  const { horizontal, metrics, cellW, newHeaderY, width, height, panes } = toggleExportLayout({ oldCanvas, newCanvas, dpi });
   const pageText = `p ${pageIndex + 1} / ${total}`;
-  const width = layout === "horizontal" ? cellW * 2 + metrics.gap : cellW;
-  const height = layout === "horizontal"
-    ? metrics.labelHeight + cellH
-    : metrics.labelHeight * 2 + cellH * 2 + metrics.gap;
   const canvas = destination || createLike(reference, 0, 0);
   canvas.width = width;
   canvas.height = height;
@@ -230,30 +247,16 @@ export function composeToggleExport({
   context.fillStyle = "#fff";
   context.fillRect(0, 0, width, height);
 
-  if (layout === "horizontal") {
-    drawToggleHeader(context, {
-      label: "OLD", color: colors.removed, legend,
-      x: 0, y: 0, width: cellW, metrics,
-    });
-    drawToggleHeader(context, {
-      label: "NEW", color: colors.added, pageText,
-      x: cellW + metrics.gap, y: 0, width: cellW, metrics,
-    });
-    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
-    drawPane(context, newSource, cellW + metrics.gap, metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
-  } else {
-    drawToggleHeader(context, {
-      label: "OLD", color: colors.removed, pageText, legend,
-      x: 0, y: 0, width, metrics,
-    });
-    drawPane(context, oldSource, 0, metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
-    const newY = metrics.labelHeight + cellH + metrics.gap;
-    drawToggleHeader(context, {
-      label: "NEW", color: colors.added,
-      x: 0, y: newY, width, metrics,
-    });
-    drawPane(context, newSource, 0, newY + metrics.labelHeight, cellW, cellH, boxes, dpi, labels);
-  }
+  drawToggleHeader(context, {
+    label: "OLD", color: colors.removed, legend, pageText: horizontal ? null : pageText,
+    x: 0, y: 0, width: cellW, metrics,
+  });
+  drawToggleHeader(context, {
+    label: "NEW", color: colors.added, pageText: horizontal ? pageText : null,
+    x: horizontal ? cellW + metrics.gap : 0, y: newHeaderY, width: cellW, metrics,
+  });
+  drawPane(context, oldSource, panes.old, boxes, dpi, labels);
+  drawPane(context, newSource, panes.new, boxes, dpi, labels);
   return canvas;
 }
 
@@ -365,9 +368,9 @@ export function composeTextReportPage({ reference, layout, title, pageIndex, col
 // composeTextReportPage が描く文字（題と本文）の位置。PDFに透明な文字として重ねる。y は行の中央。
 export function textReportRuns({ layout, title, pageIndex }) {
   const { fontPx, lineH, margin } = layout;
-  const runs = [{ text: title, x: margin, y: margin + lineH / 2, size: fontPx }];
+  const runs = [{ text: title, x: margin, y: margin + lineH / 2, size: fontPx, baseline: "middle" }];
   for (const item of layout.pages[pageIndex].items) {
-    if (item.type === "run") runs.push({ text: item.text, x: item.x, y: item.y + lineH / 2, size: fontPx });
+    if (item.type === "run") runs.push({ text: item.text, x: item.x, y: item.y + lineH / 2, size: fontPx, w: item.w, baseline: "middle" });
   }
   return runs;
 }

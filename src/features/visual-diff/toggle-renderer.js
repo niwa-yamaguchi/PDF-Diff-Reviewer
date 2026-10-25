@@ -68,6 +68,7 @@ export async function renderTogglePage(snapshot, dependencies, { onProgress = nu
   };
   return {
     canvas: pageCache.sideCanvases[snapshot.visual.toggleSide],
+    textFrames: prepared.textFrames,
     currentPlan: prepared.currentPlan,
     alignmentCache: prepared.alignmentCache,
     quadrantCache: prepared.quadrantCache,

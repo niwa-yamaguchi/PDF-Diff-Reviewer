@@ -1,4 +1,5 @@
 import { DIFF_RGB } from "../../core/image-diff/diff-compute.js";
+import { composeAffine } from "../../core/geometry/affine.js";
 
 const QUAD_PROBE_LONG = 512;
 const BOX_BASE_DPI = 150;
@@ -157,14 +158,21 @@ function alignmentMatrix(snapshot, cache, oldWidth, oldHeight, newWidth, newHeig
   };
 }
 
-function alignedNewBounds(newCanvas, matrix, comparison) {
-  if (!newCanvas || !matrix.applied) return null;
+// 新版の画素（90°回転後）を作業枠の画素へ移す行列 [a, b, c, d, e, f]（Canvas の setTransform と同じ並び）。
+function alignedNewTransform(newCanvas, matrix, comparison) {
+  if (!matrix.applied) return [1, 0, 0, 1, comparison.dx, comparison.dy];
   const centerX = newCanvas.width / 2;
   const centerY = newCanvas.height / 2;
   const cos = Math.cos(matrix.angle) * matrix.scale;
   const sin = Math.sin(matrix.angle) * matrix.scale;
-  const e = centerX + matrix.tx + comparison.dx - (cos * centerX - sin * centerY);
-  const f = centerY + matrix.ty + comparison.dy - (sin * centerX + cos * centerY);
+  const e = centerX + matrix.tx + comparison.dx;
+  const f = centerY + matrix.ty + comparison.dy;
+  return [cos, sin, -sin, cos, e - (cos * centerX - sin * centerY), f - (sin * centerX + cos * centerY)];
+}
+
+function alignedNewBounds(newCanvas, matrix, comparison) {
+  if (!newCanvas || !matrix.applied) return null;
+  const [a, b, c, d, e, f] = alignedNewTransform(newCanvas, matrix, comparison);
   const corners = [
     [0, 0],
     [newCanvas.width, 0],
@@ -174,8 +182,8 @@ function alignedNewBounds(newCanvas, matrix, comparison) {
   let x1 = -Infinity;
   let y1 = -Infinity;
   for (const [x, y] of corners) {
-    x1 = Math.max(x1, cos * x - sin * y + e);
-    y1 = Math.max(y1, sin * x + cos * y + f);
+    x1 = Math.max(x1, a * x + c * y + e);
+    y1 = Math.max(y1, b * x + d * y + f);
   }
   return { x1, y1 };
 }
@@ -184,27 +192,36 @@ function renderAlignedNewCanvas(newCanvas, matrix, width, height, comparison, de
   const canvas = dependencies.createWhiteCanvas(width, height);
   const context = canvas.getContext("2d");
   if (!newCanvas) return canvas;
-  const centerX = newCanvas.width / 2;
-  const centerY = newCanvas.height / 2;
-  if (matrix.applied) {
-    const cos = Math.cos(matrix.angle) * matrix.scale;
-    const sin = Math.sin(matrix.angle) * matrix.scale;
-    const e = centerX + matrix.tx + comparison.dx;
-    const f = centerY + matrix.ty + comparison.dy;
-    context.setTransform(
-      cos,
-      sin,
-      -sin,
-      cos,
-      e - (cos * centerX - sin * centerY),
-      f - (sin * centerX + cos * centerY),
-    );
-    context.drawImage(newCanvas, 0, 0);
-    context.setTransform(1, 0, 0, 1, 0, 0);
-  } else {
-    context.drawImage(newCanvas, comparison.dx, comparison.dy);
-  }
+  context.setTransform(...alignedNewTransform(newCanvas, matrix, comparison));
+  context.drawImage(newCanvas, 0, 0);
+  context.setTransform(1, 0, 0, 1, 0, 0);
   return canvas;
+}
+
+// rotateCanvas90 と同じ回転。回転前の幅・高さ w, h の画素を回転後の画素へ移す。
+function quarterTurnTransform(turns, w, h) {
+  return [
+    [1, 0, 0, 1, 0, 0],
+    [0, 1, -1, 0, h, 0],
+    [-1, 0, 0, -1, w, h],
+    [0, -1, 1, 0, 0, w],
+  ][((turns % 4) + 4) % 4];
+}
+
+// 各版のページを scale で描いた画素から、作業枠（書き出し画像）の画素への行列。PDFに透明な文字を重ねるのに使う。
+function textFrames(indexes, plan, quadrant, newCanvas, matrix, comparison) {
+  const odd = quadrant % 2;
+  return {
+    old: indexes.old == null ? null : { index: indexes.old, scale: plan.oldScale, matrix: [1, 0, 0, 1, 0, 0] },
+    new: indexes.new == null || !newCanvas ? null : {
+      index: indexes.new,
+      scale: plan.newScale,
+      matrix: composeAffine(
+        alignedNewTransform(newCanvas, matrix, comparison),
+        quarterTurnTransform(quadrant, odd ? newCanvas.height : newCanvas.width, odd ? newCanvas.width : newCanvas.height),
+      ),
+    },
+  };
 }
 
 function workFrame(oldCanvas, newCanvas, matrix, comparison) {
@@ -325,6 +342,7 @@ export async function prepareVisualPage(
     indexes,
     quadrant,
     currentPlan,
+    textFrames: textFrames(indexes, currentPlan, quadrant, newCanvas, matrix, snapshot.comparison),
     quadrantCache,
     alignmentCache,
     oldCanvas,
@@ -422,6 +440,7 @@ export async function renderDiffPage(snapshot, dependencies, { onProgress = null
     : snapshot.boxEditor.manualBoxes.map(box => ({ ...box }));
   return {
     canvas,
+    textFrames: prepared.textFrames,
     currentPlan: prepared.currentPlan,
     alignmentCache: prepared.alignmentCache,
     quadrantCache: prepared.quadrantCache,

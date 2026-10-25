@@ -47,7 +47,9 @@ test("downloads visual and text PNG/PDF without changing either committed view",
   await expect(page.locator("#status")).toHaveText("差分を表示中");
 
   await expectDownload(page, "#dlPng", "diff_p1.png", visualView);
-  await expectDownload(page, "#dlPdf", "diff.pdf", visualView);
+  const diffPdf = await readFile(await (await expectDownload(page, "#dlPdf", "diff.pdf", visualView)).path(), "latin1");
+  // 図面の文字も透明な文字として重なり、検索できる。
+  expect(diffPdf).toContain("/ToUnicode");
   // 表示中のモードと違う形式も選べる（差分表示のまま旧版を保存）。
   await page.locator("#exportKind").selectOption("old");
   await expectDownload(page, "#dlPng", "old_p1.png", visualView);

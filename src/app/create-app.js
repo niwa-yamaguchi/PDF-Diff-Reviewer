@@ -25,6 +25,7 @@ import {
   canvasToRgba,
   downscaleCanvas,
   pageSizePt,
+  pageTextRuns,
   renderPageCanvas,
   rotateCanvas90,
 } from "../features/documents/page-renderer.js";
@@ -85,6 +86,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   createWorkerLane,
   downscaleCanvas,
   pageSizePt,
+  pageTextRuns,
   renderPageCanvas,
   rotateCanvas90,
   createViewerController,
@@ -592,6 +594,7 @@ export function createApp({ document, window, dependencies = {} }) {
       textRenderer.renderOffscreen({ side, pageIndex, snapshot })
     ),
     pdfExporter: deps.createPdfExporter({ jsPDF: deps.jsPDF, loadFont: deps.loadReportFont }),
+    pageTextRuns: deps.pageTextRuns,
     download: deps.downloadBlob,
     textColors,
     errorReporter,

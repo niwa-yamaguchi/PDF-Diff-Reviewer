@@ -1,5 +1,6 @@
 import { createWhiteCanvas } from "../../platform/canvas.js";
 import { renderCancelledError } from "../../core/rendering/cancellation.js";
+import { composeAffine } from "../../core/geometry/affine.js";
 
 export async function pageSizePt(doc, pageIndex) {
   if (!doc || pageIndex == null || pageIndex >= doc.numPages) return null;
@@ -29,6 +30,18 @@ export async function renderPageCanvas(doc, pageIndex, scale, { cancellation } =
     unregister();
   }
   return canvas;
+}
+
+// ページの文字を、scale で描いたCanvasの画素座標で返す。x, y は基線の左端、angle は時計回りのラジアン、w は字列の幅。
+export async function pageTextRuns(doc, pageIndex, scale) {
+  if (!doc || pageIndex == null || pageIndex >= doc.numPages) return [];
+  const page = await doc.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale });
+  const { items } = await page.getTextContent();
+  return items.filter(item => item.str?.trim()).map(item => {
+    const [a, b, c, d, e, f] = composeAffine(viewport.transform, item.transform);
+    return { text: item.str, x: e, y: f, size: Math.hypot(c, d), angle: Math.atan2(b, a), w: item.width * scale };
+  });
 }
 
 export const ALIGN_PROBE_LONG = 512;
