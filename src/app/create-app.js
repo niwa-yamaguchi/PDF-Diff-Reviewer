@@ -176,6 +176,26 @@ export function createApp({ document, window, dependencies = {} }) {
     scheduleBackgroundResume();
   }
 
+  function fillPageJumpList(list, count, label) {
+    const options = Array.from({ length: count }, (_, index) => {
+      const option = document.createElement("option");
+      option.value = String(index + 1);
+      if (label) option.label = label(index);
+      return option;
+    });
+    list.replaceChildren(...options);
+  }
+
+  // Enter, blur (change) or picking from the list (insertReplacementText); plain typing waits.
+  // WebKit swallows change on Enter while the datalist is open, hence the keydown path.
+  function takePageJump(event, input) {
+    if (event.type === "input" && event.inputType !== "insertReplacementText") return null;
+    if (event.type === "keydown" && event.key !== "Enter") return null;
+    const pageIndex = Number.parseInt(input.value, 10) - 1;
+    input.value = "";
+    return pageIndex >= 0 ? pageIndex : null;
+  }
+
   function noteViewportInteraction() {
     pauseBackground();
     scheduleBackgroundResume();
@@ -503,6 +523,8 @@ export function createApp({ document, window, dependencies = {} }) {
       endInteraction,
       refreshBoxEditor: () => boxEditorView?.refresh?.(),
       afterCommit() {
+        fillPageJumpList(dom.pageJumpList, state.documents.pages,
+          index => deps.pageLabelText(state.documents, index));
         updateAlignButtons();
         updateAlignReadout();
         updateManualAlignReadout();
@@ -548,6 +570,7 @@ export function createApp({ document, window, dependencies = {} }) {
       out,
       textPrev: dom.textPrev,
       textNext: dom.textNext,
+      updatePageJumpList: total => fillPageJumpList(dom.textPageJumpList, total),
       stopBoxEditing: () => boxEditorController?.stopEditing?.(),
       restoreVisual: () => {
         if (state.visual.rendered) out.style.display = "block";
@@ -1006,6 +1029,18 @@ export function createApp({ document, window, dependencies = {} }) {
     nextVisualPage() {
       boxEditorController.stopEditing();
       return visualController.showPage(state.documents.currentPage + 1);
+    },
+    jumpVisualPage(event) {
+      const pageIndex = takePageJump(event, dom.pageJump);
+      if (pageIndex == null || pageIndex >= state.documents.pages) return undefined;
+      if (pageIndex === state.documents.currentPage) return undefined;
+      boxEditorController.stopEditing();
+      return visualController.showPage(pageIndex);
+    },
+    jumpTextPage(event) {
+      const pageIndex = takePageJump(event, dom.textPageJump);
+      if (pageIndex == null || pageIndex === state.textReview.page) return undefined;
+      return textController.showPage(pageIndex);
     },
   });
 

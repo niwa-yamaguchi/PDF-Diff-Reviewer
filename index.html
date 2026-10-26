@@ -15,7 +15,7 @@
     <img class="brandlogo" src="/favicon.png" alt="" width="34" height="34">
     <div class="brandtext">
       <h1>PDF差分レビューア</h1>
-      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-10-24</span>
+      <span class="sub">PDF OVERLAY DIFF · UPDATED 2026-10-26</span>
     </div>
   </div>
   <div class="legend">
@@ -171,6 +171,8 @@
     <div class="viewbar" id="viewbar">
       <div class="pager">
         <button id="prev">‹</button>
+        <input id="pageJump" list="pageJumpList" inputmode="numeric" autocomplete="off" placeholder="移動" aria-label="移動先ページ" title="ページ番号を入力して Enter、または一覧から選択">
+        <datalist id="pageJumpList"></datalist>
         <span id="pageLabel">– / –</span>
         <button id="next">›</button>
       </div>
@@ -213,6 +215,8 @@
       <div class="viewbar" id="textBar">
         <div class="pager">
           <button id="textPrev">‹</button>
+          <input id="textPageJump" list="textPageJumpList" inputmode="numeric" autocomplete="off" placeholder="移動" aria-label="移動先ページ" title="ページ番号を入力して Enter、または一覧から選択">
+          <datalist id="textPageJumpList"></datalist>
           <span id="textPageInd">– / –</span>
           <button id="textNext">›</button>
         </div>

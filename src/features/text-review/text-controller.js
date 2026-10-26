@@ -219,6 +219,7 @@ export function createTextController({
       }
       state.textReview.page = pageIndex;
       dom.textPageInd.textContent = `${pageIndex + 1} / ${total}`;
+      dom.updatePageJumpList?.(total);
       renderer.applyView();
       if (session) {
         renderer.fit();

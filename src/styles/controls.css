@@ -189,3 +189,8 @@
   .review-empty,.review-error{padding:14px;font-size:12px;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
   .review-error p{margin:0 0 8px;color:var(--removed)}
   .review-panel :focus-visible,#reviewRailToggle:focus-visible,#reviewBackdrop:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  .viewbar .pager input{
+    background:var(--panel-2);border:1px solid var(--line-bright);color:var(--fg);
+    width:52px;height:24px;padding:0 6px;border-radius:4px;font-family:var(--mono);font-size:11px;
+  }
+  .viewbar .pager input:focus{outline:none;border-color:var(--signal)}
