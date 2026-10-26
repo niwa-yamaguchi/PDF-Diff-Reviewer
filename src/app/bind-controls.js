@@ -153,6 +153,9 @@ export function bindControls({
   listen(dom.alignUndo, "click", () => appController.undoAlignment());
   listen(dom.prev, "click", () => appController.previousVisualPage());
   listen(dom.next, "click", () => appController.nextVisualPage());
+  listen(dom.pageJump, "change", event => appController.jumpVisualPage(event));
+  listen(dom.pageJump, "input", event => appController.jumpVisualPage(event));
+  listen(dom.pageJump, "keydown", event => appController.jumpVisualPage(event));
 
   listen(dom.runText, "click", () => textController.run());
   listen(dom.textPrev, "click", () => textController.previousPage());

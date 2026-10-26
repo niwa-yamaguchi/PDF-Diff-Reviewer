@@ -70,3 +70,22 @@ test("suggests, applies and undoes automatic page mapping", async ({ page }) => 
   await expect(page.locator("#pageLabel")).toContainText("3 / 6（旧P3 ↔ 新P3）");
   await expect(page.locator("#alignUndo")).toBeDisabled();
 });
+
+// Break: 入力したページへ直接飛べないと、途中ページを経由して毎回描画される。
+test("jumps straight to a typed page and lists every page", async ({ page }) => {
+  await page.goto("/");
+  await page.setInputFiles("#fileOld", join(fixtures, "sheets-old.pdf"));
+  await page.setInputFiles("#fileNew", join(fixtures, "sheets-new.pdf"));
+  await page.locator("#run").click();
+  await expect(page.locator("#pageLabel")).toContainText("1 / 6");
+  await expect(page.locator("#pageJumpList option")).toHaveCount(6);
+
+  await page.locator("#pageJump").fill("5");
+  await page.locator("#pageJump").press("Enter");
+  await expect(page.locator("#pageLabel")).toContainText("5 / 6");
+  await expect(page.locator("#pageJump")).toHaveValue("");
+
+  await page.locator("#pageJump").fill("99");
+  await page.locator("#pageJump").press("Enter");
+  await expect(page.locator("#pageLabel")).toContainText("5 / 6");
+});

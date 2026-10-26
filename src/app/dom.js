@@ -3,7 +3,7 @@ const REQUIRED_IDS = Object.freeze([
   "boxLayer", "boxToggle", "dlPdf", "dlPng",
   "dlTextPdf", "dlTextPng", "exportKind", "textExportKind", "dpi", "dpiVal", "dropNew", "dropOld", "fileNew",
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
-  "oldTextCanvas", "out", "pageLabel", "ph", "prev", "quadReset", "rotReset",
+  "oldTextCanvas", "out", "pageJump", "pageJumpList", "pageLabel", "ph", "prev", "quadReset", "rotReset",
   "run", "runText", "scaleReset", "sideNew", "sideOld", "statAd", "statBox",
   "statRm", "status", "textCtrl", "textNext", "textPageInd", "textPanel",
   "textPrev", "textStatus", "textZoom1", "textZoomFit", "textZoomIn", "textZoomOut",

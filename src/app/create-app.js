@@ -176,6 +176,16 @@ export function createApp({ document, window, dependencies = {} }) {
     scheduleBackgroundResume();
   }
 
+  function updatePageJumpList() {
+    const options = Array.from({ length: state.documents.pages }, (_, index) => {
+      const option = document.createElement("option");
+      option.value = String(index + 1);
+      option.label = deps.pageLabelText(state.documents, index);
+      return option;
+    });
+    dom.pageJumpList.replaceChildren(...options);
+  }
+
   function noteViewportInteraction() {
     pauseBackground();
     scheduleBackgroundResume();
@@ -503,6 +513,7 @@ export function createApp({ document, window, dependencies = {} }) {
       endInteraction,
       refreshBoxEditor: () => boxEditorView?.refresh?.(),
       afterCommit() {
+        updatePageJumpList();
         updateAlignButtons();
         updateAlignReadout();
         updateManualAlignReadout();
@@ -1006,6 +1017,18 @@ export function createApp({ document, window, dependencies = {} }) {
     nextVisualPage() {
       boxEditorController.stopEditing();
       return visualController.showPage(state.documents.currentPage + 1);
+    },
+    // Enter, blur (change) or picking from the list (insertReplacementText); plain typing waits.
+    // WebKit swallows change on Enter while the datalist is open, hence the keydown path.
+    jumpVisualPage(event) {
+      if (event.type === "input" && event.inputType !== "insertReplacementText") return undefined;
+      if (event.type === "keydown" && event.key !== "Enter") return undefined;
+      const pageIndex = Number.parseInt(dom.pageJump.value, 10) - 1;
+      dom.pageJump.value = "";
+      if (!(pageIndex >= 0 && pageIndex < state.documents.pages)) return undefined;
+      if (pageIndex === state.documents.currentPage) return undefined;
+      boxEditorController.stopEditing();
+      return visualController.showPage(pageIndex);
     },
   });
 
