@@ -5,7 +5,7 @@ const REQUIRED_IDS = Object.freeze([
   "fileOld", "modeDiff", "modeToggle", "newTextCanvas", "next", "nudgeReset",
   "oldTextCanvas", "out", "pageJump", "pageJumpList", "pageLabel", "ph", "prev", "quadReset", "rotReset",
   "run", "runText", "scaleReset", "sideNew", "sideOld", "statAd", "statBox",
-  "statRm", "status", "textCtrl", "textNext", "textPageInd", "textPanel",
+  "statRm", "status", "textCtrl", "textNext", "textPageInd", "textPageJump", "textPageJumpList", "textPanel",
   "textPrev", "textStatus", "textZoom1", "textZoomFit", "textZoomIn", "textZoomOut",
   "th", "thVal", "toggleFlip", "toggleInd", "tolerance", "toleranceVal",
   "topText", "topVisual", "viewbar", "visualCtrl", "zoom1", "zoomFit", "zoomIn",
